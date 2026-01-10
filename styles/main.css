@@ -1,0 +1,641 @@
+/* =============================================
+   NAIL ARTIST HERO - Main Styles
+   Bubbly, kawaii-inspired design for kids
+   ============================================= */
+
+/* CSS Custom Properties (Design Tokens) */
+:root {
+  /* Colors */
+  --color-bubblegum: #FF69B4;
+  --color-bubblegum-dark: #E55A9F;
+  --color-cotton-candy: #FFB6C1;
+  --color-lavender: #E6E6FA;
+  --color-mint: #98FF98;
+  --color-peach: #FFDAB9;
+  --color-purple: #9370DB;
+  --color-purple-soft: #B8A9C9;
+
+  /* Backgrounds */
+  --bg-gradient-start: #FFE5EC;
+  --bg-gradient-end: #FFF0F5;
+  --bg-card: rgba(255, 255, 255, 0.9);
+  --bg-overlay: rgba(0, 0, 0, 0.3);
+
+  /* Text */
+  --text-primary: #9370DB;
+  --text-secondary: #8B7B8B;
+  --text-light: #FFFFFF;
+
+  /* Shadows */
+  --shadow-soft: 0 4px 12px rgba(147, 112, 219, 0.2);
+  --shadow-button: 0 4px 0 rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 20px rgba(255, 105, 180, 0.4);
+
+  /* Sizing */
+  --touch-target: 48px;
+  --border-radius: 16px;
+  --border-radius-lg: 24px;
+
+  /* Transitions */
+  --transition-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  --transition-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Reset & Base */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Baloo 2', 'Nunito', sans-serif;
+  background: linear-gradient(135deg, var(--bg-gradient-start), var(--bg-gradient-end));
+  color: var(--text-primary);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* Canvas Container */
+#canvas-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+#canvas-container canvas {
+  display: block;
+}
+
+/* UI Overlay */
+#ui-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+}
+
+#ui-overlay>* {
+  pointer-events: auto;
+}
+
+/* Header */
+.header {
+  padding: 12px 20px;
+  text-align: center;
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 2px solid var(--color-cotton-candy);
+}
+
+.title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-bubblegum);
+  text-shadow: 2px 2px 0 var(--color-cotton-candy);
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Finger Selector */
+.finger-selector {
+  position: fixed;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: var(--border-radius-lg);
+  box-shadow: var(--shadow-soft);
+  z-index: 15;
+}
+
+.hand-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  min-height: var(--touch-target);
+  border: 2px solid var(--color-lavender);
+  background: white;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hand-toggle:hover {
+  border-color: var(--color-cotton-candy);
+  background: var(--color-lavender);
+}
+
+.hand-toggle:active {
+  transform: scale(0.95);
+}
+
+.hand-toggle .hand-label {
+  font-size: 0.85rem;
+}
+
+.finger-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.finger-btn {
+  width: var(--touch-target);
+  height: var(--touch-target);
+  border-radius: 50%;
+  border: 3px solid var(--color-lavender);
+  background: white;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.finger-btn:hover {
+  border-color: var(--color-cotton-candy);
+  transform: scale(1.1);
+}
+
+.finger-btn:active {
+  transform: scale(0.95);
+}
+
+.finger-btn.active {
+  background: var(--color-bubblegum);
+  color: white;
+  border-color: var(--color-bubblegum);
+  transform: scale(1.1);
+  box-shadow: var(--shadow-glow);
+}
+
+/* Toolbar */
+.toolbar {
+  position: fixed;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: var(--border-radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  min-height: var(--touch-target);
+  padding: 8px;
+  border: none;
+  border-radius: var(--border-radius);
+  background: var(--color-lavender);
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  box-shadow: var(--shadow-button);
+}
+
+.tool-btn:hover {
+  transform: scale(1.05);
+  background: var(--color-cotton-candy);
+}
+
+.tool-btn:active {
+  transform: scale(0.95) translateY(2px);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.1);
+}
+
+.tool-btn.active {
+  background: var(--color-bubblegum);
+  color: var(--text-light);
+  box-shadow: var(--shadow-glow);
+}
+
+.tool-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.tool-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Options Panel */
+.options-panel {
+  position: fixed;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 200px;
+  max-height: 60vh;
+  padding: 16px;
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: var(--border-radius-lg);
+  box-shadow: var(--shadow-soft);
+  overflow-y: auto;
+}
+
+.options-panel h3 {
+  font-size: 1rem;
+  margin-bottom: 12px;
+  color: var(--color-purple);
+}
+
+/* Shape Picker */
+.shape-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
+  gap: 8px;
+}
+
+.shape-btn {
+  aspect-ratio: 1;
+  border: 3px solid var(--color-lavender);
+  border-radius: var(--border-radius);
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+
+.shape-btn:hover {
+  border-color: var(--color-cotton-candy);
+  transform: scale(1.05);
+}
+
+.shape-btn.active {
+  border-color: var(--color-bubblegum);
+  background: var(--color-cotton-candy);
+  box-shadow: var(--shadow-glow);
+}
+
+.shape-btn svg {
+  width: 40px;
+  height: 40px;
+}
+
+.shape-btn span {
+  font-size: 0.7rem;
+  font-weight: 600;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* Color Picker */
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.color-swatch {
+  aspect-ratio: 1;
+  border: 3px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  width: 100%;
+}
+
+.color-swatch:hover {
+  transform: scale(1.15);
+}
+
+.color-swatch.active {
+  border-color: var(--color-purple);
+  transform: scale(1.1);
+  box-shadow: 0 0 0 3px var(--color-cotton-candy);
+}
+
+/* Action Bar */
+.action-bar {
+  margin-top: auto;
+  padding: 12px 20px;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 2px solid var(--color-cotton-candy);
+}
+
+.action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  min-height: var(--touch-target);
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--border-radius);
+  background: var(--color-lavender);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  box-shadow: var(--shadow-button);
+}
+
+.action-btn span:first-child {
+  font-size: 1.25rem;
+}
+
+.action-btn:hover {
+  transform: scale(1.05);
+  background: var(--color-cotton-candy);
+}
+
+.action-btn:active {
+  transform: scale(0.95) translateY(2px);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.1);
+}
+
+.action-btn.primary {
+  background: var(--color-bubblegum);
+  color: var(--text-light);
+  padding: 8px 24px;
+}
+
+.action-btn.primary:hover {
+  background: var(--color-bubblegum-dark);
+}
+
+/* Modal */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s var(--transition-smooth);
+}
+
+.modal.open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.modal-content {
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  padding: 24px;
+  background: white;
+  border-radius: var(--border-radius-lg);
+  box-shadow: var(--shadow-soft);
+  overflow-y: auto;
+  transform: scale(0.9);
+  transition: transform 0.3s var(--transition-bounce);
+}
+
+.modal.open .modal-content {
+  transform: scale(1);
+}
+
+.modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-lavender);
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.modal-close:hover {
+  background: var(--color-cotton-candy);
+  transform: rotate(90deg);
+}
+
+.modal-content h2 {
+  text-align: center;
+  margin-bottom: 20px;
+  color: var(--color-bubblegum);
+}
+
+/* Gallery Grid */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.gallery-item {
+  aspect-ratio: 1;
+  border-radius: var(--border-radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.2s var(--transition-bounce);
+  box-shadow: var(--shadow-soft);
+}
+
+.gallery-item:hover {
+  transform: scale(1.05);
+}
+
+.gallery-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gallery-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 40px;
+  color: var(--text-secondary);
+}
+
+/* Animations */
+@keyframes float {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes bounce {
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.1);
+  }
+}
+
+@keyframes sparkle {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.6;
+    transform: scale(0.95);
+  }
+}
+
+@keyframes pop-in {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+
+  70% {
+    transform: scale(1.1);
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Utility Classes */
+.hidden {
+  display: none !important;
+}
+
+.sparkle {
+  animation: sparkle 1s ease-in-out infinite;
+}
+
+/* Mobile/Tablet Responsiveness */
+@media (max-width: 768px) {
+  .toolbar {
+    left: 8px;
+    padding: 8px;
+    gap: 6px;
+  }
+
+  .tool-btn {
+    width: 56px;
+    padding: 6px;
+  }
+
+  .tool-icon {
+    font-size: 1.25rem;
+  }
+
+  .options-panel {
+    right: 8px;
+    width: 160px;
+    padding: 12px;
+  }
+
+  .header {
+    padding: 8px 16px;
+  }
+
+  .title {
+    font-size: 1.25rem;
+  }
+
+  .finger-selector {
+    top: 56px;
+    padding: 6px 12px;
+    gap: 8px;
+  }
+
+  .hand-toggle {
+    padding: 6px 12px;
+    min-height: 40px;
+  }
+
+  .hand-toggle .hand-label {
+    font-size: 0.75rem;
+  }
+
+  .finger-buttons {
+    gap: 4px;
+  }
+
+  .finger-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 0.85rem;
+  }
+}
+
+/* Landscape tablet (primary target) */
+@media (min-width: 768px) and (max-width: 1024px) and (orientation: landscape) {
+  .toolbar {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .options-panel {
+    width: 220px;
+  }
+}

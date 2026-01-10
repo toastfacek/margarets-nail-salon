@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="description" content="A fun nail salon game for kids - file, paint, and decorate beautiful nails!" />
+    <title>💅 Margaret's Nail Salon</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles/main.css">
+  </head>
+  <body>
+    <!-- 3D Canvas Container -->
+    <div id="canvas-container"></div>
+    
+    <!-- UI Overlay -->
+    <div id="ui-overlay">
+      <!-- Header -->
+      <header class="header">
+        <h1 class="title">💅 Margaret's Nail Salon</h1>
+      </header>
+
+      <!-- Finger Selector -->
+      <div class="finger-selector" id="finger-selector">
+        <button class="hand-toggle" id="hand-toggle" title="Switch Hand">
+          <span class="hand-label">Left</span>
+        </button>
+        <div class="finger-buttons">
+          <button class="finger-btn" data-finger="thumb" title="Thumb">1</button>
+          <button class="finger-btn" data-finger="index" title="Index">2</button>
+          <button class="finger-btn active" data-finger="middle" title="Middle">3</button>
+          <button class="finger-btn" data-finger="ring" title="Ring">4</button>
+          <button class="finger-btn" data-finger="pinky" title="Pinky">5</button>
+        </div>
+      </div>
+
+      <!-- Tool Sidebar -->
+      <aside class="toolbar" id="toolbar">
+        <button class="tool-btn active" data-tool="shape" title="Shape">
+          <span class="tool-icon">✂️</span>
+          <span class="tool-label">Shape</span>
+        </button>
+        <button class="tool-btn" data-tool="polish" title="Polish">
+          <span class="tool-icon">💅</span>
+          <span class="tool-label">Polish</span>
+        </button>
+        <button class="tool-btn" data-tool="sticker" title="Stickers">
+          <span class="tool-icon">⭐</span>
+          <span class="tool-label">Stickers</span>
+        </button>
+        <button class="tool-btn" data-tool="glitter" title="Glitter">
+          <span class="tool-icon">✨</span>
+          <span class="tool-label">Glitter</span>
+        </button>
+        <button class="tool-btn" data-tool="gems" title="Gems">
+          <span class="tool-icon">💎</span>
+          <span class="tool-label">Gems</span>
+        </button>
+        <button class="tool-btn" data-tool="brush" title="Draw">
+          <span class="tool-icon">🖌️</span>
+          <span class="tool-label">Draw</span>
+        </button>
+      </aside>
+      
+      <!-- Tool Options Panel (changes based on selected tool) -->
+      <div class="options-panel" id="options-panel">
+        <!-- Dynamic content injected here -->
+      </div>
+      
+      <!-- Bottom Action Bar -->
+      <footer class="action-bar">
+        <button class="action-btn" id="btn-clear">
+          <span>🗑️</span>
+          <span>Clear</span>
+        </button>
+        <button class="action-btn" id="btn-undo">
+          <span>↩️</span>
+          <span>Undo</span>
+        </button>
+        <button class="action-btn primary" id="btn-done">
+          <span>📸</span>
+          <span>Done!</span>
+        </button>
+        <button class="action-btn" id="btn-gallery">
+          <span>🖼️</span>
+          <span>Gallery</span>
+        </button>
+      </footer>
+    </div>
+    
+    <!-- Gallery Modal -->
+    <div class="modal" id="gallery-modal">
+      <div class="modal-content">
+        <button class="modal-close" id="gallery-close">✕</button>
+        <h2>🖼️ My Designs</h2>
+        <div class="gallery-grid" id="gallery-grid">
+          <!-- Saved designs will appear here -->
+        </div>
+      </div>
+    </div>
+    
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
