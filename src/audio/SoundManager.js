@@ -241,6 +241,178 @@ class SoundManager {
         }
     }
 
+    // =========================================
+    // PEN/DRAW SOUND EFFECTS
+    // =========================================
+
+    // Solid pen - soft drawing sound
+    playDrawSolid() {
+        if (!this.sfxEnabled || !this.audioContext) return;
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.06;
+
+        const osc = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+        const filter = this.audioContext.createBiquadFilter();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(200 + Math.random() * 50, now);
+
+        filter.type = 'lowpass';
+        filter.frequency.value = 400;
+
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.audioContext.destination);
+
+        osc.start(now);
+        osc.stop(now + duration);
+    }
+
+    // Dotted pen - cute pop sound
+    playDrawDotted() {
+        if (!this.sfxEnabled || !this.audioContext) return;
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.08;
+
+        const osc = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+
+        osc.type = 'sine';
+        // Bubbly "boop" sound
+        osc.frequency.setValueAtTime(600 + Math.random() * 100, now);
+        osc.frequency.exponentialRampToValueAtTime(300, now + duration);
+
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        osc.connect(gain);
+        gain.connect(this.audioContext.destination);
+
+        osc.start(now);
+        osc.stop(now + duration);
+    }
+
+    // Metallic pen - shiny sliding sound
+    playDrawMetallic() {
+        if (!this.sfxEnabled || !this.audioContext) return;
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.08;
+
+        const osc = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1200, now);
+        osc.frequency.exponentialRampToValueAtTime(800, now + duration);
+
+        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        osc.connect(gain);
+        gain.connect(this.audioContext.destination);
+
+        osc.start(now);
+        osc.stop(now + duration);
+    }
+
+    // Rainbow pen - whimsical rising tone
+    playDrawRainbow() {
+        if (!this.sfxEnabled || !this.audioContext) return;
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.1;
+
+        const osc = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+
+        osc.type = 'sine';
+        // Rising pitch for rainbow magic
+        osc.frequency.setValueAtTime(400 + Math.random() * 200, now);
+        osc.frequency.linearRampToValueAtTime(800 + Math.random() * 400, now + duration);
+
+        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        osc.connect(gain);
+        gain.connect(this.audioContext.destination);
+
+        osc.start(now);
+        osc.stop(now + duration);
+    }
+
+    // Glow pen - neon buzz/hum
+    playDrawGlow() {
+        if (!this.sfxEnabled || !this.audioContext) return;
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.1;
+
+        // Main hum
+        const osc1 = this.audioContext.createOscillator();
+        const osc2 = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+
+        osc1.type = 'sine';
+        osc1.frequency.value = 180;
+
+        osc2.type = 'sine';
+        osc2.frequency.value = 360; // Harmonic
+
+        gain.gain.setValueAtTime(0.05, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(this.audioContext.destination);
+
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + duration);
+        osc2.stop(now + duration);
+    }
+
+    // Marker pen - squeaky marker sound
+    playDrawMarker() {
+        if (!this.sfxEnabled || !this.audioContext) return;
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.07;
+
+        const osc = this.audioContext.createOscillator();
+        const gain = this.audioContext.createGain();
+        const filter = this.audioContext.createBiquadFilter();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150 + Math.random() * 30, now);
+
+        filter.type = 'lowpass';
+        filter.frequency.value = 300;
+        filter.Q.value = 2;
+
+        gain.gain.setValueAtTime(0.04, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.audioContext.destination);
+
+        osc.start(now);
+        osc.stop(now + duration);
+    }
+
     // Gem placement clink
     playGemClink() {
         if (!this.sfxEnabled || !this.audioContext) return;

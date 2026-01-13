@@ -3,24 +3,14 @@
  * Application entry point - initializes scene, nail, and UI
  */
 import { NailScene } from './scene/NailScene.js';
-import { HandModel, FINGERS } from './scene/HandModel.js';
+import { HandModel, FINGERS, NAIL_SHAPES } from './scene/HandModel.js';
 import { nailDesignStore } from './state/NailDesignStore.js';
 import { FileTool } from './tools/FileTool.js';
 import { StickerTool, STICKERS } from './tools/StickerTool.js';
-import { GlitterTool, GLITTER_COLORS } from './tools/GlitterTool.js';
 import { GemTool, GEM_TYPES } from './tools/GemTool.js';
-import { BrushTool } from './tools/BrushTool.js';
+import { BrushTool, PEN_MATERIALS, PEN_COLORS } from './tools/BrushTool.js';
 import { soundManager } from './audio/SoundManager.js';
 import * as THREE from 'three';
-
-// Map old shape names for compatibility (shapes are fixed in GLB)
-const NAIL_SHAPES = {
-    ROUND: 'round',
-    SQUARE: 'square',
-    ALMOND: 'almond',
-    STILETTO: 'stiletto',
-    COFFIN: 'coffin'
-};
 
 class NailArtistApp {
   constructor() {
@@ -71,8 +61,7 @@ class NailArtistApp {
 
     canvas.addEventListener('click', (event) => {
       // Don't select nails while using decoration tools
-      if (this.currentTool === 'draw' || this.currentTool === 'glitter' ||
-          this.currentTool === 'sticker' || this.currentTool === 'gems') {
+      if (this.currentTool === 'brush' || this.currentTool === 'bling') {
         return;
       }
 
@@ -136,9 +125,6 @@ class NailArtistApp {
     // Create sticker tool
     this.stickerTool = new StickerTool(this.scene.scene, this.scene.camera, this.nail);
 
-    // Create glitter tool
-    this.glitterTool = new GlitterTool(this.scene.scene, this.scene.camera, this.nail);
-
     // Create gem tool
     this.gemTool = new GemTool(this.scene.scene, this.scene.camera, this.nail);
 
@@ -180,7 +166,6 @@ class NailArtistApp {
         // Deactivate all tools first
         this.fileTool?.deactivate();
         this.stickerTool?.deactivate();
-        this.glitterTool?.deactivate();
         this.gemTool?.deactivate();
         this.brushTool?.deactivate();
 
@@ -189,16 +174,12 @@ class NailArtistApp {
           case 'shape':
             this.fileTool?.activate();
             break;
-          case 'sticker':
+          case 'bling':
+            // Both sticker and gem tools listen, UI determines which is active
             this.stickerTool?.activate();
-            break;
-          case 'glitter':
-            this.glitterTool?.activate();
-            break;
-          case 'gems':
             this.gemTool?.activate();
             break;
-          case 'draw':
+          case 'brush':
             this.brushTool?.activate();
             break;
         }
@@ -368,14 +349,8 @@ class NailArtistApp {
       case 'polish':
         this.renderPolishOptions();
         break;
-      case 'sticker':
-        this.renderStickerOptions();
-        break;
-      case 'glitter':
-        this.renderGlitterOptions();
-        break;
-      case 'gems':
-        this.renderGemOptions();
+      case 'bling':
+        this.renderBlingOptions();
         break;
       case 'brush':
         this.renderBrushOptions();
@@ -389,16 +364,60 @@ class NailArtistApp {
     const panel = document.getElementById('options-panel');
     if (!panel) return;
 
-    // Shape tool not available with hand model - shapes are fixed
+    const shapes = [
+      { id: 'round', label: 'Round', icon: '⭕' },
+      { id: 'square', label: 'Square', icon: '⬜' },
+      { id: 'almond', label: 'Almond', icon: '🥜' },
+      { id: 'stiletto', label: 'Stiletto', icon: '📍' },
+      { id: 'coffin', label: 'Coffin', icon: '⬡' }
+    ];
+
+    const currentShape = this.nail.getShape();
+
     panel.innerHTML = `
       <h3>Shape</h3>
-      <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
-        Shape options coming soon!
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+        Choose your nail shape!
       </p>
-      <p style="font-size: 0.75rem; color: var(--text-muted);">
-        Tap a nail to select it, then use polish or draw to create your look!
-      </p>
+      <div class="shape-grid">
+        ${shapes.map(s => {
+          const isAvailable = this.nail.isShapeAvailable(s.id);
+          const isActive = s.id === currentShape;
+          return `
+            <button class="shape-btn shape-select-btn ${isActive ? 'active' : ''} ${!isAvailable ? 'unavailable' : ''}"
+                    data-shape="${s.id}"
+                    ${!isAvailable ? 'disabled' : ''}>
+              <span class="shape-icon">${s.icon}</span>
+              <span class="shape-label">${s.label}</span>
+              ${!isAvailable ? '<span class="coming-soon">Coming Soon</span>' : ''}
+            </button>
+          `;
+        }).join('')}
+      </div>
     `;
+
+    // Add click handlers for available shapes
+    panel.querySelectorAll('.shape-select-btn:not([disabled])').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const shape = btn.dataset.shape;
+        if (shape === currentShape) return;
+
+        // Show loading state
+        btn.classList.add('loading');
+
+        try {
+          const changed = await this.nail.setShape(shape);
+          if (changed) {
+            soundManager.playClick();
+          }
+          // Re-render to update active state
+          this.renderShapeOptions();
+        } catch (error) {
+          console.error('Failed to change shape:', error);
+          btn.classList.remove('loading');
+        }
+      });
+    });
   }
 
   renderPolishOptions() {
@@ -483,109 +502,80 @@ class NailArtistApp {
     });
   }
 
-  renderStickerOptions() {
+  renderBlingOptions() {
     const panel = document.getElementById('options-panel');
     if (!panel) return;
 
+    // Track which category is selected (stickers or gems)
+    const activeCategory = this.blingCategory || 'stickers';
+
     panel.innerHTML = `
-      <h3>Stickers</h3>
+      <h3>Bling</h3>
       <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
-        Pick a sticker, then tap the nail to place it!
+        Tap to place decorations on your nail!
       </p>
-      <div class="color-grid">
-        ${STICKERS.map(s => `
-          <button class="shape-btn sticker-btn" data-sticker="${s.id}" style="font-size: 1.5rem; padding: 8px;">
-            ${s.emoji}
-          </button>
-        `).join('')}
+
+      <div class="bling-tabs">
+        <button class="bling-tab ${activeCategory === 'stickers' ? 'active' : ''}" data-category="stickers">
+          ⭐ Stickers
+        </button>
+        <button class="bling-tab ${activeCategory === 'gems' ? 'active' : ''}" data-category="gems">
+          💎 Gems
+        </button>
+      </div>
+
+      <div class="bling-items">
+        ${activeCategory === 'stickers' ? `
+          <div class="bling-grid">
+            ${STICKERS.map(s => `
+              <button class="shape-btn bling-btn" data-type="sticker" data-id="${s.id}">
+                ${s.emoji}
+              </button>
+            `).join('')}
+          </div>
+        ` : `
+          <div class="bling-grid">
+            ${GEM_TYPES.map(g => `
+              <button class="shape-btn bling-btn" data-type="gem" data-id="${g.id}">
+                ${g.emoji}
+              </button>
+            `).join('')}
+          </div>
+        `}
       </div>
     `;
 
-    // Add click handlers
-    panel.querySelectorAll('.sticker-btn').forEach(btn => {
+    // Tab switching
+    panel.querySelectorAll('.bling-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        this.blingCategory = tab.dataset.category;
+        // Deselect items when switching tabs
+        this.stickerTool?.selectSticker(null);
+        this.gemTool?.selectGem(null);
+        this.renderBlingOptions();
+        soundManager.playClick();
+      });
+    });
+
+    // Item selection
+    panel.querySelectorAll('.bling-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         // Update active state
-        panel.querySelectorAll('.sticker-btn').forEach(b => b.classList.remove('active'));
+        panel.querySelectorAll('.bling-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
-        // Select sticker
-        this.stickerTool?.selectSticker(btn.dataset.sticker);
+        const type = btn.dataset.type;
+        const id = btn.dataset.id;
+
+        if (type === 'sticker') {
+          this.stickerTool?.selectSticker(id);
+          this.gemTool?.selectGem(null); // Deselect gem
+        } else {
+          this.gemTool?.selectGem(id);
+          this.stickerTool?.selectSticker(null); // Deselect sticker
+        }
 
         // Animation
-        btn.style.animation = 'none';
-        btn.offsetHeight;
-        btn.style.animation = 'bounce 0.3s ease';
-      });
-    });
-  }
-
-  renderGlitterOptions() {
-    const panel = document.getElementById('options-panel');
-    if (!panel) return;
-
-    panel.innerHTML = `
-      <h3>Glitter</h3>
-      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
-        Drag across the nail to add sparkle!
-      </p>
-      <div class="color-grid">
-        ${GLITTER_COLORS.map(g => `
-          <button
-            class="color-swatch glitter-btn ${g.id === 'gold' ? 'active' : ''}"
-            data-glitter="${g.id}"
-            style="background: ${g.id === 'rainbow'
-        ? 'linear-gradient(135deg, #ff2a6d, #c77dff, #00b4d8, #00f5d4, #ffd700)'
-        : `linear-gradient(135deg, ${g.color}, white, ${g.color})`}"
-            title="${g.name}"
-          ></button>
-        `).join('')}
-      </div>
-    `;
-
-    // Select default gold
-    this.glitterTool?.selectColor('gold');
-
-    // Add click handlers
-    panel.querySelectorAll('.glitter-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        panel.querySelectorAll('.glitter-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-
-        this.glitterTool?.selectColor(btn.dataset.glitter);
-
-        btn.style.animation = 'none';
-        btn.offsetHeight;
-        btn.style.animation = 'bounce 0.3s ease';
-      });
-    });
-  }
-
-  renderGemOptions() {
-    const panel = document.getElementById('options-panel');
-    if (!panel) return;
-
-    panel.innerHTML = `
-      <h3>Gems</h3>
-      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
-        Pick a gem, then tap the nail to place it!
-      </p>
-      <div class="color-grid">
-        ${GEM_TYPES.map(g => `
-          <button class="shape-btn gem-btn" data-gem="${g.id}" style="font-size: 1.5rem; padding: 8px;">
-            ${g.emoji}
-          </button>
-        `).join('')}
-      </div>
-    `;
-
-    // Add click handlers
-    panel.querySelectorAll('.gem-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        panel.querySelectorAll('.gem-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-
-        this.gemTool?.selectGem(btn.dataset.gem);
-
         btn.style.animation = 'none';
         btn.offsetHeight;
         btn.style.animation = 'bounce 0.3s ease';
@@ -597,29 +587,66 @@ class NailArtistApp {
     const panel = document.getElementById('options-panel');
     if (!panel) return;
 
-    // Fun brush colors
-    const colors = ['#ffffff', '#2d1f3d', '#ff2a6d', '#ffd700', '#00b4d8', '#00f5d4', '#c77dff', '#ff6b6b'];
+    const currentMaterial = this.brushTool?.getMaterial() || 'solid';
+    const currentColor = this.brushTool?.getColor() || '#FFFFFF';
+    const currentSize = this.brushTool?.getSize() || 6;
+
+    // Get materials as array
+    const materials = Object.values(PEN_MATERIALS);
 
     panel.innerHTML = `
       <h3>Draw</h3>
       <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
-        Draw freehand designs on your nail!
+        Draw designs with different pen styles!
       </p>
 
-      <h4>Color</h4>
-      <div class="color-grid">
-        ${colors.map(c => `
+      <h4>Pen Style</h4>
+      <div class="material-grid">
+        ${materials.map(m => `
           <button
-            class="color-swatch brush-color-btn ${this.brushTool?.color === c ? 'active' : ''}"
-            data-color="${c}"
-            style="background-color: ${c}"
+            class="material-btn ${currentMaterial === m.id ? 'active' : ''}"
+            data-material="${m.id}"
+            title="${m.description}"
+          >
+            <span class="material-icon">${m.icon}</span>
+            <span class="material-name">${m.name}</span>
+          </button>
+        `).join('')}
+      </div>
+
+      <h4 style="margin-top: 16px;">Color</h4>
+      <div class="color-grid pen-colors">
+        ${PEN_COLORS.map(c => `
+          <button
+            class="color-swatch brush-color-btn ${currentColor === c.color ? 'active' : ''}"
+            data-color="${c.color}"
+            style="background-color: ${c.color}"
+            title="${c.name}"
           ></button>
         `).join('')}
       </div>
 
-      <h4 style="margin-top: 16px;">Brush Size</h4>
-      <input type="range" id="brush-size" min="1" max="20" value="${this.brushTool?.size || 5}" style="width: 100%;">
+      <h4 style="margin-top: 16px;">Size</h4>
+      <div class="size-preview-container">
+        <div class="size-preview" style="width: ${currentSize * 2}px; height: ${currentSize * 2}px; background: ${currentColor};"></div>
+      </div>
+      <input type="range" id="brush-size" min="1" max="20" value="${currentSize}" style="width: 100%;">
     `;
+
+    // Material selection
+    panel.querySelectorAll('.material-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        panel.querySelectorAll('.material-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        this.brushTool?.setMaterial(btn.dataset.material);
+        soundManager.playClick();
+
+        btn.style.animation = 'none';
+        btn.offsetHeight;
+        btn.style.animation = 'bounce 0.3s ease';
+      });
+    });
 
     // Color selection
     panel.querySelectorAll('.brush-color-btn').forEach(btn => {
@@ -627,8 +654,15 @@ class NailArtistApp {
         panel.querySelectorAll('.brush-color-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
-        this.brushTool?.setColor(btn.dataset.color);
+        const color = btn.dataset.color;
+        this.brushTool?.setColor(color);
         soundManager.playClick();
+
+        // Update size preview color
+        const preview = panel.querySelector('.size-preview');
+        if (preview) {
+          preview.style.background = color;
+        }
 
         btn.style.animation = 'none';
         btn.offsetHeight;
@@ -638,8 +672,17 @@ class NailArtistApp {
 
     // Size slider
     const slider = document.getElementById('brush-size');
+    const sizePreview = panel.querySelector('.size-preview');
+
     slider?.addEventListener('input', (e) => {
-      this.brushTool?.setSize(parseInt(e.target.value));
+      const size = parseInt(e.target.value);
+      this.brushTool?.setSize(size);
+
+      // Update preview
+      if (sizePreview) {
+        sizePreview.style.width = `${size * 2}px`;
+        sizePreview.style.height = `${size * 2}px`;
+      }
     });
   }
 

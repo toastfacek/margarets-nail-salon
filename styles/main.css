@@ -466,8 +466,8 @@ body::after {
   right: 16px;
   top: 50%;
   transform: translateY(-50%);
-  width: 220px;
-  max-height: 65vh;
+  width: 260px;
+  max-height: 95vh;
   padding: 24px 18px;
   background: var(--bg-card);
   border: 4px solid var(--bubblegum);
@@ -475,6 +475,7 @@ body::after {
   box-shadow:
     -8px 8px 0 var(--hot-pink),
     0 10px 40px rgba(255, 105, 180, 0.2);
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -579,12 +580,215 @@ body::after {
   letter-spacing: 0.05em;
 }
 
+/* Shape Selection Grid */
+.shape-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.shape-select-btn {
+  aspect-ratio: auto;
+  padding: 16px 12px;
+  min-height: 80px;
+}
+
+.shape-select-btn .shape-icon {
+  font-size: 28px;
+  margin-bottom: 4px;
+  display: block;
+}
+
+.shape-select-btn .shape-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.shape-select-btn.loading {
+  opacity: 0.6;
+  pointer-events: none;
+  position: relative;
+}
+
+.shape-select-btn.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border: 3px solid var(--hot-pink);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.shape-select-btn:disabled {
+  cursor: not-allowed;
+}
+
+.shape-select-btn.unavailable {
+  opacity: 0.5;
+  background: linear-gradient(135deg, #f0f0f0, #e0e0e0);
+  border-color: #ccc;
+}
+
+.shape-select-btn.unavailable:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.shape-select-btn .coming-soon {
+  font-size: 9px;
+  color: #888;
+  margin-top: 4px;
+  font-style: italic;
+  display: block;
+}
+
+/* ============================================
+   MATERIAL/PEN STYLE GRID
+   ============================================ */
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.material-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 4px;
+  border: 2px solid var(--lavender-dream);
+  border-radius: var(--radius-sm);
+  background: white;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  min-height: 50px;
+}
+
+.material-btn:hover {
+  border-color: var(--cyber-cyan);
+  transform: scale(1.03) translateY(-2px);
+  box-shadow: 2px 2px 0 var(--cyber-cyan);
+}
+
+.material-btn.active {
+  border-color: var(--hot-pink);
+  background: linear-gradient(135deg, rgba(255,20,147,0.1), rgba(155,48,255,0.1));
+  box-shadow: 2px 2px 0 var(--hot-pink);
+}
+
+.material-icon {
+  font-size: 1.2rem;
+  margin-bottom: 2px;
+}
+
+.material-name {
+  font-family: var(--font-body);
+  font-size: 0.55rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  color: var(--text-dark);
+}
+
+.material-btn.active .material-name {
+  color: var(--hot-pink);
+}
+
+/* ============================================
+   BLING TABS (Stickers & Gems)
+   ============================================ */
+.bling-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.bling-tab {
+  flex: 1;
+  padding: 10px 8px;
+  border: 2px solid var(--lavender-dream);
+  border-radius: var(--radius-md);
+  background: white;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-dark);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.bling-tab:hover {
+  border-color: var(--cyber-cyan);
+  transform: translateY(-2px);
+}
+
+.bling-tab.active {
+  background: var(--gradient-candy);
+  border-color: var(--hot-pink);
+  color: white;
+  box-shadow: 2px 2px 0 var(--hot-pink);
+}
+
+.bling-items {
+  margin-top: 8px;
+}
+
+.bling-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  width: 100%;
+}
+
+.bling-grid .bling-btn {
+  aspect-ratio: 1;
+  font-size: 1.8rem;
+  padding: 12px;
+}
+
+/* Size Preview */
+.size-preview-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 50px;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, #2d1f3d 0%, #1a1a2e 100%);
+  border-radius: var(--radius-md);
+  border: 2px solid var(--lavender-dream);
+}
+
+.size-preview {
+  border-radius: 50%;
+  transition: all 0.15s ease;
+  box-shadow: 0 0 10px rgba(255,255,255,0.3);
+}
+
 /* Color Picker - Candy Style */
 .color-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
   width: 100%;
+}
+
+/* Pen colors - more colors so smaller grid */
+.color-grid.pen-colors {
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
 }
 
 .color-swatch {

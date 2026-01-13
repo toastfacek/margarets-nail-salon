@@ -9,8 +9,8 @@ import { soundManager } from '../audio/SoundManager.js';
 export const GEM_TYPES = [
     { id: 'diamond', emoji: '💎', color: '#00CED1', shape: 'octahedron' },
     { id: 'crystal', emoji: '💠', color: '#87CEEB', shape: 'octahedron' },
-    { id: 'ruby', emoji: '🔶', color: '#FF6B6B', shape: 'octahedron' },
-    { id: 'sapphire', emoji: '🔷', color: '#4169E1', shape: 'octahedron' },
+    { id: 'star', emoji: '⭐', color: '#FFD700', shape: 'star' },
+    { id: 'flower', emoji: '🌸', color: '#FF69B4', shape: 'flower' },
     { id: 'pearl', emoji: '⚪', color: '#FFFAFA', shape: 'sphere' },
     { id: 'heart', emoji: '❤️', color: '#FF69B4', shape: 'heart' },
 ];
@@ -32,7 +32,139 @@ export class GemTool {
         this.setupEventListeners();
     }
 
-    createGemMesh(gemId, size = 0.06) {
+    createHeartGeometry(size) {
+        const x = 0, y = 0;
+        const heartShape = new THREE.Shape();
+
+        // Scale factor for the heart
+        const s = size * 2;
+
+        heartShape.moveTo(x, y + s * 0.35);
+        heartShape.bezierCurveTo(x, y + s * 0.35, x - s * 0.05, y, x - s * 0.25, y);
+        heartShape.bezierCurveTo(x - s * 0.55, y, x - s * 0.55, y + s * 0.35, x - s * 0.55, y + s * 0.35);
+        heartShape.bezierCurveTo(x - s * 0.55, y + s * 0.55, x - s * 0.35, y + s * 0.77, x, y + s);
+        heartShape.bezierCurveTo(x + s * 0.35, y + s * 0.77, x + s * 0.55, y + s * 0.55, x + s * 0.55, y + s * 0.35);
+        heartShape.bezierCurveTo(x + s * 0.55, y + s * 0.35, x + s * 0.55, y, x + s * 0.25, y);
+        heartShape.bezierCurveTo(x + s * 0.05, y, x, y + s * 0.35, x, y + s * 0.35);
+
+        const extrudeSettings = {
+            depth: size * 0.5,
+            bevelEnabled: true,
+            bevelThickness: size * 0.15,
+            bevelSize: size * 0.1,
+            bevelSegments: 3
+        };
+
+        const geometry = new THREE.ExtrudeGeometry(heartShape, extrudeSettings);
+        geometry.center();
+        geometry.rotateX(Math.PI); // Flip so point faces down
+
+        return geometry;
+    }
+
+    createStarGeometry(size) {
+        const starShape = new THREE.Shape();
+        const s = size * 1.5;
+        const points = 5;
+        const outerRadius = s;
+        const innerRadius = s * 0.4;
+
+        for (let i = 0; i < points * 2; i++) {
+            const radius = i % 2 === 0 ? outerRadius : innerRadius;
+            const angle = (i * Math.PI) / points - Math.PI / 2;
+            const x = Math.cos(angle) * radius;
+            const y = Math.sin(angle) * radius;
+
+            if (i === 0) {
+                starShape.moveTo(x, y);
+            } else {
+                starShape.lineTo(x, y);
+            }
+        }
+        starShape.closePath();
+
+        const extrudeSettings = {
+            depth: size * 0.4,
+            bevelEnabled: true,
+            bevelThickness: size * 0.1,
+            bevelSize: size * 0.08,
+            bevelSegments: 2
+        };
+
+        const geometry = new THREE.ExtrudeGeometry(starShape, extrudeSettings);
+        geometry.center();
+
+        return geometry;
+    }
+
+    createFlowerGeometry(size) {
+        // Create a flower with 5 distinct rounded petals + center circle
+        const petals = 5;
+        const petalRadius = size * 0.5;
+        const centerDist = size * 0.55;
+
+        // Create each petal as a squashed sphere (ellipsoid)
+        for (let i = 0; i < petals; i++) {
+            const angle = (i * Math.PI * 2) / petals - Math.PI / 2;
+            const petalGeom = new THREE.SphereGeometry(petalRadius, 12, 8);
+
+            // Squash the petal to make it flat but round
+            petalGeom.scale(0.75, 0.75, 0.3);
+
+            // Position petal around center
+            petalGeom.translate(
+                Math.cos(angle) * centerDist,
+                Math.sin(angle) * centerDist,
+                0
+            );
+
+            // Merge into a single geometry
+            if (i === 0) {
+                this._flowerGeom = petalGeom;
+            } else {
+                this._flowerGeom = this.mergeGeometries(this._flowerGeom, petalGeom);
+            }
+        }
+
+        // Add center circle (more prominent)
+        const centerGeom = new THREE.SphereGeometry(size * 0.3, 16, 12);
+        centerGeom.scale(1, 1, 0.6);
+        centerGeom.translate(0, 0, size * 0.05); // Raise it slightly
+        const finalGeom = this.mergeGeometries(this._flowerGeom, centerGeom);
+        finalGeom.center();
+
+        return finalGeom;
+    }
+
+    mergeGeometries(geom1, geom2) {
+        // Simple merge by combining position attributes
+        const pos1 = geom1.attributes.position.array;
+        const pos2 = geom2.attributes.position.array;
+        const norm1 = geom1.attributes.normal.array;
+        const norm2 = geom2.attributes.normal.array;
+        const idx1 = geom1.index ? Array.from(geom1.index.array) : [];
+        const idx2 = geom2.index ? Array.from(geom2.index.array) : [];
+
+        const newPos = new Float32Array(pos1.length + pos2.length);
+        newPos.set(pos1);
+        newPos.set(pos2, pos1.length);
+
+        const newNorm = new Float32Array(norm1.length + norm2.length);
+        newNorm.set(norm1);
+        newNorm.set(norm2, norm1.length);
+
+        const vertexOffset = pos1.length / 3;
+        const newIdx = idx1.concat(idx2.map(i => i + vertexOffset));
+
+        const merged = new THREE.BufferGeometry();
+        merged.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+        merged.setAttribute('normal', new THREE.BufferAttribute(newNorm, 3));
+        merged.setIndex(newIdx);
+
+        return merged;
+    }
+
+    createGemMesh(gemId, size = 0.008) {
         const gemData = GEM_TYPES.find(g => g.id === gemId) || GEM_TYPES[0];
 
         let geometry;
@@ -41,8 +173,13 @@ export class GemTool {
                 geometry = new THREE.SphereGeometry(size, 16, 16);
                 break;
             case 'heart':
-                // Approximate heart with scaled sphere
-                geometry = new THREE.SphereGeometry(size, 16, 16);
+                geometry = this.createHeartGeometry(size);
+                break;
+            case 'star':
+                geometry = this.createStarGeometry(size);
+                break;
+            case 'flower':
+                geometry = this.createFlowerGeometry(size);
                 break;
             case 'octahedron':
             default:
@@ -129,7 +266,7 @@ export class GemTool {
             const worldNormal = this.getWorldNormal(intersection);
 
             // Position gem on nail surface
-            const offset = worldNormal.clone().multiplyScalar(0.04);
+            const offset = worldNormal.clone().multiplyScalar(0.005);
             this.previewGem.position.copy(intersection.point).add(offset);
             this.previewGem.visible = true;
 
@@ -175,7 +312,7 @@ export class GemTool {
         const worldNormal = this.getWorldNormal(intersection);
 
         // Position on nail
-        const offset = worldNormal.clone().multiplyScalar(0.04);
+        const offset = worldNormal.clone().multiplyScalar(0.005);
         gem.position.copy(intersection.point).add(offset);
 
         // Rotate to face outward
@@ -198,19 +335,22 @@ export class GemTool {
     selectGem(gemId) {
         this.selectedGem = gemId;
 
-        // Create or update preview
+        // Clean up existing preview
         if (this.previewGem) {
             this.scene.remove(this.previewGem);
             this.previewGem.geometry.dispose();
             this.previewGem.material.dispose();
+            this.previewGem = null;
         }
 
-        this.previewGem = this.createGemMesh(gemId, 0.05);
-        this.previewGem.material.opacity = 0.5;
-        this.previewGem.visible = false;
-        this.scene.add(this.previewGem);
-
-        soundManager.playClick();
+        // Create preview only if a gem is selected
+        if (gemId) {
+            this.previewGem = this.createGemMesh(gemId, 0.007);
+            this.previewGem.material.opacity = 0.5;
+            this.previewGem.visible = false;
+            this.scene.add(this.previewGem);
+            soundManager.playClick();
+        }
     }
 
     activate() {

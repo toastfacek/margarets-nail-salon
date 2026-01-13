@@ -6,6 +6,15 @@
 import * as THREE from 'three';
 import { modelLoader } from './ModelLoader.js';
 
+// Nail shape options
+export const NAIL_SHAPES = {
+    ROUND: 'round',
+    SQUARE: 'square',
+    ALMOND: 'almond',
+    STILETTO: 'stiletto',
+    COFFIN: 'coffin'
+};
+
 // Finger identifiers
 export const FINGERS = {
     THUMB: 'thumb',
@@ -36,6 +45,7 @@ export class HandModel {
         };
 
         this.activeNail = FINGERS.INDEX;  // Default to index finger
+        this.currentShape = NAIL_SHAPES.ROUND;  // Default shape
 
         // Shared materials
         this.baseColor = new THREE.Color('#FFDDD2');
@@ -50,13 +60,17 @@ export class HandModel {
 
     /**
      * Load both hand models and set up nail overlays
+     * @param {string} shape - Nail shape to load (default: round)
      * @returns {Promise<void>}
      */
-    async load() {
-        console.log('Loading hand models...');
+    async load(shape = NAIL_SHAPES.ROUND) {
+        this.currentShape = shape;
+        console.log(`Loading hand models with shape: ${shape}...`);
 
         try {
             // Load both hand models in parallel
+            // TODO: When shape-specific GLB files are available, use:
+            // modelLoader.load(`/models/hand-left-${shape}.glb`)
             const [leftModel, rightModel] = await Promise.all([
                 modelLoader.load('/models/hand-left.glb'),
                 modelLoader.load('/models/hand-right.glb')
@@ -588,15 +602,164 @@ export class HandModel {
     }
 
     // =========================================
-    // Shape Methods (stub - shapes are fixed in GLB)
+    // Shape Methods
     // =========================================
 
     /**
-     * Set nail shape - not supported for GLB model
-     * (Shape is determined by the 3D model)
+     * Save current nail state (polish, finish, drawings) for all nails
+     * @returns {Object} State object with left/right hand nail states
      */
-    setShape(shape) {
-        console.info('setShape not supported for HandModel - shape is fixed in 3D model');
+    saveNailState() {
+        const state = { left: {}, right: {} };
+        for (const hand of ['left', 'right']) {
+            for (const [finger, nail] of Object.entries(this.hands[hand].nails)) {
+                state[hand][finger] = {
+                    polishColor: nail.polishColor?.clone(),
+                    finish: nail.finish,
+                    canvasData: nail.canvas.toDataURL()
+                };
+            }
+        }
+        return state;
+    }
+
+    /**
+     * Restore nail state (polish, finish, drawings) to all nails
+     * @param {Object} state - State object from saveNailState()
+     */
+    restoreNailState(state) {
+        const originalHand = this.currentHand;
+        const originalNail = this.activeNail;
+
+        for (const hand of ['left', 'right']) {
+            for (const [finger, saved] of Object.entries(state[hand])) {
+                const nail = this.hands[hand].nails[finger];
+                if (!nail) continue;
+
+                // Restore polish color
+                if (saved.polishColor) {
+                    this.currentHand = hand;
+                    this.activeNail = finger;
+                    this.setPolishColor(saved.polishColor);
+                }
+
+                // Restore finish
+                if (saved.finish) {
+                    this.setFinish(saved.finish);
+                }
+
+                // Restore canvas drawing
+                if (saved.canvasData && saved.canvasData !== 'data:,') {
+                    const img = new Image();
+                    img.onload = () => {
+                        nail.ctx.drawImage(img, 0, 0);
+                        nail.texture.needsUpdate = true;
+                    };
+                    img.src = saved.canvasData;
+                }
+            }
+        }
+
+        // Restore original selection
+        this.currentHand = originalHand;
+        this.activeNail = originalNail;
+    }
+
+    /**
+     * Set nail shape by loading different GLB models
+     * Preserves polish colors and drawings across shape changes
+     * @param {string} shape - One of NAIL_SHAPES values
+     * @returns {boolean} Whether shape was changed
+     */
+    async setShape(shape) {
+        if (shape === this.currentShape) return false;
+        if (!Object.values(NAIL_SHAPES).includes(shape)) {
+            console.warn(`Invalid shape: ${shape}`);
+            return false;
+        }
+
+        // TODO: Enable when shape-specific GLB files are available
+        // For now, only 'round' shape is available (current model)
+        if (shape !== NAIL_SHAPES.ROUND) {
+            console.info(`Shape '${shape}' not yet available - needs GLB model`);
+            return false;
+        }
+
+        console.log(`Switching nail shape from ${this.currentShape} to ${shape}`);
+
+        // Save current state (polish colors, drawings)
+        const savedState = this.saveNailState();
+        const wasRightHand = this.currentHand === 'right';
+
+        // Clean up current models
+        if (this.hands.left.model) {
+            this.group.remove(this.hands.left.model);
+            this.disposeModel(this.hands.left.model);
+        }
+        if (this.hands.right.model) {
+            this.group.remove(this.hands.right.model);
+            this.disposeModel(this.hands.right.model);
+        }
+
+        // Reset nail references
+        this.hands.left.nails = {};
+        this.hands.right.nails = {};
+
+        // Load new shape models
+        await this.load(shape);
+
+        // Restore which hand was visible
+        if (wasRightHand) {
+            this.hands.left.model.visible = false;
+            this.hands.right.model.visible = true;
+            this.currentHand = 'right';
+        }
+
+        // Restore state to new nails
+        this.restoreNailState(savedState);
+
+        // Re-apply highlight to active nail
+        this.setNailHighlight(this.activeNail, true);
+
+        console.log(`Shape changed to ${shape}`);
+        return true;
+    }
+
+    /**
+     * Check if a shape is available (has GLB model)
+     * @param {string} shape - Shape to check
+     * @returns {boolean} Whether shape is available
+     */
+    isShapeAvailable(shape) {
+        // TODO: Update this list as shape GLB files become available
+        const availableShapes = [NAIL_SHAPES.ROUND];
+        return availableShapes.includes(shape);
+    }
+
+    /**
+     * Dispose of a model and its resources
+     */
+    disposeModel(model) {
+        model.traverse((child) => {
+            if (child.isMesh) {
+                child.geometry?.dispose();
+                if (child.material) {
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach(m => m.dispose());
+                    } else {
+                        child.material.dispose();
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * Get current nail shape
+     * @returns {string} Current shape
+     */
+    getShape() {
+        return this.currentShape;
     }
 
     /**

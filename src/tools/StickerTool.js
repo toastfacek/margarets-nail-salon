@@ -123,7 +123,9 @@ export class StickerTool {
 
     selectSticker(stickerId) {
         this.selectedSticker = stickerId;
-        soundManager.playClick();
+        if (stickerId) {
+            soundManager.playClick();
+        }
     }
 
     activate() {
