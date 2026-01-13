@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Margaret's Nail Salon is a browser-based nail salon game for kids (ages 2-11) built with Three.js. Players can shape nails, apply polish, add decorations (stickers, glitter, gems), and draw freehand designs.
+NAIL ICON is a browser-based nail salon game for kids (ages 2-11) built with Three.js. Players can shape nails, apply polish, add decorations (stickers, gems), and draw freehand designs on a 3D hand model.
 
 ## Commands
 
@@ -19,51 +19,53 @@ npm run preview  # Preview production build locally
 ### Core Application Flow
 
 `src/main.js` contains `NailArtistApp`, the main controller that:
-- Initializes the 3D scene and nail model
+- Initializes the 3D scene and hand model
 - Manages tool state and switching between tools
 - Renders tool-specific option panels dynamically
+- Handles finger selection with click-to-zoom camera animations
 - Handles UI events (toolbar, action buttons, gallery modal)
 
 ### Scene Layer (`src/scene/`)
 
-- **NailScene.js**: Three.js scene setup with gradient background, studio lighting (key, fill, rim, bounce lights), OrbitControls with constrained rotation/zoom, and raycaster helper for click detection
-- **NailModel.js**: Procedural nail geometry with shape morphing (round, square, almond, stiletto, coffin), MeshPhysicalMaterial for polish effects (glossy, matte, shimmer, chrome, holographic), and overlay mesh for brush tool textures
-- **ModelLoader.js**: GLTF/GLB model loader utility with Draco compression support, caching, and progress callbacks. Singleton `modelLoader` for loading external 3D models (e.g., hand models, decorations). Place model files in `public/models/`
+- **HandModel.js**: Primary 3D model adapter that loads GLB hand models with 5 independent nails per hand. Supports dual-hand (left/right) switching, nail shape morphing, polish materials (glossy, matte, shimmer, chrome), and per-nail canvas overlay textures for drawing. Exports `FINGERS` and `NAIL_SHAPES` constants.
+- **NailScene.js**: Three.js scene setup with gradient background, studio lighting (key, fill, rim, bounce lights), OrbitControls with constrained rotation/zoom, camera focus animations for nail zoom, and raycaster helper for click detection.
+- **ModelLoader.js**: GLTF/GLB model loader utility with Draco compression support and caching. Singleton `modelLoader` instance. Place model files in `public/models/`.
+- **FingerConfig.js**: Shared constants for finger order and defaults.
 
 ### Tools Layer (`src/tools/`)
 
 Each tool follows a consistent pattern:
-- Constructor takes `(scene, camera, nail)`
+- Constructor takes `(scene, camera, nail)` where `nail` is HandModel instance
 - `activate()`/`deactivate()` methods for tool switching
-- Event handlers for pointer interaction
-- Uses raycasting to detect nail surface hits
+- Event handlers for pointer interaction (mouse + touch)
+- Uses raycasting to detect nail surface hits and convert to UV coordinates
 
-Currently implemented:
-- **BrushTool.js**: Freehand drawing using a 1024x1024 canvas texture mapped to nail overlay
+Active tools:
+- **BrushTool.js**: Freehand drawing on a 1024x1024 canvas texture. Multiple pen types: solid, dotted, metallic, rainbow, glitter (sparkle spray), marker. Size slider and color palette.
+- **StickerTool.js**: Places emoji stickers on nail surface at tap position.
+- **GemTool.js**: Places 3D gems/rhinestones on nail surface.
 
-Partially implemented (constructors exist, commented out in main.js):
-- FileTool, StickerTool, GlitterTool, GemTool
+### State Layer (`src/state/`)
+
+- **NailDesignStore.js**: Manages nail designs for all 10 fingers (5 per hand). Stores shape, polish color, finish type, and canvas data URL. Persists to localStorage.
 
 ### Audio (`src/audio/SoundManager.js`)
 
-Singleton `soundManager` uses Web Audio API oscillators for synthetic sound effects (no audio files needed). Methods: `playClick()`, `playPolish()`, `playFileSound()`, `playStickerPop()`, `playSparkle()`, `playGemClink()`, `playSuccess()`.
+Singleton `soundManager` uses Web Audio API oscillators for synthetic sound effects (no audio files needed). Key methods: `playClick()`, `playPolish()`, `playStickerPop()`, `playSparkle()`, `playGemClink()`, `playSuccess()`, and pen-specific sounds (`playDrawSolid()`, `playDrawMetallic()`, etc.).
 
 ### UI Structure
 
 HTML overlay (`index.html`) with:
+- Top header with title
+- Finger selector bar (hand toggle + 5 finger buttons)
 - Left sidebar toolbar for tool selection
 - Right options panel (content injected dynamically per tool)
-- Bottom action bar (clear, undo, done, gallery)
-- Modal for gallery view
+- Bottom action bar (lock, clear, undo, done, gallery)
 
 CSS in `styles/main.css` with CSS custom properties for theme colors.
 
 ## Design System
 
-See `docs/DESIGN.md` for:
-- Color palette (bubblegum pink `#FF69B4` primary, pastels, gradients)
-- Typography (Baloo 2 font family)
-- 48px minimum touch targets
-- Animation keyframes (bounce, sparkle, float)
+See `docs/DESIGN.md` for color palette, typography (Fredoka/Bungee fonts), and 48px minimum touch targets.
 
 Primary target: tablet in landscape orientation.
