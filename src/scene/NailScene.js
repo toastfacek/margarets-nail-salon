@@ -11,6 +11,23 @@ export class NailScene {
         this.width = container.clientWidth;
         this.height = container.clientHeight;
 
+        // Camera animation state
+        this.isAnimating = false;
+        this.animationProgress = 0;
+        this.animationDuration = 0.5; // seconds
+        this.startCameraPos = new THREE.Vector3();
+        this.targetCameraPos = new THREE.Vector3();
+        this.startTarget = new THREE.Vector3();
+        this.targetTarget = new THREE.Vector3();
+
+        // Default camera state - frontal view looking down at nail
+        this.defaultCameraPos = new THREE.Vector3(0, 1.5, 0.3);
+        this.defaultTarget = new THREE.Vector3(0, 0, 0);
+
+        // Zoom state
+        this.isZoomedIn = false;
+        this.zoomedFinger = null;
+
         this.init();
         this.setupLighting();
         this.setupControls();
@@ -38,15 +55,15 @@ export class NailScene {
         const texture = new THREE.CanvasTexture(canvas);
         this.scene.background = texture;
 
-        // Camera - positioned above looking down at horizontal finger
+        // Camera - frontal view looking straight down at nail
         this.camera = new THREE.PerspectiveCamera(
             45,
             this.width / this.height,
             0.1,
             1000
         );
-        // Camera above and slightly in front, looking down at nail
-        this.camera.position.set(0, 2.0, 1.2);
+        // Camera positioned above nail, looking down at surface
+        this.camera.position.set(0, 1.5, 0.3);
         this.camera.lookAt(0, 0, 0);
 
         // Renderer
@@ -103,24 +120,24 @@ export class NailScene {
     setupControls() {
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
 
-        // Set orbit target to center where finger lays
+        // Set orbit target to center of hand
         this.controls.target.set(0, 0, 0);
 
         // Limit controls for a pleasant experience
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.08;
 
-        // Limit zoom for top-down view
-        this.controls.minDistance = 1.5;
-        this.controls.maxDistance = 4.0;
+        // Limit zoom for frontal view - allow close positioning
+        this.controls.minDistance = 0.5;
+        this.controls.maxDistance = 3.0;
 
-        // Limit rotation angles for top-down viewing
-        this.controls.minPolarAngle = Math.PI * 0.1;  // Almost directly above
-        this.controls.maxPolarAngle = Math.PI * 0.45; // Can tilt to side view
+        // Allow free rotation for debugging
+        this.controls.minPolarAngle = 0;
+        this.controls.maxPolarAngle = Math.PI;
 
-        // Allow more horizontal rotation to see finger from different angles
-        this.controls.minAzimuthAngle = -Math.PI * 0.5;
-        this.controls.maxAzimuthAngle = Math.PI * 0.5;
+        // Allow full horizontal rotation
+        this.controls.minAzimuthAngle = -Infinity;
+        this.controls.maxAzimuthAngle = Infinity;
 
         // Disable pan for simplicity
         this.controls.enablePan = false;
@@ -153,8 +170,112 @@ export class NailScene {
     animate() {
         requestAnimationFrame(() => this.animate());
 
+        // Update camera animation if active
+        if (this.isAnimating) {
+            this.updateCameraAnimation();
+        }
+
         this.controls.update();
         this.renderer.render(this.scene, this.camera);
+    }
+
+    /**
+     * Update camera animation using smooth easing
+     */
+    updateCameraAnimation() {
+        // Calculate delta time (approximately 60fps)
+        const deltaTime = 1 / 60;
+        this.animationProgress += deltaTime / this.animationDuration;
+
+        if (this.animationProgress >= 1) {
+            // Animation complete
+            this.animationProgress = 1;
+            this.isAnimating = false;
+        }
+
+        // Smooth easing function (ease-out cubic)
+        const t = 1 - Math.pow(1 - this.animationProgress, 3);
+
+        // Interpolate camera position
+        this.camera.position.lerpVectors(this.startCameraPos, this.targetCameraPos, t);
+
+        // Interpolate orbit target
+        this.controls.target.lerpVectors(this.startTarget, this.targetTarget, t);
+    }
+
+    /**
+     * Focus camera on a specific world position with close-up frontal view
+     * @param {THREE.Vector3} position - World position to focus on
+     * @param {string} finger - Finger identifier for tracking
+     * @param {number} distance - Distance from nail (default 0.4 for close-up)
+     */
+    focusOnPosition(position, finger, distance = 0.4) {
+        // Store current camera state
+        this.startCameraPos.copy(this.camera.position);
+        this.startTarget.copy(this.controls.target);
+
+        // Target is slightly into the finger for better centering
+        this.targetTarget.set(
+            position.x,
+            position.y - 0.03,   // Slightly toward cuticle for centering
+            position.z - 0.03    // Into finger body
+        );
+
+        // Camera position - more directly above for frontal view like Blender reference
+        this.targetCameraPos.set(
+            position.x,
+            position.y + 0.5,    // Above nail surface
+            position.z + 0.08    // Minimal Z offset for more top-down view
+        );
+
+        // Start animation
+        this.animationProgress = 0;
+        this.isAnimating = true;
+        this.isZoomedIn = true;
+        this.zoomedFinger = finger;
+
+        // Tighten zoom limits while zoomed in - allow very close
+        this.controls.minDistance = 0.2;
+        this.controls.maxDistance = 1.5;
+    }
+
+    /**
+     * Zoom out to show the full hand
+     */
+    zoomOut() {
+        if (!this.isZoomedIn) return;
+
+        // Store current camera state
+        this.startCameraPos.copy(this.camera.position);
+        this.startTarget.copy(this.controls.target);
+
+        // Target default position
+        this.targetCameraPos.copy(this.defaultCameraPos);
+        this.targetTarget.copy(this.defaultTarget);
+
+        // Start animation
+        this.animationProgress = 0;
+        this.isAnimating = true;
+        this.isZoomedIn = false;
+        this.zoomedFinger = null;
+
+        // Restore zoom limits for frontal view
+        this.controls.minDistance = 0.5;
+        this.controls.maxDistance = 3.0;
+    }
+
+    /**
+     * Check if camera is currently zoomed in on a finger
+     */
+    getIsZoomedIn() {
+        return this.isZoomedIn;
+    }
+
+    /**
+     * Get the currently zoomed finger
+     */
+    getZoomedFinger() {
+        return this.zoomedFinger;
     }
 
     // For raycasting (click detection)

@@ -3,8 +3,7 @@
  * Application entry point - initializes scene, nail, and UI
  */
 import { NailScene } from './scene/NailScene.js';
-import { NailModel, NAIL_SHAPES } from './scene/NailModel.js';
-import { FINGER_CONFIGS, FINGER_ORDER } from './scene/FingerConfig.js';
+import { HandModel, FINGERS } from './scene/HandModel.js';
 import { nailDesignStore } from './state/NailDesignStore.js';
 import { FileTool } from './tools/FileTool.js';
 import { StickerTool, STICKERS } from './tools/StickerTool.js';
@@ -12,6 +11,16 @@ import { GlitterTool, GLITTER_COLORS } from './tools/GlitterTool.js';
 import { GemTool, GEM_TYPES } from './tools/GemTool.js';
 import { BrushTool } from './tools/BrushTool.js';
 import { soundManager } from './audio/SoundManager.js';
+import * as THREE from 'three';
+
+// Map old shape names for compatibility (shapes are fixed in GLB)
+const NAIL_SHAPES = {
+    ROUND: 'round',
+    SQUARE: 'square',
+    ALMOND: 'almond',
+    STILETTO: 'stiletto',
+    COFFIN: 'coffin'
+};
 
 class NailArtistApp {
   constructor() {
@@ -22,29 +31,97 @@ class NailArtistApp {
     // Track time for animation
     this.lastTime = 0;
 
+    // Initialize asynchronously
     this.init();
-    this.setupUI();
-    this.setupTools();
-    this.renderShapeOptions();
-    this.startAnimationLoop();
   }
 
-  init() {
+  async init() {
     // Get container
     const container = document.getElementById('canvas-container');
 
     // Create scene
     this.scene = new NailScene(container);
 
-    // Create nail with the stored finger type
-    const currentFinger = nailDesignStore.getCurrentFinger();
-    this.nail = new NailModel(currentFinger);
+    // Create hand model (async load)
+    this.nail = new HandModel();
+    await this.nail.load();
     this.scene.add(this.nail.getMesh());
 
-    // Apply any saved design for this finger
-    this.restoreCurrentFingerDesign();
+    // Set up nail selection click handling
+    this.setupNailSelection();
 
-    console.log('💅 Margaret\'s Nail Salon initialized!');
+    // Set initial active nail (index finger) and zoom to it
+    this.nail.setActiveNail(FINGERS.INDEX);
+    this.zoomToFinger(FINGERS.INDEX);
+
+    // Continue setup after model loads
+    this.setupUI();
+    this.setupTools();
+    this.renderPolishOptions(); // Start with polish instead of shape
+    this.startAnimationLoop();
+
+    console.log('💅 Margaret\'s Nail Salon initialized with hand model!');
+  }
+
+  /**
+   * Set up click-to-select nail functionality with zoom
+   */
+  setupNailSelection() {
+    const canvas = this.scene.renderer.domElement;
+
+    canvas.addEventListener('click', (event) => {
+      // Don't select nails while drawing
+      if (this.currentTool === 'draw' || this.currentTool === 'glitter') {
+        return;
+      }
+
+      const raycaster = this.scene.getRaycaster(event);
+      const nailMeshes = this.nail.getNailMeshes();
+      const intersects = raycaster.intersectObjects(nailMeshes, false);
+
+      if (intersects.length > 0) {
+        const clickedMesh = intersects[0].object;
+        const finger = this.nail.getFingerFromMesh(clickedMesh);
+
+        if (finger) {
+          // Set active nail
+          this.nail.setActiveNail(finger);
+          soundManager.playClick();
+
+          // Zoom to the clicked nail
+          this.zoomToFinger(finger);
+
+          // Update UI to reflect new selection
+          this.updateFingerSelectorUI();
+        }
+      }
+    });
+
+    // Double-click to zoom out
+    canvas.addEventListener('dblclick', (event) => {
+      if (this.scene.getIsZoomedIn()) {
+        this.zoomOut();
+        soundManager.playClick();
+      }
+    });
+  }
+
+  /**
+   * Zoom camera to focus on a specific finger's nail
+   * @param {string} finger - Finger identifier
+   */
+  zoomToFinger(finger) {
+    const nailPosition = this.nail.getNailWorldPosition(finger);
+    if (nailPosition) {
+      this.scene.focusOnPosition(nailPosition, finger);
+    }
+  }
+
+  /**
+   * Zoom out to show the full hand
+   */
+  zoomOut() {
+    this.scene.zoomOut();
   }
 
   setupTools() {
@@ -165,12 +242,11 @@ class NailArtistApp {
 
   setupFingerSelector() {
     // Hand toggle button
-    const handToggle = document.getElementById('hand-toggle');
-    handToggle?.addEventListener('click', () => {
-      const currentHand = nailDesignStore.getCurrentHand();
+    const handToggleBtn = document.getElementById('hand-toggle');
+    handToggleBtn?.addEventListener('click', () => {
+      const currentHand = this.nail.getCurrentHand();
       const newHand = currentHand === 'left' ? 'right' : 'left';
       this.switchHand(newHand);
-      soundManager.playClick();
     });
 
     // Finger buttons
@@ -190,14 +266,7 @@ class NailArtistApp {
   }
 
   updateFingerSelectorUI() {
-    const currentHand = nailDesignStore.getCurrentHand();
-    const currentFinger = nailDesignStore.getCurrentFinger();
-
-    // Update hand toggle label
-    const handLabel = document.querySelector('.hand-toggle .hand-label');
-    if (handLabel) {
-      handLabel.textContent = currentHand === 'left' ? 'Left' : 'Right';
-    }
+    const currentFinger = this.nail.getActiveNail();
 
     // Update finger button active states
     const fingerButtons = document.querySelectorAll('.finger-btn');
@@ -210,37 +279,44 @@ class NailArtistApp {
     });
   }
 
+  updateHandToggleUI() {
+    const currentHand = this.nail.getCurrentHand();
+    const handLabel = document.querySelector('.hand-label');
+    const handEmoji = document.querySelector('.hand-emoji');
+
+    if (handLabel) {
+      handLabel.textContent = currentHand === 'left' ? 'Left' : 'Right';
+    }
+    if (handEmoji) {
+      // Use different emoji for left vs right hand
+      handEmoji.textContent = currentHand === 'left' ? '✋' : '🤚';
+    }
+  }
+
   switchHand(newHand) {
-    // Save current finger design first
-    this.saveCurrentFingerDesign();
+    if (newHand !== 'left' && newHand !== 'right') return;
+    if (newHand === this.nail.getCurrentHand()) return;
 
-    // Switch hand (keep same finger position)
-    const currentFinger = nailDesignStore.getCurrentFinger();
-    nailDesignStore.setCurrentFinger(newHand, currentFinger);
+    // Switch the hand model
+    this.nail.switchHand(newHand);
 
-    // Restore the design for this finger on the new hand
-    this.restoreCurrentFingerDesign();
+    // Play feedback sound
+    soundManager.playClick();
 
     // Update UI
     this.updateFingerSelectorUI();
+    this.updateHandToggleUI();
+
+    // Zoom to the active nail on the new hand
+    this.zoomToFinger(this.nail.activeNail);
   }
 
   async switchToFinger(newFinger) {
-    const currentFinger = nailDesignStore.getCurrentFinger();
-    if (newFinger === currentFinger) return;
+    // Set the active nail on the hand model
+    this.nail.setActiveNail(newFinger);
 
-    // Save current design before switching
-    this.saveCurrentFingerDesign();
-
-    // Update store
-    const currentHand = nailDesignStore.getCurrentHand();
-    nailDesignStore.setCurrentFinger(currentHand, newFinger);
-
-    // Update nail model for new finger type
-    this.nail.setFingerType(newFinger);
-
-    // Restore the design for the new finger
-    await this.restoreCurrentFingerDesign();
+    // Always zoom to the finger (even if same finger - allows re-centering)
+    this.zoomToFinger(newFinger);
 
     // Update UI
     this.updateFingerSelectorUI();
@@ -248,49 +324,11 @@ class NailArtistApp {
   }
 
   saveCurrentFingerDesign() {
-    // Save canvas state
-    if (this.nail.drawingCanvas) {
-      nailDesignStore.saveCanvasState(this.nail.drawingCanvas);
-    }
-
-    // Save other design properties
-    nailDesignStore.saveCurrentDesign({
-      shape: this.nail.currentShape,
-      polishColor: this.nail.polishColor ? '#' + this.nail.polishColor.getHexString() : null,
-      finishType: this.nail.finishType,
-    });
+    // Design state is now per-nail in HandModel, no need to save externally
   }
 
   async restoreCurrentFingerDesign() {
-    const design = nailDesignStore.getCurrentDesign();
-
-    // Restore shape
-    if (design.shape) {
-      this.nail.setShape(design.shape);
-      this.selectedShape = design.shape;
-    }
-
-    // Restore polish color
-    if (design.polishColor) {
-      this.nail.setPolishColor(design.polishColor);
-      this.selectedColor = design.polishColor;
-    } else {
-      this.nail.clearPolish();
-    }
-
-    // Restore finish
-    if (design.finishType) {
-      this.nail.setFinish(design.finishType);
-    }
-
-    // Restore canvas drawing
-    if (design.canvasDataUrl && this.nail.drawingCanvas && this.nail.drawingCtx) {
-      await nailDesignStore.restoreCanvas(this.nail.drawingCanvas, this.nail.drawingCtx);
-      this.nail.updateDrawingTexture();
-    } else {
-      // Clear canvas if no saved design
-      this.nail.clearDrawing();
-    }
+    // Design state is now per-nail in HandModel, no need to restore
   }
 
   updateOptionsPanel() {
@@ -325,49 +363,16 @@ class NailArtistApp {
     const panel = document.getElementById('options-panel');
     if (!panel) return;
 
-    const shapes = [
-      { id: NAIL_SHAPES.ROUND, name: 'Round', emoji: '🔵' },
-      { id: NAIL_SHAPES.SQUARE, name: 'Square', emoji: '⬜' },
-      { id: NAIL_SHAPES.ALMOND, name: 'Almond', emoji: '🥜' },
-      { id: NAIL_SHAPES.STILETTO, name: 'Stiletto', emoji: '📍' },
-      { id: NAIL_SHAPES.COFFIN, name: 'Coffin', emoji: '⬛' },
-    ];
-
+    // Shape tool not available with hand model - shapes are fixed
     panel.innerHTML = `
       <h3>✂️ Nail Shape</h3>
-      <div class="shape-grid">
-        ${shapes.map(s => `
-          <button class="shape-btn ${this.selectedShape === s.id ? 'active' : ''}" data-shape="${s.id}">
-            <span style="font-size: 1.5rem">${s.emoji}</span>
-            <span>${s.name}</span>
-          </button>
-        `).join('')}
-      </div>
-      <p style="margin-top: 12px; font-size: 0.8rem; color: var(--text-secondary);">
-        Tip: Drag across the nail to file it! ✨
+      <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
+        Shape customization coming soon!
+      </p>
+      <p style="font-size: 0.75rem; color: var(--text-secondary);">
+        Click on a nail to select it, then use polish or brush to decorate!
       </p>
     `;
-
-    // Add click handlers
-    panel.querySelectorAll('.shape-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        // Update active state
-        panel.querySelectorAll('.shape-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-
-        // Change shape
-        this.selectedShape = btn.dataset.shape;
-        this.nail.setShape(this.selectedShape);
-
-        // Play click sound
-        soundManager.playClick();
-
-        // Animation feedback
-        btn.style.animation = 'none';
-        btn.offsetHeight;
-        btn.style.animation = 'bounce 0.4s ease';
-      });
-    });
   }
 
   renderPolishOptions() {
@@ -612,15 +617,11 @@ class NailArtistApp {
   }
 
   clearNail() {
+    // Clear polish on active nail
     this.nail.clearPolish();
-    this.nail.setShape(NAIL_SHAPES.ROUND);
-    this.selectedShape = NAIL_SHAPES.ROUND;
 
-    // Clear all decorations (brush, stickers, glitter share the same canvas)
+    // Clear all decorations on active nail
     this.nail.clearDrawing();
-
-    // Clear the design in the store for this finger
-    nailDesignStore.clearCurrentDesign();
 
     // Play sound
     soundManager.playClick();

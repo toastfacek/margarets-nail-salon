@@ -195,6 +195,80 @@ body {
   box-shadow: var(--shadow-glow);
 }
 
+/* Zoom Out Button */
+.zoom-out-btn {
+  width: var(--touch-target);
+  height: var(--touch-target);
+  border-radius: var(--border-radius);
+  border: 3px solid var(--color-lavender);
+  background: white;
+  font-size: 1.5rem;
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zoom-out-btn:hover {
+  border-color: var(--color-cotton-candy);
+  transform: scale(1.1);
+  background: var(--color-lavender);
+}
+
+.zoom-out-btn:active {
+  transform: scale(0.95);
+}
+
+.zoom-out-btn.hidden {
+  display: none;
+}
+
+/* Hand Toggle Button */
+.hand-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  min-height: var(--touch-target);
+  border: 3px solid var(--color-lavender);
+  background: white;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: all 0.2s var(--transition-bounce);
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.hand-toggle:hover {
+  border-color: var(--color-cotton-candy);
+  background: var(--color-lavender);
+  transform: scale(1.05);
+}
+
+.hand-toggle:active {
+  transform: scale(0.95);
+}
+
+.hand-toggle .hand-emoji {
+  font-size: 1.4rem;
+  transition: transform 0.3s var(--transition-bounce);
+}
+
+/* Flip emoji for right hand */
+.hand-toggle.right .hand-emoji {
+  transform: scaleX(-1);
+}
+
+.hand-toggle .hand-label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 /* Toolbar */
 .toolbar {
   position: fixed;

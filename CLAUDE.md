@@ -28,6 +28,7 @@ npm run preview  # Preview production build locally
 
 - **NailScene.js**: Three.js scene setup with gradient background, studio lighting (key, fill, rim, bounce lights), OrbitControls with constrained rotation/zoom, and raycaster helper for click detection
 - **NailModel.js**: Procedural nail geometry with shape morphing (round, square, almond, stiletto, coffin), MeshPhysicalMaterial for polish effects (glossy, matte, shimmer, chrome, holographic), and overlay mesh for brush tool textures
+- **ModelLoader.js**: GLTF/GLB model loader utility with Draco compression support, caching, and progress callbacks. Singleton `modelLoader` for loading external 3D models (e.g., hand models, decorations). Place model files in `public/models/`
 
 ### Tools Layer (`src/tools/`)
 

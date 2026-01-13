@@ -385,7 +385,7 @@ export class NailModel {
         const config = this.fingerConfig;
         const nailBaseZ = this.getNailBaseZ(config);
 
-        // Semi-transparent nail material showing nail bed underneath
+        // Opaque nail material with glossy clearcoat finish
         this.nailMaterial = new THREE.MeshPhysicalMaterial({
             color: this.baseColor,
             roughness: 0.25,
@@ -394,10 +394,6 @@ export class NailModel {
             clearcoatRoughness: 0.1,
             reflectivity: 0.6,
             envMapIntensity: 1.0,
-            // Translucency to show nail bed
-            transmission: 0.15,
-            thickness: 0.5,
-            ior: 1.5,
             side: THREE.FrontSide,
             polygonOffset: true,
             polygonOffsetFactor: 1,
@@ -411,13 +407,11 @@ export class NailModel {
         this.nailMesh.renderOrder = 1;
 
         // Position nail on top surface of finger (+Z is top)
-        // Y position: nail tip should be near fingertip, cuticle extends toward knuckle
-        // Finger geometry: fingertip at y = -config.length * 0.40 (t=0)
-        // Nail tip (v=0, y=0 in geometry) placed at nailBedY, extends to nailBedY + nailLength
-        const nailBedY = -config.length * 0.52; // Moved toward fingertip
+        // Y position: nail tip near fingertip, cuticle extends toward knuckle
+        const nailBedY = -config.length * 0.58; // Moved cuticle end slightly toward knuckle
         this.nailMesh.position.set(0, nailBedY, nailBaseZ);
-        // Minimal tilt - nail sits naturally in the nail bed depression
-        this.nailMesh.rotation.x = -0.02;
+        // Tilt nail to follow fingertip curve (tip points down)
+        this.nailMesh.rotation.x = 0.15;
 
         this.group.add(this.nailMesh);
 
@@ -443,16 +437,16 @@ export class NailModel {
         // Draw lunula as wide ellipse at the cuticle end
         // UV mapping: v=0 is nail tip (canvas Y=0), v=1 is cuticle (canvas Y=512)
         const centerX = 256;
-        const centerY = 500;  // Moved up so more is visible
-        const radiusX = 220;  // Wide horizontally
-        const radiusY = 100;  // Taller vertically
+        const centerY = 460;  // Positioned to be visible on exposed nail base
+        const radiusX = 200;  // Wide horizontally
+        const radiusY = 80;   // Moderate height
 
         ctx.beginPath();
         ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, Math.PI, 0, false);  // Top half of ellipse
         ctx.closePath();
 
         // Soft off-white lunula
-        ctx.fillStyle = 'rgba(255, 253, 250, 0.85)';
+        ctx.fillStyle = 'rgba(255, 252, 248, 0.9)';
         ctx.fill();
 
         // Create texture from canvas
@@ -769,70 +763,89 @@ export class NailModel {
         const uvs = [];
         const indices = [];
 
-        // Create single outer surface only
-        // With transmission material, the thickness parameter simulates solid depth
-        // Inner surfaces cause rendering artifacts with transmission
+        // Create outer (top) and inner (bottom) surfaces for visible thickness
         // Y coordinate: tip at Y=0 (v=0), cuticle at Y=nailLength (v=1)
-        for (let iy = 0; iy <= segmentsY; iy++) {
-            const v = iy / segmentsY;
-            let baseY = v * nailLength;
+        for (let surface = 0; surface < 2; surface++) {
+            const isOuter = surface === 0;
 
-            for (let ix = 0; ix <= segmentsX; ix++) {
-                const u = ix / segmentsX;
-                const baseX = (u - 0.5) * nailWidth;
+            for (let iy = 0; iy <= segmentsY; iy++) {
+                const v = iy / segmentsY;
+                let baseY = v * nailLength;
 
-                // Apply shape modifications to the tip (at low v values, v < 0.4)
-                let tipScale = 1.0;
-                let tipExtend = 0;
+                for (let ix = 0; ix <= segmentsX; ix++) {
+                    const u = ix / segmentsX;
+                    const baseX = (u - 0.5) * nailWidth;
 
-                // Tip shaping at v < 0.4 (tip is at low Y = low v)
-                if (v < 0.4) {
-                    const tipProgress = (0.4 - v) / 0.4;  // 0 at v=0.4, 1 at v=0
-                    tipScale = this.getShapeWidth(shape, tipProgress);
-                    tipExtend = -this.getShapeExtension(shape, tipProgress); // Negative to extend toward low Y
+                    // Apply shape modifications to the tip (at low v values, v < 0.4)
+                    let tipScale = 1.0;
+                    let tipExtend = 0;
+
+                    // Tip shaping at v < 0.4 (tip is at low Y = low v)
+                    if (v < 0.4) {
+                        const tipProgress = (0.4 - v) / 0.4;  // 0 at v=0.4, 1 at v=0
+                        tipScale = this.getShapeWidth(shape, tipProgress);
+                        tipExtend = -this.getShapeExtension(shape, tipProgress); // Negative to extend toward low Y
+                    }
+
+                    // Cuticle curve: create concave arc at nail base (v > 0.85 = high Y = cuticle)
+                    // Center of base dips toward fingertip for natural look
+                    let cuticleCurveOffset = 0;
+                    let cuticleZDip = 0;
+                    let cuticleThicknessTaper = 1.0;
+
+                    if (v > 0.92) {
+                        const cuticleProgress = (v - 0.92) / 0.08; // 0 at v=0.92, 1 at v=1
+                        const centeredness = 1 - Math.abs(u - 0.5) * 2; // 0 at edges, 1 at center
+                        const curveDepth = nailLength * 0.04;
+                        // Subtle parabolic curve at very edge
+                        cuticleCurveOffset = curveDepth * centeredness * centeredness * cuticleProgress;
+
+                        // Minimal Z dip at cuticle
+                        const edgeFactor = 1 - centeredness * 0.5;
+                        cuticleZDip = -cuticleProgress * cuticleProgress * 0.02 * edgeFactor;
+
+                        // Slight thickness taper
+                        cuticleThicknessTaper = 1.0 - cuticleProgress * 0.2;
+                    }
+
+                    const x = baseX * tipScale;
+                    const y = baseY + tipExtend + cuticleCurveOffset;
+
+                    // Curved surface - nail follows rounded fingertip contour
+                    const normalizedX = (u - 0.5) * 2;
+                    // Gentle parabolic curve: 1 at center, 0 at edges (reduced for flatter nail)
+                    const curveFactor = (1 - Math.pow(normalizedX, 2)) * 0.5;
+
+                    // Curl down the lateral edges (sides) of the nail
+                    let lateralEdgeCurl = 0;
+                    const edgeStart = 0.80; // Start curling at 65% from center
+                    if (Math.abs(normalizedX) > edgeStart) {
+                        const edgeProgress = (Math.abs(normalizedX) - edgeStart) / (1 - edgeStart);
+                        lateralEdgeCurl = -Math.pow(edgeProgress, 1.5) * 0.05;
+                    }
+
+                    // Longitudinal curl - nail curves down along its length (tip to cuticle)
+                    // v=0 is tip, v=1 is cuticle; curl increases toward tip
+                    const curlProgress = 1 - v;  // 1 at tip, 0 at cuticle
+                    const longitudinalCurl = -Math.pow(curlProgress, 1.5) * 0.03;
+
+                    // Apply cuticle dip and thickness taper
+                    const effectiveThickness = nailThickness * cuticleThicknessTaper;
+                    let z = curveFactor * nailCurve + (isOuter ? effectiveThickness : 0) + cuticleZDip + lateralEdgeCurl + longitudinalCurl;
+
+                    if (!isOuter) {
+                        z = curveFactor * (nailCurve - 0.012) + cuticleZDip + lateralEdgeCurl + longitudinalCurl;
+                    }
+
+                    vertices.push(x, y, z);
+                    uvs.push(u, v); // Natural UV mapping
                 }
-
-                // Cuticle curve: create concave arc at nail base (v > 0.85 = high Y = cuticle)
-                // Center of base dips toward fingertip for natural look
-                let cuticleCurveOffset = 0;
-                let cuticleZDip = 0;
-
-                if (v > 0.85) {
-                    const cuticleProgress = (v - 0.85) / 0.15; // 0 at v=0.85, 1 at v=1
-                    const centeredness = 1 - Math.abs(u - 0.5) * 2; // 0 at edges, 1 at center
-                    const curveDepth = nailLength * 0.08;
-                    // Parabolic curve - center dips toward fingertip (lower Y)
-                    cuticleCurveOffset = curveDepth * centeredness * centeredness * cuticleProgress;
-
-                    // Curve nail downward into finger at cuticle (more at edges, less at center)
-                    const edgeFactor = 1 - centeredness * 0.5; // Center dips less than edges
-                    cuticleZDip = -cuticleProgress * cuticleProgress * 0.06 * edgeFactor;
-                }
-
-                const x = baseX * tipScale;
-                const y = baseY + tipExtend + cuticleCurveOffset;
-
-                // Curved surface - nail follows rounded fingertip contour
-                const normalizedX = (u - 0.5) * 2;
-                // Simple parabolic curve: 1 at center, 0 at edges
-                const curveFactor = 1 - Math.pow(normalizedX, 2);
-
-                // Longitudinal curve - nail droops toward tip following finger arc
-                // v=0 is tip, v=1 is cuticle; droop increases toward tip
-                let longitudinalDroop = 0;
-                if (v < 0.5) {
-                    const droopProgress = (0.5 - v) / 0.5;  // 0 at middle, 1 at tip
-                    longitudinalDroop = -Math.pow(droopProgress, 1.5) * 0.06;  // Gentle downward curve
-                }
-
-                const z = curveFactor * nailCurve + nailThickness + cuticleZDip + longitudinalDroop;
-
-                vertices.push(x, y, z);
-                uvs.push(u, v); // Natural UV mapping
             }
         }
 
-        // Single surface faces
+        const vertsPerSurface = (segmentsX + 1) * (segmentsY + 1);
+
+        // Outer surface faces
         for (let iy = 0; iy < segmentsY; iy++) {
             for (let ix = 0; ix < segmentsX; ix++) {
                 const a = ix + (segmentsX + 1) * iy;
@@ -843,6 +856,65 @@ export class NailModel {
                 indices.push(a, d, b);
                 indices.push(b, d, c);
             }
+        }
+
+        // Inner surface faces (reversed winding for correct normals)
+        for (let iy = 0; iy < segmentsY; iy++) {
+            for (let ix = 0; ix < segmentsX; ix++) {
+                const a = vertsPerSurface + ix + (segmentsX + 1) * iy;
+                const b = vertsPerSurface + ix + (segmentsX + 1) * (iy + 1);
+                const c = vertsPerSurface + (ix + 1) + (segmentsX + 1) * (iy + 1);
+                const d = vertsPerSurface + (ix + 1) + (segmentsX + 1) * iy;
+
+                indices.push(a, b, d);
+                indices.push(b, c, d);
+            }
+        }
+
+        // Edge faces connecting outer and inner surfaces
+        // Left edge
+        for (let iy = 0; iy < segmentsY; iy++) {
+            const outerA = (segmentsX + 1) * iy;
+            const outerB = (segmentsX + 1) * (iy + 1);
+            const innerA = vertsPerSurface + (segmentsX + 1) * iy;
+            const innerB = vertsPerSurface + (segmentsX + 1) * (iy + 1);
+
+            indices.push(outerA, innerA, outerB);
+            indices.push(innerA, innerB, outerB);
+        }
+
+        // Right edge
+        for (let iy = 0; iy < segmentsY; iy++) {
+            const outerA = segmentsX + (segmentsX + 1) * iy;
+            const outerB = segmentsX + (segmentsX + 1) * (iy + 1);
+            const innerA = vertsPerSurface + segmentsX + (segmentsX + 1) * iy;
+            const innerB = vertsPerSurface + segmentsX + (segmentsX + 1) * (iy + 1);
+
+            indices.push(outerA, outerB, innerA);
+            indices.push(innerA, outerB, innerB);
+        }
+
+        // Tip edge (v=0, low Y)
+        for (let ix = 0; ix < segmentsX; ix++) {
+            const outerA = ix;
+            const outerB = ix + 1;
+            const innerA = vertsPerSurface + ix;
+            const innerB = vertsPerSurface + ix + 1;
+
+            indices.push(outerA, outerB, innerA);
+            indices.push(innerA, outerB, innerB);
+        }
+
+        // Cuticle edge (v=1, high Y)
+        const lastRow = segmentsY * (segmentsX + 1);
+        for (let ix = 0; ix < segmentsX; ix++) {
+            const outerA = lastRow + ix;
+            const outerB = lastRow + ix + 1;
+            const innerA = vertsPerSurface + lastRow + ix;
+            const innerB = vertsPerSurface + lastRow + ix + 1;
+
+            indices.push(outerA, innerA, outerB);
+            indices.push(innerA, innerB, outerB);
         }
 
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -955,7 +1027,7 @@ export class NailModel {
             this.nailMesh.geometry.dispose();
             this.nailMesh.geometry = newGeometry;
             // Use same positioning as in createNail()
-            const nailBedY = -config.length * 0.52;
+            const nailBedY = -config.length * 0.60;
             this.nailMesh.position.set(0, nailBedY, nailBaseZ);
         }
 
@@ -979,8 +1051,6 @@ export class NailModel {
         this.polishColor = new THREE.Color(color);
         this.nailMaterial.color = this.polishColor;
 
-        // Reduce transmission when polish is applied
-        this.nailMaterial.transmission = 0.05;
         this.nailMaterial.roughness = 0.1;
         this.nailMaterial.clearcoat = 1.0;
         this.nailMaterial.clearcoatRoughness = 0.05;
@@ -998,21 +1068,18 @@ export class NailModel {
                 this.nailMaterial.roughness = 0.8;
                 this.nailMaterial.clearcoat = 0.0;
                 this.nailMaterial.metalness = 0.0;
-                this.nailMaterial.transmission = 0.0;
                 break;
 
             case 'shimmer':
                 this.nailMaterial.roughness = 0.2;
                 this.nailMaterial.clearcoat = 1.0;
                 this.nailMaterial.metalness = 0.3;
-                this.nailMaterial.transmission = 0.0;
                 break;
 
             case 'chrome':
                 this.nailMaterial.roughness = 0.05;
                 this.nailMaterial.clearcoat = 1.0;
                 this.nailMaterial.metalness = 0.9;
-                this.nailMaterial.transmission = 0.0;
                 break;
 
             case 'holographic':
@@ -1021,7 +1088,6 @@ export class NailModel {
                 this.nailMaterial.metalness = 0.4;
                 this.nailMaterial.iridescence = 1.0;
                 this.nailMaterial.iridescenceIOR = 1.5;
-                this.nailMaterial.transmission = 0.0;
                 break;
 
             case 'glossy':
@@ -1030,9 +1096,6 @@ export class NailModel {
                 this.nailMaterial.clearcoat = 1.0;
                 this.nailMaterial.clearcoatRoughness = 0.05;
                 this.nailMaterial.metalness = 0.0;
-                if (!this.polishColor) {
-                    this.nailMaterial.transmission = 0.15;
-                }
                 break;
         }
 
@@ -1045,7 +1108,6 @@ export class NailModel {
         this.nailMaterial.roughness = 0.25;
         this.nailMaterial.clearcoat = 1.0;
         this.nailMaterial.metalness = 0.0;
-        this.nailMaterial.transmission = 0.15;
 
         // Restore lunula texture
         if (this.lunulaTexture) {
@@ -1059,9 +1121,8 @@ export class NailModel {
     }
 
     getNailBaseZ(config) {
-        // Position nail above the finger surface
-        // Raised so nail is fully visible from all angles
-        return config.tipRadius * 0.62;
+        // Position nail to sit on finger surface
+        return config.tipRadius * 0.20;
     }
 
     getNailMesh() {
