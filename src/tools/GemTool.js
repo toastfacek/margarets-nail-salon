@@ -104,6 +104,20 @@ export class GemTool {
         return intersects.length > 0 ? intersects[0] : null;
     }
 
+    /**
+     * Transform a face normal from object space to world space
+     */
+    getWorldNormal(intersection) {
+        const nailMesh = this.nail.getNailMesh();
+        if (!nailMesh) return intersection.face.normal.clone();
+
+        // Create normal matrix from the mesh's world matrix
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(nailMesh.matrixWorld);
+
+        // Transform the face normal to world space
+        return intersection.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    }
+
     onMouseMove(event) {
         if (!this.isActive || !this.selectedGem) return;
 
@@ -111,16 +125,19 @@ export class GemTool {
 
         const intersection = this.getNailIntersection();
         if (intersection && this.previewGem) {
+            // Get world-space normal for proper positioning
+            const worldNormal = this.getWorldNormal(intersection);
+
             // Position gem on nail surface
-            const offset = intersection.face.normal.clone().multiplyScalar(0.04);
+            const offset = worldNormal.clone().multiplyScalar(0.04);
             this.previewGem.position.copy(intersection.point).add(offset);
             this.previewGem.visible = true;
 
             // Rotate to face outward
             this.previewGem.lookAt(
-                intersection.point.x + intersection.face.normal.x,
-                intersection.point.y + intersection.face.normal.y,
-                intersection.point.z + intersection.face.normal.z
+                intersection.point.x + worldNormal.x,
+                intersection.point.y + worldNormal.y,
+                intersection.point.z + worldNormal.z
             );
         } else if (this.previewGem) {
             this.previewGem.visible = false;
@@ -154,15 +171,18 @@ export class GemTool {
         // Create gem mesh
         const gem = this.createGemMesh(this.selectedGem);
 
+        // Get world-space normal for proper positioning
+        const worldNormal = this.getWorldNormal(intersection);
+
         // Position on nail
-        const offset = intersection.face.normal.clone().multiplyScalar(0.04);
+        const offset = worldNormal.clone().multiplyScalar(0.04);
         gem.position.copy(intersection.point).add(offset);
 
         // Rotate to face outward
         gem.lookAt(
-            intersection.point.x + intersection.face.normal.x,
-            intersection.point.y + intersection.face.normal.y,
-            intersection.point.z + intersection.face.normal.z
+            intersection.point.x + worldNormal.x,
+            intersection.point.y + worldNormal.y,
+            intersection.point.z + worldNormal.z
         );
 
         // Add to scene

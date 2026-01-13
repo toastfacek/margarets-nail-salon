@@ -272,6 +272,22 @@ export class NailScene {
     }
 
     /**
+     * Lock or unlock camera controls
+     * @param {boolean} locked - Whether camera should be locked
+     */
+    setCameraLocked(locked) {
+        this.controls.enabled = !locked;
+        this.isCameraLocked = locked;
+    }
+
+    /**
+     * Check if camera is currently locked
+     */
+    isCameraLockedState() {
+        return this.isCameraLocked || false;
+    }
+
+    /**
      * Get the currently zoomed finger
      */
     getZoomedFinger() {

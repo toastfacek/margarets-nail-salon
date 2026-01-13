@@ -137,9 +137,52 @@ export class HandModel {
     }
 
     /**
+     * Generate UV coordinates for a nail geometry based on bounding box projection
+     * This allows canvas-based tools (stickers, glitter, brush) to work on GLB models
+     */
+    generateNailUVs(geometry) {
+        // Compute bounding box if not already computed
+        if (!geometry.boundingBox) {
+            geometry.computeBoundingBox();
+        }
+
+        const bbox = geometry.boundingBox;
+        const positions = geometry.attributes.position;
+        const uvs = new Float32Array(positions.count * 2);
+
+        // Get extent of the nail in local space
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+
+        // Avoid division by zero
+        const sizeX = size.x || 1;
+        const sizeY = size.y || 1;
+
+        // Map each vertex position to UV coordinates (0-1 range)
+        for (let i = 0; i < positions.count; i++) {
+            const x = positions.getX(i);
+            const y = positions.getY(i);
+
+            // Normalize to 0-1 based on bounding box
+            uvs[i * 2] = (x - bbox.min.x) / sizeX;
+            uvs[i * 2 + 1] = (y - bbox.min.y) / sizeY;
+        }
+
+        // Add UV attribute to geometry
+        geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+        console.log(`Generated UVs for nail geometry (${positions.count} vertices)`);
+    }
+
+    /**
      * Set up a single nail with overlay and canvas texture for a specific hand
      */
     setupNailForHand(hand, finger, nailMesh) {
+        // Ensure nail mesh has UV coordinates for canvas-based tools
+        if (!nailMesh.geometry.attributes.uv) {
+            console.log(`[${hand}] Generating UVs for ${finger} nail`);
+            this.generateNailUVs(nailMesh.geometry);
+        }
+
         // Create overlay mesh for drawing
         const overlayGeometry = nailMesh.geometry.clone();
         const overlayMaterial = new THREE.MeshBasicMaterial({

@@ -26,7 +26,7 @@ class NailArtistApp {
   constructor() {
     this.currentTool = 'shape';
     this.selectedShape = NAIL_SHAPES.ROUND;
-    this.selectedColor = '#FF69B4'; // Default bubblegum pink
+    this.selectedColor = '#ff2a6d'; // Default neon demon pink
 
     // Track time for animation
     this.lastTime = 0;
@@ -60,7 +60,7 @@ class NailArtistApp {
     this.renderPolishOptions(); // Start with polish instead of shape
     this.startAnimationLoop();
 
-    console.log('💅 Margaret\'s Nail Salon initialized with hand model!');
+    console.log('💅 NAIL ICON initialized // Glam Studio ready!');
   }
 
   /**
@@ -70,8 +70,9 @@ class NailArtistApp {
     const canvas = this.scene.renderer.domElement;
 
     canvas.addEventListener('click', (event) => {
-      // Don't select nails while drawing
-      if (this.currentTool === 'draw' || this.currentTool === 'glitter') {
+      // Don't select nails while using decoration tools
+      if (this.currentTool === 'draw' || this.currentTool === 'glitter' ||
+          this.currentTool === 'sticker' || this.currentTool === 'gems') {
         return;
       }
 
@@ -139,7 +140,7 @@ class NailArtistApp {
     this.glitterTool = new GlitterTool(this.scene.scene, this.scene.camera, this.nail);
 
     // Create gem tool
-    // this.gemTool = new GemTool(this.scene.scene, this.scene.camera, this.nail);
+    this.gemTool = new GemTool(this.scene.scene, this.scene.camera, this.nail);
 
     // Create brush tool
     this.brushTool = new BrushTool(this.scene.scene, this.scene.camera, this.nail);
@@ -240,7 +241,32 @@ class NailArtistApp {
     this.updateOptionsPanel();
   }
 
+  /**
+   * Toggle camera lock state
+   */
+  toggleCameraLock() {
+    const isLocked = this.scene.isCameraLockedState();
+    this.scene.setCameraLocked(!isLocked);
+
+    // Update button UI
+    const btn = document.getElementById('btn-lock');
+    if (btn) {
+      const icon = btn.querySelector('span:first-child');
+      const label = btn.querySelector('span:last-child');
+      if (icon) icon.textContent = !isLocked ? '🔒' : '🔓';
+      if (label) label.textContent = !isLocked ? 'Unlock' : 'Lock';
+      btn.classList.toggle('active', !isLocked);
+    }
+
+    soundManager.playClick();
+  }
+
   setupFingerSelector() {
+    // Camera lock button
+    document.getElementById('btn-lock')?.addEventListener('click', () => {
+      this.toggleCameraLock();
+    });
+
     // Hand toggle button
     const handToggleBtn = document.getElementById('hand-toggle');
     handToggleBtn?.addEventListener('click', () => {
@@ -365,12 +391,12 @@ class NailArtistApp {
 
     // Shape tool not available with hand model - shapes are fixed
     panel.innerHTML = `
-      <h3>✂️ Nail Shape</h3>
+      <h3>Shape</h3>
       <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
-        Shape customization coming soon!
+        Shape options coming soon!
       </p>
-      <p style="font-size: 0.75rem; color: var(--text-secondary);">
-        Click on a nail to select it, then use polish or brush to decorate!
+      <p style="font-size: 0.75rem; color: var(--text-muted);">
+        Tap a nail to select it, then use polish or draw to create your look!
       </p>
     `;
   }
@@ -379,47 +405,47 @@ class NailArtistApp {
     const panel = document.getElementById('options-panel');
     if (!panel) return;
 
-    // Curated kid-friendly color palette
+    // Glam color palette - bright, fun, K-pop vibes
     const colors = [
-      // Pinks & Reds
-      '#FF69B4', '#FF1493', '#FFB6C1', '#FF6B6B',
-      // Purples
-      '#9370DB', '#BA55D3', '#E6E6FA', '#DDA0DD',
-      // Blues
-      '#87CEEB', '#00CED1', '#4169E1', '#7B68EE',
-      // Greens
-      '#98FF98', '#20B2AA', '#3CB371', '#90EE90',
-      // Yellows & Oranges
-      '#FFD700', '#FFA500', '#FFDAB9', '#FFE4B5',
-      // Neutrals
-      '#FFFFFF', '#F5F5F5', '#000000', '#8B4513',
+      // Hot Pinks & Reds
+      '#ff2a6d', '#ff6b9d', '#ff1493', '#ff6b6b',
+      // Pretty Purples
+      '#9d4edd', '#c77dff', '#e0aaff', '#dda0dd',
+      // Sky Blues
+      '#00b4d8', '#48cae4', '#90e0ef', '#7b68ee',
+      // Fresh Greens & Teals
+      '#00f5d4', '#00cec9', '#55efc4', '#81ecec',
+      // Sunset & Gold
+      '#ffd700', '#ffb347', '#ff9ff3', '#fd79a8',
+      // Basics
+      '#ffffff', '#ffeef8', '#2d1f3d', '#000000',
     ];
 
     const finishes = [
-      { id: 'glossy', name: '✨ Glossy' },
-      { id: 'matte', name: '🌙 Matte' },
-      { id: 'shimmer', name: '💫 Shimmer' },
-      { id: 'chrome', name: '🪞 Chrome' },
+      { id: 'glossy', name: 'Glossy' },
+      { id: 'matte', name: 'Matte' },
+      { id: 'shimmer', name: 'Shimmer' },
+      { id: 'chrome', name: 'Chrome' },
     ];
 
     panel.innerHTML = `
-      <h3>💅 Polish Color</h3>
+      <h3>Polish</h3>
       <div class="color-grid">
         ${colors.map(c => `
-          <button 
-            class="color-swatch ${this.selectedColor === c ? 'active' : ''}" 
+          <button
+            class="color-swatch ${this.selectedColor === c ? 'active' : ''}"
             data-color="${c}"
             style="background-color: ${c}"
             title="${c}"
           ></button>
         `).join('')}
       </div>
-      
-      <h3 style="margin-top: 16px;">✨ Finish</h3>
+
+      <h4 style="margin-top: 16px;">Finish</h4>
       <div style="display: flex; flex-wrap: wrap; gap: 6px;">
         ${finishes.map(f => `
-          <button 
-            class="shape-btn" 
+          <button
+            class="shape-btn"
             data-finish="${f.id}"
             style="flex: 1; min-width: 80px; font-size: 0.7rem;"
           >
@@ -462,9 +488,9 @@ class NailArtistApp {
     if (!panel) return;
 
     panel.innerHTML = `
-      <h3>⭐ Stickers</h3>
-      <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 12px;">
-        Tap a sticker, then tap on the nail to place it!
+      <h3>Stickers</h3>
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+        Pick a sticker, then tap the nail to place it!
       </p>
       <div class="color-grid">
         ${STICKERS.map(s => `
@@ -498,17 +524,17 @@ class NailArtistApp {
     if (!panel) return;
 
     panel.innerHTML = `
-      <h3>✨ Glitter</h3>
-      <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 12px;">
-        Drag across the nail to spray glitter!
+      <h3>Glitter</h3>
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+        Drag across the nail to add sparkle!
       </p>
       <div class="color-grid">
         ${GLITTER_COLORS.map(g => `
-          <button 
-            class="color-swatch glitter-btn ${g.id === 'gold' ? 'active' : ''}" 
+          <button
+            class="color-swatch glitter-btn ${g.id === 'gold' ? 'active' : ''}"
             data-glitter="${g.id}"
             style="background: ${g.id === 'rainbow'
-        ? 'linear-gradient(135deg, red, orange, yellow, green, blue, purple)'
+        ? 'linear-gradient(135deg, #ff2a6d, #c77dff, #00b4d8, #00f5d4, #ffd700)'
         : `linear-gradient(135deg, ${g.color}, white, ${g.color})`}"
             title="${g.name}"
           ></button>
@@ -539,9 +565,9 @@ class NailArtistApp {
     if (!panel) return;
 
     panel.innerHTML = `
-      <h3>💎 Gems</h3>
-      <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 12px;">
-        Tap a gem, then tap on the nail to place it!
+      <h3>Gems</h3>
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+        Pick a gem, then tap the nail to place it!
       </p>
       <div class="color-grid">
         ${GEM_TYPES.map(g => `
@@ -571,27 +597,28 @@ class NailArtistApp {
     const panel = document.getElementById('options-panel');
     if (!panel) return;
 
-    const colors = ['#FFFFFF', '#000000', '#FF69B4', '#FFD700', '#4169E1', '#20B2AA', '#FF4500', '#32CD32'];
+    // Fun brush colors
+    const colors = ['#ffffff', '#2d1f3d', '#ff2a6d', '#ffd700', '#00b4d8', '#00f5d4', '#c77dff', '#ff6b6b'];
 
     panel.innerHTML = `
-      <h3>🖌️ Brush</h3>
-      <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 12px;">
-        Draw freehand on the nail!
+      <h3>Draw</h3>
+      <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+        Draw freehand designs on your nail!
       </p>
-      
-      <h4 style="font-size: 0.8rem; margin-bottom: 8px;">Color</h4>
+
+      <h4>Color</h4>
       <div class="color-grid">
         ${colors.map(c => `
-          <button 
-            class="color-swatch brush-color-btn ${this.brushTool?.color === c ? 'active' : ''}" 
+          <button
+            class="color-swatch brush-color-btn ${this.brushTool?.color === c ? 'active' : ''}"
             data-color="${c}"
             style="background-color: ${c}"
           ></button>
         `).join('')}
       </div>
-      
-      <h4 style="font-size: 0.8rem; margin: 16px 0 8px;">Size</h4>
-      <input type="range" id="brush-size" min="1" max="20" value="${this.brushTool?.size || 5}" style="width: 100%; accent-color: var(--color-bubblegum);">
+
+      <h4 style="margin-top: 16px;">Brush Size</h4>
+      <input type="range" id="brush-size" min="1" max="20" value="${this.brushTool?.size || 5}" style="width: 100%;">
     `;
 
     // Color selection
@@ -648,8 +675,8 @@ class NailArtistApp {
     // TODO: Load from localStorage
     grid.innerHTML = `
       <div class="gallery-empty">
-        <p style="font-size: 2rem">🖼️</p>
-        <p>No saved designs yet!</p>
+        <p style="font-size: 2rem">📸</p>
+        <p>No looks saved yet!</p>
         <p style="font-size: 0.8rem">Create your first masterpiece!</p>
       </div>
     `;
@@ -659,15 +686,15 @@ class NailArtistApp {
     // Play success fanfare
     soundManager.playSuccess();
 
-    // Simple celebration for now - could add confetti later!
+    // Fun celebration with bounce effect
     const title = document.querySelector('.title');
     if (title) {
-      title.textContent = '🎉 Amazing! 🎉';
-      title.style.animation = 'bounce 0.5s ease';
+      title.textContent = 'ICONIC!';
+      title.classList.add('celebrate');
 
       setTimeout(() => {
-        title.textContent = '💅 Margaret\'s Nail Salon';
-        title.style.animation = 'float 3s ease-in-out infinite';
+        title.textContent = 'NAIL ICON';
+        title.classList.remove('celebrate');
       }, 2000);
     }
   }

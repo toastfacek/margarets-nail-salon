@@ -4,10 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <meta name="description" content="A fun nail salon game for kids - file, paint, and decorate beautiful nails!" />
-    <title>💅 Margaret's Nail Salon</title>
+    <title>NAIL ICON - Glam Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Lilita+One&family=Fredoka:wght@400;500;600;700&family=Bangers&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles/main.css">
   </head>
   <body>
@@ -16,9 +16,10 @@
     
     <!-- UI Overlay -->
     <div id="ui-overlay">
-      <!-- Header -->
+      <!-- Header - Magazine Masthead -->
       <header class="header">
-        <h1 class="title">💅 Margaret's Nail Salon</h1>
+        <h1 class="title">NAIL ICON</h1>
+        <span class="subtitle">Glam Studio</span>
       </header>
 
       <!-- Finger Selector -->
@@ -71,6 +72,10 @@
       
       <!-- Bottom Action Bar -->
       <footer class="action-bar">
+        <button class="action-btn" id="btn-lock">
+          <span>🔓</span>
+          <span>Lock</span>
+        </button>
         <button class="action-btn" id="btn-clear">
           <span>🗑️</span>
           <span>Clear</span>
@@ -80,11 +85,11 @@
           <span>Undo</span>
         </button>
         <button class="action-btn primary" id="btn-done">
-          <span>📸</span>
-          <span>Done!</span>
+          <span>💅</span>
+          <span>Slay!</span>
         </button>
         <button class="action-btn" id="btn-gallery">
-          <span>🖼️</span>
+          <span>📸</span>
           <span>Gallery</span>
         </button>
       </footer>
@@ -94,11 +99,19 @@
     <div class="modal" id="gallery-modal">
       <div class="modal-content">
         <button class="modal-close" id="gallery-close">✕</button>
-        <h2>🖼️ My Designs</h2>
+        <h2>MY LOOKS</h2>
         <div class="gallery-grid" id="gallery-grid">
           <!-- Saved designs will appear here -->
         </div>
       </div>
+    </div>
+
+    <!-- Floating Decorations -->
+    <div class="floating-decorations" aria-hidden="true">
+      <span class="deco deco-star">⭐</span>
+      <span class="deco deco-sparkle">✨</span>
+      <span class="deco deco-heart">💖</span>
+      <span class="deco deco-gem">💎</span>
     </div>
     
     <script type="module" src="/src/main.js"></script>
