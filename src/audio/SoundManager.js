@@ -186,6 +186,78 @@ class SoundManager {
         osc.stop(now + duration);
     }
 
+    // Wet brush stroke sound - smooth sliding friction
+    playPolishBrush(pressure = 0.5) {
+        if (!this.sfxEnabled || !this.audioContext) return;
+
+        this.resume();
+
+        const now = this.audioContext.currentTime;
+        const duration = 0.15 + pressure * 0.08;
+
+        // Wet brush = filtered noise (friction) + low body
+        // Part 1: Smooth friction noise (the sliding wet sound)
+        const bufferSize = Math.floor(this.audioContext.sampleRate * duration);
+        const noiseBuffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+        const noiseData = noiseBuffer.getChannelData(0);
+
+        // Pink-ish noise for smooth friction (not harsh white noise)
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < bufferSize; i++) {
+            const white = Math.random() * 2 - 1;
+            b0 = 0.99765 * b0 + white * 0.0990460;
+            b1 = 0.96300 * b1 + white * 0.2965164;
+            b2 = 0.57000 * b2 + white * 1.0526913;
+            noiseData[i] = (b0 + b1 + b2 + white * 0.1848) * 0.11;
+        }
+
+        const noiseSource = this.audioContext.createBufferSource();
+        noiseSource.buffer = noiseBuffer;
+
+        // Bandpass filter for that wet brush friction character
+        const frictionFilter = this.audioContext.createBiquadFilter();
+        frictionFilter.type = 'bandpass';
+        frictionFilter.frequency.value = 800 + pressure * 400; // Higher = more friction
+        frictionFilter.Q.value = 0.8;
+
+        const noiseGain = this.audioContext.createGain();
+        noiseGain.gain.setValueAtTime(0, now);
+        noiseGain.gain.linearRampToValueAtTime(0.25 * pressure, now + 0.01);
+        noiseGain.gain.setValueAtTime(0.22 * pressure, now + duration * 0.8);
+        noiseGain.gain.linearRampToValueAtTime(0, now + duration);
+
+        noiseSource.connect(frictionFilter);
+        frictionFilter.connect(noiseGain);
+        noiseGain.connect(this.audioContext.destination);
+
+        // Part 2: Low body thump (the "wet" weight)
+        const bodyOsc = this.audioContext.createOscillator();
+        const bodyGain = this.audioContext.createGain();
+        const bodyFilter = this.audioContext.createBiquadFilter();
+
+        bodyOsc.type = 'sine';
+        bodyOsc.frequency.setValueAtTime(90 + pressure * 20, now);
+        bodyOsc.frequency.linearRampToValueAtTime(60, now + duration);
+
+        bodyFilter.type = 'lowpass';
+        bodyFilter.frequency.value = 150;
+
+        bodyGain.gain.setValueAtTime(0, now);
+        bodyGain.gain.linearRampToValueAtTime(0.12 * pressure, now + 0.015);
+        bodyGain.gain.linearRampToValueAtTime(0.08 * pressure, now + duration * 0.6);
+        bodyGain.gain.linearRampToValueAtTime(0, now + duration);
+
+        bodyOsc.connect(bodyFilter);
+        bodyFilter.connect(bodyGain);
+        bodyGain.connect(this.audioContext.destination);
+
+        // Start and stop
+        noiseSource.start(now);
+        noiseSource.stop(now + duration);
+        bodyOsc.start(now);
+        bodyOsc.stop(now + duration);
+    }
+
     // Sticker pop sound
     playStickerPop() {
         if (!this.sfxEnabled || !this.audioContext) return;

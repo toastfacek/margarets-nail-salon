@@ -9,8 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "howler": "^2.2.4",
     "three": "^0.170.0",
-    "howler": "^2.2.4"
+    "three-mesh-bvh": "^0.9.5"
   },
   "devDependencies": {
     "vite": "^6.0.0"

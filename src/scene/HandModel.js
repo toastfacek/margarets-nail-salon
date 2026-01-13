@@ -4,7 +4,11 @@
  * Supports 5 independent nails with click-to-select functionality
  */
 import * as THREE from 'three';
+import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { modelLoader } from './ModelLoader.js';
+
+// Enable BVH-accelerated raycasting globally for all meshes
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // Nail shape options
 export const NAIL_SHAPES = {
@@ -195,6 +199,12 @@ export class HandModel {
         if (!nailMesh.geometry.attributes.uv) {
             console.log(`[${hand}] Generating UVs for ${finger} nail`);
             this.generateNailUVs(nailMesh.geometry);
+        }
+
+        // Add BVH for fast raycasting
+        if (!nailMesh.geometry.boundsTree) {
+            nailMesh.geometry.boundsTree = new MeshBVH(nailMesh.geometry);
+            console.log(`[${hand}] BVH generated for ${finger} nail`);
         }
 
         // Create overlay mesh for drawing
@@ -464,7 +474,7 @@ export class HandModel {
     }
 
     /**
-     * Get the world position of a nail's center
+     * Get the world position of a nail's visible surface center
      * @param {string} finger - Finger identifier
      * @returns {THREE.Vector3|null} World position or null if finger not found
      */
@@ -472,8 +482,6 @@ export class HandModel {
         const nail = this.nails[finger];
         if (!nail || !nail.mesh) return null;
 
-        // Compute bounding box center in world space
-        // (nail meshes have local position 0,0,0 with offset geometry)
         const mesh = nail.mesh;
 
         // Ensure geometry has bounding box computed
@@ -481,15 +489,21 @@ export class HandModel {
             mesh.geometry.computeBoundingBox();
         }
 
-        // Get center of bounding box in local space
-        const center = new THREE.Vector3();
-        mesh.geometry.boundingBox.getCenter(center);
+        const bbox = mesh.geometry.boundingBox;
+
+        // Get the TOP surface center of the nail (not volumetric center)
+        // Use center X/Z for horizontal centering, but max Y for the visible surface
+        const surfaceCenter = new THREE.Vector3(
+            (bbox.min.x + bbox.max.x) / 2,  // center X
+            bbox.max.y,                      // top surface Y
+            (bbox.min.z + bbox.max.z) / 2   // center Z
+        );
 
         // Transform to world space
         mesh.updateWorldMatrix(true, false);
-        center.applyMatrix4(mesh.matrixWorld);
+        surfaceCenter.applyMatrix4(mesh.matrixWorld);
 
-        return center;
+        return surfaceCenter;
     }
 
     /**

@@ -9,6 +9,9 @@ import { FileTool } from './tools/FileTool.js';
 import { StickerTool, STICKERS } from './tools/StickerTool.js';
 import { GemTool, GEM_TYPES } from './tools/GemTool.js';
 import { BrushTool, PEN_MATERIALS, PEN_COLORS } from './tools/BrushTool.js';
+import { PolishTool } from './tools/PolishTool.js';
+import { PolishBrush3D } from './tools/PolishBrush3D/index.js';
+import { POLISH_LAYERS, LAYER_ORDER } from './state/PolishLayerState.js';
 import { soundManager } from './audio/SoundManager.js';
 import * as THREE from 'three';
 
@@ -60,8 +63,8 @@ class NailArtistApp {
     const canvas = this.scene.renderer.domElement;
 
     canvas.addEventListener('click', (event) => {
-      // Don't select nails while using decoration tools
-      if (this.currentTool === 'brush' || this.currentTool === 'bling') {
+      // Don't select nails while using decoration/painting tools
+      if (this.currentTool === 'brush' || this.currentTool === 'bling' || this.currentTool === 'polish') {
         return;
       }
 
@@ -130,6 +133,30 @@ class NailArtistApp {
 
     // Create brush tool
     this.brushTool = new BrushTool(this.scene.scene, this.scene.camera, this.nail);
+
+    // Create polish tool (realistic painting)
+    this.polishTool = new PolishTool(this.scene.scene, this.scene.camera, this.nail);
+
+    // Create 3D brush for polish (bristle physics + fluid simulation)
+    this.polishBrush3D = new PolishBrush3D(
+      this.scene.scene,
+      this.scene.camera,
+      this.nail,
+      this.scene.renderer  // Pass renderer for fluid simulation
+    );
+
+    // Set up polish tool callbacks
+    this.polishTool.onCoverageChange = (coverage) => {
+      this.updateCoverageUI(coverage);
+    };
+    this.polishTool.onDryStateChange = (isDry) => {
+      this.updateDryButtonUI(isDry);
+    };
+
+    // Set up 3D brush callbacks
+    this.polishBrush3D.onCoverageChange = (coverage) => {
+      this.updateCoverageUI(coverage);
+    };
   }
 
   startAnimationLoop() {
@@ -140,6 +167,11 @@ class NailArtistApp {
       // Update file tool particles
       if (this.fileTool) {
         this.fileTool.update(deltaTime);
+      }
+
+      // Update 3D polish brush (bristle physics)
+      if (this.polishBrush3D?.isActive) {
+        this.polishBrush3D.update(time);
       }
 
       requestAnimationFrame(animate);
@@ -168,11 +200,17 @@ class NailArtistApp {
         this.stickerTool?.deactivate();
         this.gemTool?.deactivate();
         this.brushTool?.deactivate();
+        this.polishTool?.deactivate();
+        this.polishBrush3D?.deactivate();
 
         // Activate the selected tool
         switch (this.currentTool) {
           case 'shape':
             this.fileTool?.activate();
+            break;
+          case 'polish':
+            // Use 3D brush with bristle physics
+            this.polishBrush3D?.activate();
             break;
           case 'bling':
             // Both sticker and gem tools listen, UI determines which is active
@@ -447,8 +485,58 @@ class NailArtistApp {
       { id: 'chrome', name: 'Chrome' },
     ];
 
+    // Get polish tool state
+    const polishState = this.polishTool?.getState();
+    const activeLayer = polishState?.activeLayer || POLISH_LAYERS.COLOR_1;
+    const coverage = this.polishTool?.getCoverage() || 0;
+    const isLayerDry = this.polishTool?.isLayerDry() ?? true;
+
+    // Layer display names
+    const layerNames = {
+      [POLISH_LAYERS.BASE_COAT]: 'Base Coat',
+      [POLISH_LAYERS.COLOR_1]: 'Color 1',
+      [POLISH_LAYERS.COLOR_2]: 'Color 2',
+      [POLISH_LAYERS.TOP_COAT]: 'Top Coat',
+    };
+
     panel.innerHTML = `
       <h3>Polish</h3>
+
+      <!-- Layer Tabs -->
+      <div class="polish-layer-tabs">
+        ${LAYER_ORDER.map(layer => `
+          <button
+            class="layer-tab ${activeLayer === layer ? 'active' : ''}"
+            data-layer="${layer}"
+          >
+            ${layerNames[layer]}
+          </button>
+        `).join('')}
+      </div>
+
+      <!-- Coverage Progress -->
+      <div class="polish-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: ${Math.min(100, coverage)}%"></div>
+        </div>
+        <span class="coverage-text">${Math.round(coverage)}%</span>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="polish-actions">
+        <button class="polish-action-btn fill-btn" id="quick-fill-btn">
+          <span>Fill</span>
+        </button>
+        <button class="polish-action-btn dry-btn ${isLayerDry ? 'dried' : 'pulse'}" id="dry-btn">
+          <span>${isLayerDry ? 'Dry!' : 'Dry!'}</span>
+        </button>
+        <button class="polish-action-btn undo-btn" id="polish-undo-btn">
+          <span>Undo</span>
+        </button>
+      </div>
+
+      <!-- Color Palette (only show for color layers) -->
+      <h4 style="margin-top: 12px;">Color</h4>
       <div class="color-grid">
         ${colors.map(c => `
           <button
@@ -464,7 +552,7 @@ class NailArtistApp {
       <div style="display: flex; flex-wrap: wrap; gap: 6px;">
         ${finishes.map(f => `
           <button
-            class="shape-btn"
+            class="shape-btn finish-btn"
             data-finish="${f.id}"
             style="flex: 1; min-width: 80px; font-size: 0.7rem;"
           >
@@ -472,7 +560,41 @@ class NailArtistApp {
           </button>
         `).join('')}
       </div>
+
+      <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 12px; text-align: center;">
+        Paint on the nail to apply polish!
+      </p>
     `;
+
+    // Layer tab selection
+    panel.querySelectorAll('.layer-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        panel.querySelectorAll('.layer-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        this.polishTool?.setActiveLayer(btn.dataset.layer);
+        soundManager.playClick();
+
+        // Update coverage display for new layer
+        this.updateCoverageUI(this.polishTool?.getCoverage() || 0);
+      });
+    });
+
+    // Quick fill button
+    document.getElementById('quick-fill-btn')?.addEventListener('click', () => {
+      this.polishTool?.quickFill();
+    });
+
+    // Dry button
+    document.getElementById('dry-btn')?.addEventListener('click', () => {
+      this.polishTool?.instantDry();
+      this.updateDryButtonUI(true);
+    });
+
+    // Undo button
+    document.getElementById('polish-undo-btn')?.addEventListener('click', () => {
+      this.polishTool?.undo();
+    });
 
     // Color selection
     panel.querySelectorAll('.color-swatch').forEach(btn => {
@@ -481,10 +603,11 @@ class NailArtistApp {
         btn.classList.add('active');
 
         this.selectedColor = btn.dataset.color;
-        this.nail.setPolishColor(this.selectedColor);
+        this.polishTool?.setColor(this.selectedColor);
+        this.polishBrush3D?.setColor(this.selectedColor);
 
         // Play polish sound
-        soundManager.playPolish();
+        soundManager.playClick();
 
         // Pop animation
         btn.style.animation = 'none';
@@ -494,12 +617,47 @@ class NailArtistApp {
     });
 
     // Finish selection
-    panel.querySelectorAll('[data-finish]').forEach(btn => {
+    panel.querySelectorAll('.finish-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        this.nail.setFinish(btn.dataset.finish);
+        panel.querySelectorAll('.finish-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        this.polishTool?.setFinish(btn.dataset.finish);
+        this.polishBrush3D?.setFinish(btn.dataset.finish);
         soundManager.playClick();
       });
     });
+  }
+
+  /**
+   * Update the coverage progress UI
+   */
+  updateCoverageUI(coverage) {
+    const progressFill = document.querySelector('.polish-progress .progress-fill');
+    const coverageText = document.querySelector('.polish-progress .coverage-text');
+
+    if (progressFill) {
+      progressFill.style.width = `${Math.min(100, coverage)}%`;
+    }
+    if (coverageText) {
+      coverageText.textContent = `${Math.round(coverage)}%`;
+    }
+  }
+
+  /**
+   * Update the dry button UI state
+   */
+  updateDryButtonUI(isDry) {
+    const dryBtn = document.getElementById('dry-btn');
+    if (dryBtn) {
+      if (isDry) {
+        dryBtn.classList.add('dried');
+        dryBtn.classList.remove('pulse');
+      } else {
+        dryBtn.classList.remove('dried');
+        dryBtn.classList.add('pulse');
+      }
+    }
   }
 
   renderBlingOptions() {
@@ -687,6 +845,9 @@ class NailArtistApp {
   }
 
   clearNail() {
+    // Clear polish tool layers
+    this.polishTool?.clear();
+
     // Clear polish on active nail
     this.nail.clearPolish();
 

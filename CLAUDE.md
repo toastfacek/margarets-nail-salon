@@ -41,6 +41,14 @@ Each tool follows a consistent pattern:
 - Uses raycasting to detect nail surface hits and convert to UV coordinates
 
 Active tools:
+- **PolishTool.js**: Realistic nail polish painting with layer support (base coat, color coats, top coat). Tracks coverage percentage and drying state per layer.
+- **PolishBrush3D/**: 3D nail polish brush with bristle physics. Subsystem includes:
+  - `PolishBrush3D.js`: Main controller coordinating bristle system, input handling, and paint application
+  - `BristleSystem.js`: Instanced mesh bristles with CPU Verlet physics for realistic bending/splaying
+  - `BrushInputHandler.js`: Maps pointer input to 3D brush position via raycasting against nail mesh
+  - `BristlePaintApplicator.js`: Applies paint to canvas from bristle contact points
+  - `BrushEffects.js`: Particle effects and audio feedback for brush strokes
+  - `WetPaintMaterial.js`: Wet paint highlight overlay effect
 - **BrushTool.js**: Freehand drawing on a 1024x1024 canvas texture. Multiple pen types: solid, dotted, metallic, rainbow, glitter (sparkle spray), marker. Size slider and color palette.
 - **StickerTool.js**: Places emoji stickers on nail surface at tap position.
 - **GemTool.js**: Places 3D gems/rhinestones on nail surface.
@@ -48,6 +56,7 @@ Active tools:
 ### State Layer (`src/state/`)
 
 - **NailDesignStore.js**: Manages nail designs for all 10 fingers (5 per hand). Stores shape, polish color, finish type, and canvas data URL. Persists to localStorage.
+- **PolishLayerState.js**: Manages multi-layer polish state per nail. Tracks 4 layers (base coat, color 1, color 2, top coat) with coverage maps, drying timers, and undo history. Exports `POLISH_LAYERS` and `LAYER_ORDER` constants.
 
 ### Audio (`src/audio/SoundManager.js`)
 
