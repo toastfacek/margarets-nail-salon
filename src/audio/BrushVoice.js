@@ -17,6 +17,7 @@ const MIN_UPDATE_GAP = 0.012; // s of audio time between param batches
 const TAU = 0.045;            // smoothing time constant for live params
 const SETTLE_DELAY = 0.12;    // if updates stop, ease to the resting sound
 const SETTLE_TAU = 0.09;
+const STILL_LEVEL = 0.03;     // friction level while the brush rests on the nail
 
 export class BrushVoice {
   /**
@@ -163,9 +164,10 @@ export class BrushVoice {
 
     const freq = 600 + 1600 * v;
     const q = 0.7 + 0.9 * p;
-    const level = (0.2 + 0.85 * v) * (0.65 + 0.35 * p);
+    // A brush held still is nearly silent; movement brings the wet sound in.
+    const level = (STILL_LEVEL + 1.02 * v) * (0.65 + 0.35 * p);
     const bodyF = 90 + 50 * p;
-    const bodyLevel = (0.018 + 0.03 * p) * (0.7 + 0.3 * v);
+    const bodyLevel = (0.018 + 0.03 * p) * (0.3 + 0.7 * v);
     const wobble = 9 + 14 * v;
 
     const bp = this.bp;
@@ -177,7 +179,7 @@ export class BrushVoice {
     bp.Q.setTargetAtTime(q, t, TAU);
     amp.cancelScheduledValues(t);
     amp.setTargetAtTime(level, t, TAU);
-    amp.setTargetAtTime(0.2 * (0.65 + 0.35 * p), t + SETTLE_DELAY, SETTLE_TAU);
+    amp.setTargetAtTime(STILL_LEVEL * (0.65 + 0.35 * p), t + SETTLE_DELAY, SETTLE_TAU);
     this.body.frequency.setTargetAtTime(bodyF, t, TAU);
     bAmp.cancelScheduledValues(t);
     bAmp.setTargetAtTime(bodyLevel, t, TAU);
