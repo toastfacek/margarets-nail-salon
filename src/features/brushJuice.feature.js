@@ -20,8 +20,14 @@ import { WET } from '../tools/PolishBrush3D/WetCure.js';
 
 export const order = 60;
 
+// Not in the plan's catalogue (requested by WP5, which plays the dryer sound):
+// emitted when the dryer starts and stops blowing. Payload (reused object):
+// { hand, finger, cured } — cured is true when it stopped because the nail cured.
+export const DRYER_START = 'dryer:start';
+export const DRYER_STOP = 'dryer:stop';
+
 const DRYER_SHOW_COVERAGE = 0.5;
-const GLOW_COLOR = 0xb98cff;
+const GLOW_COLOR = 0xa64dff;
 const GLOW_IN = 8;    // 1/s
 const GLOW_OUT = 3;   // 1/s
 
@@ -94,7 +100,8 @@ export function install(app) {
     color: GLOW_COLOR,
     transparent: true,
     opacity: 0,
-    blending: THREE.AdditiveBlending,
+    // normal blending: an additive glow turns white on the light salon backdrop
+    blending: THREE.NormalBlending,
     depthTest: false,
     depthWrite: false,
   });
@@ -115,7 +122,11 @@ export function install(app) {
   const glowPos = new THREE.Vector3();
 
   function activeNailCenter(target) {
-    const rec = hm.getNail(hm.getCurrentHand(), hm.getActiveNail());
+    return nailCenter(hm.getNail(hm.getCurrentHand(), hm.getActiveNail()), target);
+  }
+
+  /** World centre of a nail (bounding sphere); returns its world radius or null. */
+  function nailCenter(rec, target) {
     if (!rec || !rec.mesh) return null;
     const mesh = rec.mesh;
     const geo = mesh.geometry;
@@ -138,6 +149,14 @@ export function install(app) {
   let holding = false;
   let dryerDirty = true;
   let meterDirty = false;
+  const dryerPayload = { hand: 'left', finger: 'index', cured: false };
+
+  function emitDryer(name, hand, finger, cured) {
+    dryerPayload.hand = hand;
+    dryerPayload.finger = finger;
+    dryerPayload.cured = cured;
+    events.emit(name, dryerPayload);
+  }
 
   function setShown(show) {
     if (show === dryerShown) return;
@@ -168,6 +187,7 @@ export function install(app) {
     dryer.classList.add('is-holding');
     wet.cure(hand, finger, WET.DRYER_TIME);
     glow.visible = true;
+    emitDryer(DRYER_START, hand, finger, false);
     invalidate();
   }
 
@@ -178,6 +198,7 @@ export function install(app) {
     const hand = hm.getCurrentHand();
     const finger = hm.getActiveNail();
     if (wet.isDrying(hand, finger)) wet.stopCure(hand, finger);
+    emitDryer(DRYER_STOP, hand, finger, false);
     dryerDirty = true;
     invalidate();
   }
@@ -206,20 +227,23 @@ export function install(app) {
   events.on(EVENTS.NAIL_COVERED, (p) => {
     if (p.hand !== hm.getCurrentHand()) return;
     const rec = hm.getNail(p.hand, p.finger);
-    if (!rec) return;
-    if (!hm.getNailWorldPosition(p.finger, nailPos)) return;
+    if (nailCenter(rec, nailPos) === null) return;
     sparkles.burst(nailPos, 34, brush.color);
     sparkles.sweep(rec.mesh, 22, 0xffffff, 0.45);
     invalidate();
   });
 
   events.on(EVENTS.NAIL_CURED, (p) => {
-    if (p.hand === hm.getCurrentHand() && hm.getNailWorldPosition(p.finger, nailPos)) {
-      sparkles.burst(nailPos, 28, 0xfff4ff);
+    const rec = p.hand === hm.getCurrentHand() ? hm.getNail(p.hand, p.finger) : null;
+    if (rec && nailCenter(rec, nailPos) !== null) {
+      // the "ting": a glint sweeps the cured nail, then a small pop
+      sparkles.sweep(rec.mesh, 26, 0xffffff, 0.35);
+      sparkles.burst(nailPos, 22, 0xf3d9ff);
     }
-    if (p.hand === hm.getCurrentHand() && p.finger === hm.getActiveNail()) {
+    if (holding && p.hand === hm.getCurrentHand() && p.finger === hm.getActiveNail()) {
       holding = false;
       dryer.classList.remove('is-holding');
+      emitDryer(DRYER_STOP, p.hand, p.finger, true);
     }
     dryerDirty = true;
     invalidate();
@@ -258,7 +282,7 @@ export function install(app) {
         glow.position.copy(glowPos);
         const pulse = 1 + 0.06 * Math.sin(glowTime * 7.5); // ~1.2 Hz
         glow.scale.setScalar(r * 2.6 * pulse);
-        glowMat.opacity = 0.85 * glowAlpha;
+        glowMat.opacity = 0.6 * glowAlpha;
         glow.visible = true;
       } else {
         glow.visible = false;

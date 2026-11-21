@@ -18,8 +18,8 @@
 import * as THREE from 'three';
 
 const POOL = 64;
-const LIFE = 0.9;          // seconds, jittered per sparkle
-const SIZE = 0.0042;       // world-space sprite size (the nail is ~0.02 wide)
+const LIFE = 1.1;          // seconds, jittered per sparkle
+const SIZE = 0.013;        // world-space sprite size (a nail is ~0.07 wide)
 const TWINKLE_HZ = 2.6;    // stays under the 3 Hz flashing limit
 
 const vertexShader = /* glsl */ `
@@ -45,7 +45,7 @@ void main() {
   }
   // fast pop outwards, strong drag, a little float upwards
   vec3 p = position + aVelocity * (1.0 - exp(-4.0 * age)) / 4.0;
-  p.y += 0.006 * age;
+  p.y += 0.02 * age;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
   float tw = 0.5 + 0.5 * sin(age * ${(TWINKLE_HZ * 6.2831853).toFixed(4)} + aSeed * 40.0);
@@ -217,11 +217,16 @@ export class Sparkles {
     const s = this._start.array, v = this._vel.array, c = this._color.array;
     s[i * 3] = x; s[i * 3 + 1] = y; s[i * 3 + 2] = z;
     v[i * 3] = vx; v[i * 3 + 1] = vy; v[i * 3 + 2] = vz;
-    // a little variety: some sparkles are white, the rest take the colour
-    const white = Math.random() < 0.3;
-    c[i * 3] = white ? 1 : color.r;
-    c[i * 3 + 1] = white ? 1 : color.g;
-    c[i * 3 + 2] = white ? 1 : color.b;
+    // variety: white and gold glints among the coloured ones (pink sparkles
+    // alone vanish on pink polish)
+    const k = Math.random();
+    if (k < 0.3) {
+      c[i * 3] = 1; c[i * 3 + 1] = 1; c[i * 3 + 2] = 1;
+    } else if (k < 0.5) {
+      c[i * 3] = 1; c[i * 3 + 1] = 0.86; c[i * 3 + 2] = 0.45;
+    } else {
+      c[i * 3] = color.r; c[i * 3 + 1] = color.g; c[i * 3 + 2] = color.b;
+    }
     this._seed.array[i] = Math.random();
     this._birth.array[i] = birth;
     const death = birth + LIFE * 1.4;
@@ -272,8 +277,8 @@ export class Sparkles {
       _v.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1);
       if (_v.lengthSq() < 1e-4) _v.set(0, 1, 0);
       _v.normalize().addScaledVector(_bias, 0.7).normalize();
-      const speed = 0.03 + Math.random() * 0.05;
-      const j = 0.0015;
+      const speed = 0.12 + Math.random() * 0.2;
+      const j = 0.028;
       this._write(i,
         worldPos.x + (Math.random() - 0.5) * j, worldPos.y + (Math.random() - 0.5) * j, worldPos.z + (Math.random() - 0.5) * j,
         _v.x * speed, _v.y * speed, _v.z * speed,
@@ -307,7 +312,7 @@ export class Sparkles {
       _v.applyMatrix4(mesh.matrixWorld);
       if (this.camera) _bias.copy(this.camera.position).sub(_v).normalize();
       else _bias.set(0, 1, 0);
-      const speed = 0.006 + Math.random() * 0.01;
+      const speed = 0.02 + Math.random() * 0.04;
       const i = this._slot();
       this._write(i, _v.x, _v.y, _v.z,
         (_bias.x + (Math.random() - 0.5)) * speed, (_bias.y + (Math.random() - 0.5)) * speed, (_bias.z + (Math.random() - 0.5)) * speed,

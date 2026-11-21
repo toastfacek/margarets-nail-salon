@@ -16,8 +16,8 @@ import * as THREE from 'three';
 
 const POOL = 48;              // highest tier's brushParticles
 const LIFE = 0.5;             // seconds (per-droplet jitter in the shader)
-const GRAVITY = -0.32;        // world units / s^2 (the nail is ~0.02 units wide)
-const SIZE = 0.0011;          // world-space droplet diameter
+const GRAVITY = -0.6;         // world units / s^2 (a nail is ~0.07 units wide)
+const SIZE = 0.0034;          // world-space droplet diameter
 const SPEED_START = 0.9;      // UV/s: slower strokes flick nothing
 const RATE_PER_SPEED = 9;     // droplets per second per UV/s above SPEED_START
 const MAX_RATE = 60;          // droplets per second
@@ -185,9 +185,9 @@ export class BrushEffects {
     // The ring wraps at maxAlive: that caps how many droplets live at once.
     const i = this._next;
     this._next = (this._next + 1) % this.maxAlive;
-    let vx = (Math.random() - 0.5) * 0.05 + normal.x * 0.035;
-    let vy = (Math.random() - 0.5) * 0.05 + normal.y * 0.035;
-    let vz = (Math.random() - 0.5) * 0.05 + normal.z * 0.035;
+    let vx = (Math.random() - 0.5) * 0.12 + normal.x * 0.1;
+    let vy = (Math.random() - 0.5) * 0.12 + normal.y * 0.1;
+    let vz = (Math.random() - 0.5) * 0.12 + normal.z * 0.1;
     if (worldVel) {
       // thrown along the stroke
       vx += worldVel.x * 0.55;

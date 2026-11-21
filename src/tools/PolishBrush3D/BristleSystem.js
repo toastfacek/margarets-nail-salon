@@ -50,7 +50,7 @@ const BRUSH_CONFIG = Object.freeze({
 // Wet look: bristles darken toward the ferrule and gloss toward the tip; a bead
 // of polish hangs at the tip while the brush is loaded.
 const WET_RAMP = Object.freeze({ ferrule: 0.32, tip: 1.12, power: 1.3 });
-const BEAD_RADIUS = 0.00135;
+const BEAD_RADIUS = 0.0021;
 const DEFAULT_TILT = -Math.PI / 3;
 
 const RAY_BANDS = 8;
