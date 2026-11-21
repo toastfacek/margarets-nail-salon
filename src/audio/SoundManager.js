@@ -1,55 +1,8 @@
 /**
  * SoundManager.js
- * Handles all game audio - sound effects and background music
- * Uses Howler.js for cross-browser audio support
+ * Handles all game audio. Every sound is synthesised with the Web Audio API;
+ * there are no audio files.
  */
-import { Howl, Howler } from 'howler';
-
-// Sound effect configurations
-const SOUNDS = {
-    // Filing sounds - multiple variations for variety
-    file: {
-        src: ['/audio/file.mp3'],
-        volume: 0.6,
-        rate: 1.0,
-    },
-
-    // Polish application
-    polish: {
-        src: ['/audio/polish.mp3'],
-        volume: 0.5,
-    },
-
-    // Sticker placement
-    stickerPlace: {
-        src: ['/audio/pop.mp3'],
-        volume: 0.7,
-    },
-
-    // Glitter spray
-    glitter: {
-        src: ['/audio/sparkle.mp3'],
-        volume: 0.4,
-    },
-
-    // Gem placement
-    gemPlace: {
-        src: ['/audio/clink.mp3'],
-        volume: 0.6,
-    },
-
-    // UI clicks
-    click: {
-        src: ['/audio/click.mp3'],
-        volume: 0.4,
-    },
-
-    // Success/completion
-    success: {
-        src: ['/audio/success.mp3'],
-        volume: 0.6,
-    },
-};
 
 class SoundManager {
     constructor() {
@@ -58,6 +11,9 @@ class SoundManager {
         this.musicEnabled = true;
         this.sfxEnabled = true;
         this.initialized = false;
+        // Master volume (0..1). Stored only for now; WP5 routes it to a real
+        // master gain node.
+        this.volume = 1;
 
         // We'll use Web Audio API oscillators for immediate sound feedback
         // until we have proper audio files
@@ -563,7 +519,7 @@ class SoundManager {
 
     // Set master volume
     setVolume(volume) {
-        Howler.volume(volume);
+        this.volume = Math.max(0, Math.min(1, Number(volume) || 0));
     }
 }
 
