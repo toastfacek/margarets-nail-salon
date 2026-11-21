@@ -83,7 +83,7 @@ export function computeSettings(tier, scale, dpr, caps) {
     contactShadowBlurPasses: high ? 2 : medium ? 1 : 0,
     backdrop: high ? 'animated12' : medium ? 'animated8' : 'baked',
     renderOnDemand: !high,
-    decoCanvasRes: low ? 512 : 1024,
+    decoCanvasRes: high ? 1024 : 512, // medium too: texture memory cap (WP4 review item b)
     brushParticles: high ? 48 : medium ? 24 : 12,
     confetti: high ? 160 : medium ? 90 : 40,
     glints: !low,
