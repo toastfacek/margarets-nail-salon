@@ -115,7 +115,10 @@ function uiTap(ctx, out, t, bufs, v, index) {
 /** Cork pop for opening a polish bottle. */
 function bottlePop(ctx, out, t, bufs, v) {
   let d = noiseHit(ctx, out, bufs, v, t, false, 'lowpass', 380, 8, 0.32, 0.001, 0.02, 2000, 0.035);
-  d = Math.max(d, partial(ctx, out, v, t, 190, 0.3, 0.002, 0.028, 'sine', 95, 0.05));
+  d = Math.max(d, partial(ctx, out, v, t, 190, 0.22, 0.002, 0.028, 'sine', 95, 0.05));
+  // Bottle-mouth resonance in the 400 Hz - 2 kHz range so phone speakers hear the pop.
+  d = Math.max(d, partial(ctx, out, v, t, G4, 0.2, 0.002, 0.03, 'triangle', C5, 0.03));
+  d = Math.max(d, noiseHit(ctx, out, bufs, v, t, false, 'bandpass', 900, 2.5, 0.22, 0.001, 0.012));
   d = Math.max(d, partial(ctx, out, v, t + 0.006, G5, 0.12, 0.002, 0.03, 'sine', C6 * 1.2, 0.025));
   return d;
 }
@@ -163,7 +166,7 @@ function plip(ctx, out, t, bufs, v, amount) {
 /** A note that climbs the scale as the coverage meter fills. */
 function coverageRise(ctx, out, t, bufs, v, coverage) {
   const step = clamp(Math.floor((coverage || 0) * 10) - 1, 0, 8);
-  return bell(ctx, out, v, t, penta(step, 72), 0.14, 0.22);
+  return bell(ctx, out, v, t, penta(step, 72), 0.1, 0.22);
 }
 
 /** Nail fully covered: rising C-E-G arpeggio and a high shimmer. */
@@ -197,9 +200,9 @@ function starDing(ctx, out, t, bufs, v, n) {
 
 /** Camera shutter: two soft mechanical clicks. */
 function shutter(ctx, out, t, bufs, v) {
-  let d = noiseHit(ctx, out, bufs, v, t, false, 'bandpass', 2200, 1.3, 0.24, 0.001, 0.006);
-  d = Math.max(d, noiseHit(ctx, out, bufs, v, t, true, 'lowpass', 600, 0.8, 0.18, 0.001, 0.014));
-  d = Math.max(d, 0.075 + noiseHit(ctx, out, bufs, v, t + 0.075, false, 'bandpass', 1700, 1.3, 0.18, 0.001, 0.008));
+  let d = noiseHit(ctx, out, bufs, v, t, false, 'bandpass', 2200, 1.3, 0.96, 0.001, 0.006);
+  d = Math.max(d, noiseHit(ctx, out, bufs, v, t, true, 'lowpass', 600, 0.8, 0.72, 0.001, 0.014));
+  d = Math.max(d, 0.075 + noiseHit(ctx, out, bufs, v, t + 0.075, false, 'bandpass', 1700, 1.3, 0.72, 0.001, 0.008));
   return d;
 }
 
@@ -224,7 +227,10 @@ function flashWhoosh(ctx, out, t, bufs, v) {
 /** Party-popper: a pop, a little thump and a scatter of high tinkles. */
 function confettiPop(ctx, out, t, bufs, v) {
   let d = noiseHit(ctx, out, bufs, v, t, false, 'lowpass', 2400, 0.9, 0.3, 0.001, 0.028);
-  d = Math.max(d, partial(ctx, out, v, t, 130, 0.3, 0.002, 0.045, 'sine', 60, 0.08));
+  d = Math.max(d, partial(ctx, out, v, t, 130, 0.22, 0.002, 0.045, 'sine', 60, 0.08));
+  // Audible body on small speakers: a paper "pap" around 1 kHz and a falling triangle.
+  d = Math.max(d, noiseHit(ctx, out, bufs, v, t, false, 'bandpass', 1000, 1.2, 0.3, 0.001, 0.02));
+  d = Math.max(d, partial(ctx, out, v, t, C5, 0.16, 0.002, 0.035, 'triangle', C5 * 0.5, 0.06));
   for (let i = 0; i < 5; i++) {
     const dt = 0.05 + Math.random() * 0.32;
     const f = penta(10 + ((Math.random() * 4) | 0), 72);
