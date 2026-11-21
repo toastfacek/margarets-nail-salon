@@ -3,7 +3,15 @@
    Bold 3D Typography + Vibrant Colors + Influencer Vibes
    ============================================= */
 
-@import url('https://fonts.googleapis.com/css2?family=Bungee&family=Lilita+One&family=Fredoka:wght@400;500;600;700&family=Bangers&display=swap');
+/* One bundled variable font (latin subset only), served from our own origin. */
+@font-face {
+  font-family: 'Fredoka Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 700;
+  src: url('@fontsource-variable/fredoka/files/fredoka-latin-wght-normal.woff2') format('woff2-variations'),
+       url('@fontsource-variable/fredoka/files/fredoka-latin-wght-normal.woff2') format('woff2');
+}
 
 /* CSS Custom Properties */
 :root {
@@ -47,9 +55,10 @@
   --glow-rainbow: 0 0 30px rgba(255, 20, 147, 0.4), 0 0 60px rgba(0, 255, 255, 0.3), 0 0 90px rgba(155, 48, 255, 0.2);
 
   /* Typography */
-  --font-display: 'Bungee', 'Lilita One', cursive;
-  --font-accent: 'Bangers', cursive;
-  --font-body: 'Fredoka', sans-serif;
+  /* One family everywhere; display text uses weight 700. */
+  --font-display: 'Fredoka Variable', ui-rounded, 'Arial Rounded MT Bold', 'Nunito', system-ui, sans-serif;
+  --font-accent: 'Fredoka Variable', ui-rounded, 'Arial Rounded MT Bold', 'Nunito', system-ui, sans-serif;
+  --font-body: 'Fredoka Variable', ui-rounded, 'Arial Rounded MT Bold', 'Nunito', system-ui, sans-serif;
 
   /* Sizing */
   --touch-target: 56px;
@@ -76,6 +85,7 @@ html, body {
   color: var(--text-dark);
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  overscroll-behavior: none;
 }
 
 /* Animated Background */
@@ -134,6 +144,10 @@ body::after {
   width: 100%;
   height: 100%;
   z-index: 1;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 #canvas-container canvas {
@@ -204,7 +218,8 @@ body::after {
 .title {
   font-family: var(--font-display);
   font-size: 3.2rem;
-  font-weight: 400;
+  font-weight: 700;
+  line-height: 1; /* pin line box so the font swap cannot move the header */
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--hot-pink);
@@ -227,7 +242,9 @@ body::after {
 /* Subtitle Badge */
 .subtitle {
   font-family: var(--font-accent);
+  font-weight: 700;
   font-size: 1.1rem;
+  line-height: 1.2;
   letter-spacing: 0.15em;
   color: var(--text-light);
   background: var(--gradient-ocean);
@@ -273,6 +290,7 @@ body::after {
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-accent);
+  font-weight: 700;
   font-size: 0.85rem;
   letter-spacing: 0.1em;
   color: var(--text-light);
@@ -333,6 +351,7 @@ body::after {
   border: 3px solid var(--bubblegum);
   background: white;
   font-family: var(--font-display);
+  font-weight: 700;
   font-size: 1.2rem;
   color: var(--hot-pink);
   cursor: pointer;
@@ -391,6 +410,7 @@ body::after {
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-display);
+  font-weight: 700;
   font-size: 0.9rem;
   letter-spacing: 0.1em;
   color: var(--text-light);
@@ -490,6 +510,7 @@ body::after {
 
 .options-panel h3 {
   font-family: var(--font-display);
+  font-weight: 700;
   font-size: 1.3rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -502,6 +523,7 @@ body::after {
 
 .options-panel h4 {
   font-family: var(--font-accent);
+  font-weight: 700;
   font-size: 0.85rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1095,6 +1117,7 @@ body::after {
 
 .action-btn.primary span:last-child {
   font-family: var(--font-display);
+  font-weight: 700;
   font-size: 1rem;
   letter-spacing: 0.1em;
   text-shadow: 2px 2px 0 rgba(0,0,0,0.2);
@@ -1172,6 +1195,7 @@ body::after {
 
 .modal-content h2 {
   font-family: var(--font-display);
+  font-weight: 700;
   font-size: 2.5rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
