@@ -89,10 +89,27 @@ const box = await page.evaluate(() => {
   return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), hits: xs.length };
 });
 
+// Optional renderer facts (only reported when the app exposes them).
+const info = () => page.evaluate(() => {
+  const r = window.app?.scene?.renderer;
+  if (!r || !r.info) return null;
+  return {
+    programs: r.info.programs ? r.info.programs.length : null,
+    calls: r.info.render.calls,
+    textures: r.info.memory.textures,
+    tier: window.app.quality?.tier ?? null,
+    scale: window.app.quality?.scale ?? null,
+  };
+});
+const heapNow = () => page.evaluate(() => performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : null);
+
 const idle = await measure(3000, false); // brush on, not painting
+const infoBefore = await info();
+const heapBefore = await heapNow();
 const painting = await measure(6000, true);
-const heap = await page.evaluate(() => performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : null);
+const heap = await heapNow();
+const infoAfter = await info();
 await page.screenshot({ path: `shot-${label}.png` });
 
-console.log(JSON.stringify({ label, loadMs, nailBox: box, sceneOnly, idle, painting, heapMB: heap, blockedExternalHosts: [...external], pageErrors: errors.slice(0, 5) }, null, 2));
+console.log(JSON.stringify({ label, loadMs, nailBox: box, sceneOnly, idle, painting, heapMB: heap, heapBeforePaintMB: heapBefore, rendererBeforePaint: infoBefore, rendererAfterPaint: infoAfter, blockedExternalHosts: [...external], pageErrors: errors.slice(0, 5) }, null, 2));
 await browser.close();
