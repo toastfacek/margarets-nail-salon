@@ -90,10 +90,12 @@ export function computeSettings(tier, scale, dpr, caps) {
   });
 }
 
-// Must match the attributes three.js asks for (alpha is always true there),
-// so a probe context without antialias can be handed to the renderer.
+// The renderer's context attributes. The canvas is opaque (alpha: false):
+// the scene always clears to an opaque colour, and an opaque canvas is
+// cheaper for the browser to composite. A probe context without antialias
+// is created with exactly these and handed to the renderer.
 export const CONTEXT_ATTRIBUTES = Object.freeze({
-  alpha: true,
+  alpha: false,
   depth: true,
   stencil: false,
   antialias: false,

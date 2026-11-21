@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createNailLighting } from './NailMaterial.js';
+import { CONTEXT_ATTRIBUTES } from '../core/Quality.js';
 
 const DEFAULT_SETTINGS = Object.freeze({ antialias: true, pixelRatio: 1, rimLight: false });
 
@@ -72,13 +73,25 @@ export class NailScene {
         this.camera.lookAt(0, 0, 0);
 
         const s = this.settings;
-        const probe = this.probeContext; // reuse the quality probe's context when it fits
+        // Reuse the quality probe's context when it fits (no antialias), else
+        // create one with the same opaque attributes.
+        let canvas = null;
+        let context = null;
+        const probe = this.probeContext;
+        if (probe && !s.antialias) {
+            canvas = probe.canvas;
+            context = probe.context;
+        } else {
+            canvas = document.createElement('canvas');
+            context = canvas.getContext('webgl2', Object.assign({}, CONTEXT_ATTRIBUTES, { antialias: !!s.antialias }));
+            if (!context) canvas = null; // let three.js report the failure its own way
+        }
         this.renderer = new THREE.WebGLRenderer({
             antialias: !!s.antialias,
-            alpha: true,
+            alpha: false,
             powerPreference: 'high-performance',
-            canvas: probe && !s.antialias ? probe.canvas : undefined,
-            context: probe && !s.antialias ? probe.context : null,
+            canvas: canvas || undefined,
+            context,
         });
         this.renderer.setPixelRatio(s.pixelRatio || 1);
         this.renderer.setSize(this.width, this.height);
