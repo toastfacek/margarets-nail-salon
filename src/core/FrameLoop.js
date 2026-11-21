@@ -37,6 +37,7 @@ export class FrameLoop {
     this._lastTime = -1;
     this._lastRenderTime = -Infinity;
     this._prevFrameRendered = false;
+    this._prevPrevFrameRendered = false;
     this._rafId = 0;
     this._running = false;
 
@@ -124,9 +125,12 @@ export class FrameLoop {
     if (dt < 0) dt = 0;
     this.dt = dt;
 
-    // The interval that ends now mostly measures the frame that rendered
-    // before it; only those intervals say anything about GPU/CPU load.
-    if (this._prevFrameRendered && this.quality) this.quality.sample(rawMs);
+    // The interval that ends now measures the frame before it. Only sample
+    // when the two previous frames both rendered: an isolated render between
+    // skipped frames (render-on-demand safety net) reports one vsync while its
+    // real cost is hidden, which would read as "fast" (and on 120 Hz screens
+    // could falsely promote medium to high).
+    if (this._prevFrameRendered && this._prevPrevFrameRendered && this.quality) this.quality.sample(rawMs);
 
     const doRender = !this.onDemand || this._dirty || (time - this._lastRenderTime) >= SAFETY_RENDER_MS;
     // Clear before running callbacks so anything they invalidate lands on the next frame
@@ -154,6 +158,7 @@ export class FrameLoop {
         console.error('[loop] frame callback failed', err);
       }
     }
+    this._prevPrevFrameRendered = this._prevFrameRendered;
     this._prevFrameRendered = this.renderedThisFrame;
     this.renderedThisFrame = false;
   }
