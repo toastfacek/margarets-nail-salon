@@ -1,526 +1,483 @@
 /**
  * SoundManager.js
- * Handles all game audio. Every sound is synthesised with the Web Audio API;
- * there are no audio files.
+ * All game audio, synthesised with the Web Audio API. There are no audio
+ * files and nothing is fetched.
+ *
+ * - The AudioContext is created lazily inside the first user gesture
+ *   (pointer/key/touch), never before, so browsers log no autoplay warnings.
+ *   It is resumed on later gestures and on `visibilitychange`, and suspended
+ *   while the tab is hidden.
+ * - Graph (graph.js): sfxBus + musicBus -> master -> limiter -> mute -> out.
+ * - Two shared noise buffers are built once (buffers.js); no play call ever
+ *   creates a buffer.
+ * - One-shots (recipes.js) run in a pool of at most 12 voices; the oldest is
+ *   stolen with a 10 ms fade.
+ * - The continuous brush sound is a single BrushVoice for the whole stroke.
+ * - `setMuted(true, 'ad')` is the hook a future Poki SDK step uses around ad
+ *   breaks; the player's own mute uses reason 'user' and is persisted.
+ *
+ * A missing or blocked AudioContext never throws: every method is a no-op.
  */
 
+import { storage } from '../core/Storage.js';
+import { createGraph } from './graph.js';
+import { createNoiseBuffers } from './buffers.js';
+import { RECIPES, MIN_GAP } from './recipes.js';
+import { BrushVoice } from './BrushVoice.js';
+import { DryerVoice } from './DryerVoice.js';
+import { MusicBox } from './MusicBox.js';
+
+const MAX_VOICES = 12;
+const MAX_SOURCES_PER_VOICE = 24;
+const STEAL_FADE = 0.01;
+const MUTE_TAU = 0.008; // about -54 dB after 50 ms
+
+const KEY_MUTED = 'audio.muted';
+const KEY_MUSIC = 'audio.music';
+const KEY_VOLUME = 'audio.volume';
+
+const GESTURE_EVENTS = ['pointerdown', 'pointerup', 'touchend', 'keydown', 'click'];
+
+function now() {
+  return typeof performance !== 'undefined' ? performance.now() : 0;
+}
+
+/** A pooled one-shot voice. `add` is what recipes call for each source. */
+class Voice {
+  constructor() {
+    this.gain = null;
+    this.sources = new Array(MAX_SOURCES_PER_VOICE).fill(null);
+    this.count = 0;
+    this.start = 0;
+    this.end = 0;
+  }
+
+  add(node) {
+    if (this.count < MAX_SOURCES_PER_VOICE) this.sources[this.count++] = node;
+  }
+
+  /** Fade out fast and stop everything (voice stealing). */
+  kill(t) {
+    if (this.gain) {
+      const g = this.gain.gain;
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(1, t);
+      g.linearRampToValueAtTime(0, t + STEAL_FADE);
+    }
+    for (let i = 0; i < this.count; i++) {
+      try {
+        this.sources[i].stop(t + STEAL_FADE + 0.005);
+      } catch (e) {
+        // already stopped
+      }
+      this.sources[i] = null;
+    }
+    this.count = 0;
+    this.end = 0;
+  }
+
+  reset() {
+    for (let i = 0; i < this.count; i++) this.sources[i] = null;
+    this.count = 0;
+  }
+}
+
 class SoundManager {
-    constructor() {
-        this.sounds = {};
-        this.music = null;
-        this.musicEnabled = true;
-        this.sfxEnabled = true;
-        this.initialized = false;
-        // Master volume (0..1). Stored only for now; WP5 routes it to a real
-        // master gain node.
-        this.volume = 1;
+  constructor() {
+    this.audioContext = null; // old name, kept for callers
+    this.ctx = null;
+    this.initialized = false;
+    this.unsupported = false;
+    this.sfxEnabled = true;
+    this.musicEnabled = true;
+    this.volume = 0.9;
 
-        // We'll use Web Audio API oscillators for immediate sound feedback
-        // until we have proper audio files
-        this.audioContext = null;
+    this._muteReasons = new Set();
+    this._graph = null;
+    this._bufs = null;
+    this._voices = [];
+    for (let i = 0; i < MAX_VOICES; i++) this._voices.push(new Voice());
+    this._lastPlay = Object.create(null);
+    this._brush = null;
+    this._dryer = null;
+    this._music = null;
+    this._tapIndex = 2;
+    this._hidden = typeof document !== 'undefined' && document.hidden;
+
+    // Cheap counters for the perf hand-off (read via app.sound.stats).
+    this.stats = {
+      oneShots: 0,
+      dropped: 0,
+      steals: 0,
+      voicesPeak: 0,
+      brushUpdates: 0,
+      mainMs: 0,
+    };
+
+    this._onGesture = this._onGesture.bind(this);
+    this._onVisibility = this._onVisibility.bind(this);
+  }
+
+  // ---------------------------------------------------------- lifecycle --
+
+  /**
+   * Install gesture and visibility listeners and read saved settings. Safe to
+   * call many times and outside a gesture: the context itself is only made
+   * inside a user gesture.
+   */
+  init() {
+    if (this.initialized) {
+      this._tryUnlock();
+      return;
     }
+    this.initialized = true;
+    if (typeof window === 'undefined') return;
 
-    init() {
-        if (this.initialized) return;
+    if (storage.get(KEY_MUTED, false) === true) this._muteReasons.add('user');
+    this.musicEnabled = storage.get(KEY_MUSIC, true) !== false;
+    const vol = Number(storage.get(KEY_VOLUME, this.volume));
+    if (Number.isFinite(vol)) this.volume = Math.max(0, Math.min(1, vol));
 
-        // Create AudioContext for synthetic sounds
-        try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        } catch (e) {
-            console.warn('Web Audio API not supported');
-        }
-
-        this.initialized = true;
-        console.log('🔊 Sound Manager initialized');
+    for (let i = 0; i < GESTURE_EVENTS.length; i++) {
+      window.addEventListener(GESTURE_EVENTS[i], this._onGesture, { capture: true, passive: true });
     }
+    document.addEventListener('visibilitychange', this._onVisibility);
+    this._tryUnlock();
+  }
 
-    // Ensure audio context is running (needed after user interaction)
-    resume() {
-        if (this.audioContext && this.audioContext.state === 'suspended') {
-            this.audioContext.resume();
-        }
+  /** True when the browser says a user gesture is active right now. */
+  _gestureActive() {
+    const ua = typeof navigator !== 'undefined' ? navigator.userActivation : null;
+    return ua ? ua.isActive : false;
+  }
+
+  _tryUnlock() {
+    if (!this.ctx) {
+      if (this._gestureActive()) this._createContext();
+    } else {
+      this.resume();
     }
+  }
 
-    // Generate a synthetic filing sound
-    playFileSound(intensity = 0.5) {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        // Create a "scratchy" filing sound using noise + filter
-        const duration = 0.08;
-        const now = this.audioContext.currentTime;
-
-        // Create noise buffer
-        const bufferSize = this.audioContext.sampleRate * duration;
-        const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
-        const data = buffer.getChannelData(0);
-
-        for (let i = 0; i < bufferSize; i++) {
-            data[i] = (Math.random() * 2 - 1) * 0.3;
-        }
-
-        // Create source
-        const source = this.audioContext.createBufferSource();
-        source.buffer = buffer;
-
-        // Filter to make it sound more like filing
-        const filter = this.audioContext.createBiquadFilter();
-        filter.type = 'bandpass';
-        filter.frequency.value = 2000 + intensity * 3000; // Higher pitch when filing faster
-        filter.Q.value = 1.5;
-
-        // Gain envelope
-        const gain = this.audioContext.createGain();
-        gain.gain.setValueAtTime(0.15 * intensity, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
-
-        // Connect nodes
-        source.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        source.start(now);
-        source.stop(now + duration);
+  _onGesture(e) {
+    if (!this.ctx) {
+      // Without the User Activation API, trust the gesture event itself
+      // (a touch pointerdown does not activate, so wait for pointerup).
+      const ua = typeof navigator !== 'undefined' ? navigator.userActivation : null;
+      if (ua ? !ua.isActive : e.type === 'pointerdown' && e.pointerType === 'touch') return;
+      this._createContext();
+      return;
     }
+    if (this.ctx.state !== 'running' && !this._hidden) this.resume();
+  }
 
-    // UI click sound
-    playClick() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-
-        // Simple "pop" sound
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(800, now);
-        osc.frequency.exponentialRampToValueAtTime(400, now + 0.1);
-
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-
-        osc.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + 0.1);
+  _onVisibility() {
+    this._hidden = document.hidden;
+    if (!this.ctx) return;
+    if (this._hidden) {
+      this._brush.stop();
+      this._dryer.stop();
+      if (this.ctx.state === 'running') this.ctx.suspend().catch(() => {});
+    } else {
+      this.resume();
     }
+  }
 
-    // Polish swipe sound
-    playPolish() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-        const duration = 0.3;
-
-        // Smooth "swish" sound
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-        const filter = this.audioContext.createBiquadFilter();
-
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(300, now);
-        osc.frequency.exponentialRampToValueAtTime(150, now + duration);
-
-        filter.type = 'lowpass';
-        filter.frequency.value = 800;
-
-        gain.gain.setValueAtTime(0.15, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
-
-        osc.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + duration);
+  _createContext() {
+    if (this.ctx || this.unsupported) return;
+    const AC = typeof window !== 'undefined' ? window.AudioContext || window.webkitAudioContext : null;
+    if (!AC) {
+      this.unsupported = true;
+      return;
     }
-
-    // Wet brush stroke sound - smooth sliding friction
-    playPolishBrush(pressure = 0.5) {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-        const duration = 0.15 + pressure * 0.08;
-
-        // Wet brush = filtered noise (friction) + low body
-        // Part 1: Smooth friction noise (the sliding wet sound)
-        const bufferSize = Math.floor(this.audioContext.sampleRate * duration);
-        const noiseBuffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
-        const noiseData = noiseBuffer.getChannelData(0);
-
-        // Pink-ish noise for smooth friction (not harsh white noise)
-        let b0 = 0, b1 = 0, b2 = 0;
-        for (let i = 0; i < bufferSize; i++) {
-            const white = Math.random() * 2 - 1;
-            b0 = 0.99765 * b0 + white * 0.0990460;
-            b1 = 0.96300 * b1 + white * 0.2965164;
-            b2 = 0.57000 * b2 + white * 1.0526913;
-            noiseData[i] = (b0 + b1 + b2 + white * 0.1848) * 0.11;
-        }
-
-        const noiseSource = this.audioContext.createBufferSource();
-        noiseSource.buffer = noiseBuffer;
-
-        // Bandpass filter for that wet brush friction character
-        const frictionFilter = this.audioContext.createBiquadFilter();
-        frictionFilter.type = 'bandpass';
-        frictionFilter.frequency.value = 800 + pressure * 400; // Higher = more friction
-        frictionFilter.Q.value = 0.8;
-
-        const noiseGain = this.audioContext.createGain();
-        noiseGain.gain.setValueAtTime(0, now);
-        noiseGain.gain.linearRampToValueAtTime(0.25 * pressure, now + 0.01);
-        noiseGain.gain.setValueAtTime(0.22 * pressure, now + duration * 0.8);
-        noiseGain.gain.linearRampToValueAtTime(0, now + duration);
-
-        noiseSource.connect(frictionFilter);
-        frictionFilter.connect(noiseGain);
-        noiseGain.connect(this.audioContext.destination);
-
-        // Part 2: Low body thump (the "wet" weight)
-        const bodyOsc = this.audioContext.createOscillator();
-        const bodyGain = this.audioContext.createGain();
-        const bodyFilter = this.audioContext.createBiquadFilter();
-
-        bodyOsc.type = 'sine';
-        bodyOsc.frequency.setValueAtTime(90 + pressure * 20, now);
-        bodyOsc.frequency.linearRampToValueAtTime(60, now + duration);
-
-        bodyFilter.type = 'lowpass';
-        bodyFilter.frequency.value = 150;
-
-        bodyGain.gain.setValueAtTime(0, now);
-        bodyGain.gain.linearRampToValueAtTime(0.12 * pressure, now + 0.015);
-        bodyGain.gain.linearRampToValueAtTime(0.08 * pressure, now + duration * 0.6);
-        bodyGain.gain.linearRampToValueAtTime(0, now + duration);
-
-        bodyOsc.connect(bodyFilter);
-        bodyFilter.connect(bodyGain);
-        bodyGain.connect(this.audioContext.destination);
-
-        // Start and stop
-        noiseSource.start(now);
-        noiseSource.stop(now + duration);
-        bodyOsc.start(now);
-        bodyOsc.stop(now + duration);
+    try {
+      const ctx = new AC({ latencyHint: 'interactive' });
+      this._graph = createGraph(ctx);
+      this._bufs = createNoiseBuffers(ctx);
+      this._graph.master.gain.value = this.volume;
+      this._graph.mute.gain.value = this._muteReasons.size ? 0 : 1;
+      this._brush = new BrushVoice(ctx, this._graph.sfxBus, this._bufs);
+      this._dryer = new DryerVoice(ctx, this._graph.sfxBus, this._bufs);
+      this._music = new MusicBox(ctx, this._graph.musicBus);
+      this.ctx = ctx;
+      this.audioContext = ctx;
+      if (ctx.state !== 'running') ctx.resume().catch(() => {});
+      this._syncMusic();
+    } catch (err) {
+      this.unsupported = true;
+      this.ctx = null;
+      this.audioContext = null;
     }
+  }
 
-    // Sticker pop sound
-    playStickerPop() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-
-        // Bubbly "pop" sound
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(600, now);
-        osc.frequency.exponentialRampToValueAtTime(1200, now + 0.05);
-        osc.frequency.exponentialRampToValueAtTime(400, now + 0.15);
-
-        gain.gain.setValueAtTime(0.25, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
-
-        osc.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + 0.15);
+  /** Make sure the context is running (safe to call from anywhere). */
+  resume() {
+    if (!this.initialized) this.init();
+    const ctx = this.ctx;
+    if (!ctx) {
+      if (this._gestureActive()) this._createContext();
+      return;
     }
-
-    // Sparkle/glitter sound
-    playSparkle() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-
-        // High-pitched shimmer
-        for (let i = 0; i < 3; i++) {
-            const osc = this.audioContext.createOscillator();
-            const gain = this.audioContext.createGain();
-
-            osc.type = 'sine';
-            const baseFreq = 2000 + Math.random() * 2000;
-            osc.frequency.setValueAtTime(baseFreq, now + i * 0.03);
-
-            gain.gain.setValueAtTime(0.08, now + i * 0.03);
-            gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.03 + 0.1);
-
-            osc.connect(gain);
-            gain.connect(this.audioContext.destination);
-
-            osc.start(now + i * 0.03);
-            osc.stop(now + i * 0.03 + 0.1);
-        }
+    if (ctx.state !== 'running' && ctx.state !== 'closed' && !this._hidden) {
+      ctx.resume().catch(() => {});
     }
+  }
 
-    // =========================================
-    // PEN/DRAW SOUND EFFECTS
-    // =========================================
+  get ready() {
+    return this.ctx !== null && this.ctx.state === 'running';
+  }
 
-    // Solid pen - soft drawing sound
-    playDrawSolid() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-        this.resume();
+  // ------------------------------------------------------ mute / volume --
 
-        const now = this.audioContext.currentTime;
-        const duration = 0.06;
-
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-        const filter = this.audioContext.createBiquadFilter();
-
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(200 + Math.random() * 50, now);
-
-        filter.type = 'lowpass';
-        filter.frequency.value = 400;
-
-        gain.gain.setValueAtTime(0.08, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
-
-        osc.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + duration);
+  /**
+   * Mute or unmute. `reason` lets several owners mute independently: the
+   * player ('user', persisted) and a future ad break ('ad'). Sound is on
+   * only while no reason is active. Takes effect within 50 ms.
+   * @returns {boolean} whether audio is now muted
+   */
+  setMuted(muted, reason = 'user') {
+    const was = this._muteReasons.size > 0;
+    if (muted) this._muteReasons.add(reason);
+    else this._muteReasons.delete(reason);
+    if (reason === 'user') storage.set(KEY_MUTED, !!muted);
+    const is = this._muteReasons.size > 0;
+    if (was === is) return is;
+    if (this.ctx) {
+      const t = this.ctx.currentTime;
+      const g = this._graph.mute.gain;
+      g.cancelScheduledValues(t);
+      g.setTargetAtTime(is ? 0 : 1, t, MUTE_TAU);
+      if (is) {
+        this._brush.stop();
+        this._dryer.stop();
+      }
     }
+    this._syncMusic();
+    return is;
+  }
 
-    // Dotted pen - cute pop sound
-    playDrawDotted() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-        this.resume();
+  isMuted(reason) {
+    return reason ? this._muteReasons.has(reason) : this._muteReasons.size > 0;
+  }
 
-        const now = this.audioContext.currentTime;
-        const duration = 0.08;
+  get muted() {
+    return this._muteReasons.size > 0;
+  }
 
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
+  toggleMute() {
+    return this.setMuted(!this._muteReasons.has('user'), 'user');
+  }
 
-        osc.type = 'sine';
-        // Bubbly "boop" sound
-        osc.frequency.setValueAtTime(600 + Math.random() * 100, now);
-        osc.frequency.exponentialRampToValueAtTime(300, now + duration);
+  setVolume(volume) {
+    this.volume = Math.max(0, Math.min(1, Number(volume) || 0));
+    storage.set(KEY_VOLUME, this.volume);
+    if (this.ctx) this._graph.master.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02);
+  }
 
-        gain.gain.setValueAtTime(0.12, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+  /** Lower the music by `amount` (0..1) for `seconds`, then bring it back. */
+  duck(amount = 0.7, seconds = 1) {
+    if (!this.ctx) return;
+    const g = this._graph.musicDuck.gain;
+    const t = this.ctx.currentTime;
+    const a = Math.max(0, Math.min(1, amount));
+    g.cancelScheduledValues(t);
+    g.setTargetAtTime(1 - a, t, 0.08);
+    g.setTargetAtTime(1, t + Math.max(0.05, seconds), 0.4);
+  }
 
-        osc.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + duration);
+  toggleSFX() {
+    this.sfxEnabled = !this.sfxEnabled;
+    if (!this.sfxEnabled && this.ctx) {
+      this._brush.stop();
+      this._dryer.stop();
     }
+    return this.sfxEnabled;
+  }
 
-    // Metallic pen - shiny sliding sound
-    playDrawMetallic() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-        this.resume();
+  toggleMusic() {
+    this.setMusicEnabled(!this.musicEnabled);
+    return this.musicEnabled;
+  }
 
-        const now = this.audioContext.currentTime;
-        const duration = 0.08;
+  setMusicEnabled(on) {
+    this.musicEnabled = !!on;
+    storage.set(KEY_MUSIC, this.musicEnabled);
+    this._syncMusic();
+  }
 
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
+  _syncMusic() {
+    if (!this._music) return;
+    if (this.musicEnabled && this._muteReasons.size === 0) this._music.start();
+    else this._music.stop();
+  }
 
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(1200, now);
-        osc.frequency.exponentialRampToValueAtTime(800, now + duration);
+  // ---------------------------------------------------------- one-shots --
 
-        gain.gain.setValueAtTime(0.06, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+  _canPlay() {
+    // A context made in this very gesture may still be 'suspended' for a few
+    // ms; sounds scheduled now simply start when it runs. A hidden tab never
+    // schedules (it would all play at once on return).
+    return this.sfxEnabled && this.ctx !== null && this._muteReasons.size === 0 &&
+      !this._hidden && this.ctx.state !== 'closed';
+  }
 
-        osc.connect(gain);
-        gain.connect(this.audioContext.destination);
+  /**
+   * Swallow a uiTap that follows within 45 ms (used when an event already
+   * gave the same click its own sound).
+   */
+  holdTaps() {
+    if (this.ctx) this._lastPlay.uiTap = this.ctx.currentTime + 0.004;
+  }
 
-        osc.start(now);
-        osc.stop(now + duration);
+  _allocVoice(t) {
+    const voices = this._voices;
+    let free = null;
+    let oldest = null;
+    let busy = 0;
+    for (let i = 0; i < voices.length; i++) {
+      const v = voices[i];
+      if (v.end <= t) {
+        if (free === null) free = v;
+      } else {
+        busy++;
+        if (oldest === null || v.start < oldest.start) oldest = v;
+      }
     }
-
-    // Rainbow pen - whimsical rising tone
-    playDrawRainbow() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-        const duration = 0.1;
-
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-
-        osc.type = 'sine';
-        // Rising pitch for rainbow magic
-        osc.frequency.setValueAtTime(400 + Math.random() * 200, now);
-        osc.frequency.linearRampToValueAtTime(800 + Math.random() * 400, now + duration);
-
-        gain.gain.setValueAtTime(0.07, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
-
-        osc.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + duration);
+    if (free === null) {
+      oldest.kill(t);
+      this.stats.steals++;
+      free = oldest;
+    } else {
+      busy++;
     }
+    if (busy > this.stats.voicesPeak) this.stats.voicesPeak = busy;
+    free.reset();
+    const g = this.ctx.createGain();
+    g.connect(this._graph.sfxBus);
+    free.gain = g;
+    free.start = t;
+    return free;
+  }
 
-    // Glow pen - neon buzz/hum
-    playDrawGlow() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-        const duration = 0.1;
-
-        // Main hum
-        const osc1 = this.audioContext.createOscillator();
-        const osc2 = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-
-        osc1.type = 'sine';
-        osc1.frequency.value = 180;
-
-        osc2.type = 'sine';
-        osc2.frequency.value = 360; // Harmonic
-
-        gain.gain.setValueAtTime(0.05, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
-
-        osc1.connect(gain);
-        osc2.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc1.start(now);
-        osc2.start(now);
-        osc1.stop(now + duration);
-        osc2.stop(now + duration);
+  /**
+   * Play a recipe by name. Returns true when it played.
+   * @param {string} name key of RECIPES
+   * @param {number} [arg]
+   * @param {number} [delay] seconds from now
+   */
+  play(name, arg, delay) {
+    if (!this._canPlay()) return false;
+    const recipe = RECIPES[name];
+    if (recipe === undefined) return false;
+    const ctx = this.ctx;
+    const cur = ctx.currentTime;
+    const t = cur + (delay > 0 ? delay : 0) + 0.004;
+    const last = this._lastPlay[name];
+    if (last !== undefined && t - last < (MIN_GAP[name] || 0)) {
+      this.stats.dropped++;
+      return false;
     }
-
-    // Marker pen - squeaky marker sound
-    playDrawMarker() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-        const duration = 0.07;
-
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-        const filter = this.audioContext.createBiquadFilter();
-
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(150 + Math.random() * 30, now);
-
-        filter.type = 'lowpass';
-        filter.frequency.value = 300;
-        filter.Q.value = 2;
-
-        gain.gain.setValueAtTime(0.04, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
-
-        osc.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + duration);
+    this._lastPlay[name] = t;
+    const t0 = now();
+    try {
+      const v = this._allocVoice(cur);
+      v.end = t + recipe(ctx, v.gain, t, this._bufs, v, arg) + 0.05;
+      this.stats.oneShots++;
+    } catch (err) {
+      // A broken recipe must never take the game down.
     }
+    this.stats.mainMs += now() - t0;
+    return true;
+  }
 
-    // Gem placement clink
-    playGemClink() {
-        if (!this.sfxEnabled || !this.audioContext) return;
-
-        this.resume();
-
-        const now = this.audioContext.currentTime;
-
-        // Crystal-like "clink"
-        const osc = this.audioContext.createOscillator();
-        const gain = this.audioContext.createGain();
-
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(2500, now);
-        osc.frequency.exponentialRampToValueAtTime(1800, now + 0.2);
-
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
-
-        osc.connect(gain);
-        gain.connect(this.audioContext.destination);
-
-        osc.start(now);
-        osc.stop(now + 0.2);
+  // Named one-shots (the vocabulary the event wiring uses)
+  uiTap(index) {
+    if (index === undefined) {
+      // Gentle random walk so repeated taps sound like a little tune.
+      const r = Math.random();
+      this._tapIndex += r < 0.45 ? -1 : r < 0.9 ? 1 : 0;
+      if (this._tapIndex < 0) this._tapIndex = 1;
+      if (this._tapIndex > 7) this._tapIndex = 6;
+      index = this._tapIndex;
     }
+    return this.play('uiTap', index);
+  }
+  bottlePop() { return this.play('bottlePop'); }
+  stickerPop() { return this.play('stickerPop'); }
+  gemClink() { return this.play('gemClink'); }
+  sparkle() { return this.play('sparkle'); }
+  plip(amount) { return this.play('plip', amount); }
+  coverageRise(coverage) { return this.play('coverageRise', coverage); }
+  covered() { return this.play('covered'); }
+  cureTing() { return this.play('cureTing'); }
+  starDing(n, delay) { return this.play('starDing', n, delay); }
+  shutter() { return this.play('shutter'); }
+  flashWhoosh() { return this.play('flashWhoosh'); }
+  confettiPop() { return this.play('confettiPop'); }
+  clientYay(variant) { return this.play('clientYay', variant); }
+  doorBell() { return this.play('doorBell'); }
+  swish(amount) { return this.play('swish', amount); }
+  revealJingle(stars) { return this.play('revealJingle', stars); }
 
-    // Success fanfare
-    playSuccess() {
-        if (!this.sfxEnabled || !this.audioContext) return;
+  // ------------------------------------------------- continuous voices --
 
-        this.resume();
+  brushStart(pressure) {
+    if (!this._canPlay()) return;
+    this._brush.start(pressure);
+  }
 
-        const now = this.audioContext.currentTime;
+  /** Per painting frame. No allocation, at most one param batch per frame. */
+  brushUpdate(speed, pressure) {
+    const b = this._brush;
+    if (b === null || !b.active) return;
+    const t0 = now();
+    b.update(speed, pressure);
+    this.stats.brushUpdates++;
+    this.stats.mainMs += now() - t0;
+  }
 
-        // Happy arpeggio
-        const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+  brushEnd() {
+    const b = this._brush;
+    if (b === null || !b.active) return;
+    const s = b.speed;
+    b.stop();
+    this.play('plip', 0.55 + 0.45 * s);
+  }
 
-        notes.forEach((freq, i) => {
-            const osc = this.audioContext.createOscillator();
-            const gain = this.audioContext.createGain();
+  get brushActive() {
+    return this._brush !== null && this._brush.active;
+  }
 
-            osc.type = 'sine';
-            osc.frequency.value = freq;
+  dryerStart() {
+    if (!this._canPlay()) return;
+    this._dryer.start();
+  }
 
-            const startTime = now + i * 0.1;
-            gain.gain.setValueAtTime(0, startTime);
-            gain.gain.linearRampToValueAtTime(0.2, startTime + 0.05);
-            gain.gain.exponentialRampToValueAtTime(0.01, startTime + 0.3);
+  dryerStop() {
+    if (this._dryer) this._dryer.stop();
+  }
 
-            osc.connect(gain);
-            gain.connect(this.audioContext.destination);
+  // ------------------------------------------------ legacy method names --
+  // Thin aliases so existing callers keep working.
 
-            osc.start(startTime);
-            osc.stop(startTime + 0.3);
-        });
-    }
-
-    // Toggle sound effects
-    toggleSFX() {
-        this.sfxEnabled = !this.sfxEnabled;
-        return this.sfxEnabled;
-    }
-
-    // Toggle music
-    toggleMusic() {
-        this.musicEnabled = !this.musicEnabled;
-        if (this.music) {
-            if (this.musicEnabled) {
-                this.music.play();
-            } else {
-                this.music.pause();
-            }
-        }
-        return this.musicEnabled;
-    }
-
-    // Set master volume
-    setVolume(volume) {
-        this.volume = Math.max(0, Math.min(1, Number(volume) || 0));
-    }
+  playClick() { this.resume(); return this.uiTap(); }
+  playStickerPop() { this.resume(); return this.stickerPop(); }
+  playGemClink() { this.resume(); return this.gemClink(); }
+  playSuccess() { this.resume(); return this.covered(); }
+  playSparkle() { this.resume(); return this.sparkle(); }
+  playPolish() { this.resume(); return this.swish(0.6); }
+  playFileSound(intensity = 0.5) { this.resume(); return this.play('fileScratch', intensity); }
+  playDrawSolid() { return this.play('drawSolid'); }
+  playDrawDotted() { return this.play('drawDotted'); }
+  playDrawMetallic() { return this.play('drawMetallic'); }
+  playDrawRainbow() { return this.play('drawRainbow'); }
+  playDrawGlow() { return this.play('drawGlow'); }
+  playDrawMarker() { return this.play('drawMarker'); }
+  /** Legacy per-dab brush sound; silent while the continuous voice runs. */
+  playPolishBrush(pressure = 0.5) {
+    if (this.brushActive) return false;
+    return this.play('polishDab', pressure);
+  }
 }
 
 // Export singleton instance
