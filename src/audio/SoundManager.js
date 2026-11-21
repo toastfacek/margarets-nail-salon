@@ -233,6 +233,10 @@ class SoundManager {
    * Mute or unmute. `reason` lets several owners mute independently: the
    * player ('user', persisted) and a future ad break ('ad'). Sound is on
    * only while no reason is active. Takes effect within 50 ms.
+   *
+   * Ad breaks (the future Poki SDK hook) must always pass reason 'ad':
+   * setMuted(true, 'ad') / setMuted(false, 'ad'). Only 'user' is saved, so an
+   * ad never overwrites or clears the player's own saved mute.
    * @returns {boolean} whether audio is now muted
    */
   setMuted(muted, reason = 'user') {
