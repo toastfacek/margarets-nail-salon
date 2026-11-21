@@ -17,8 +17,7 @@ const RUNGS = Object.freeze([
   Object.freeze({ tier: 'medium', scale: 1.0 }),
   Object.freeze({ tier: 'low', scale: 1.0 }),
   Object.freeze({ tier: 'low', scale: 0.85 }),
-  Object.freeze({ tier: 'low', scale: 0.7 }),
-  Object.freeze({ tier: 'low', scale: 0.6 }),
+  Object.freeze({ tier: 'low', scale: 0.7 }), // lowest: 0.6 without antialias is visibly jagged
 ]);
 
 const LOW_GPU_PATTERNS = [
@@ -33,6 +32,7 @@ const UP_MEDIAN_MS = 11;
 const UP_HOLD_MS = 10000;
 const RETRY_UP_MEDIAN_MS = 14;
 const MAX_CHANGES = 4;
+const MIN_GAIN = 0.10; // two downgrades must buy at least 10% median frame time
 
 function rungIndex(tier, scale) {
   for (let i = 0; i < RUNGS.length; i++) {
@@ -58,7 +58,7 @@ export function computeSettings(tier, scale, dpr, caps) {
     scale,
     pixelRatio: high ? Math.min(dpr, 2) : medium ? Math.min(dpr, 1.5) : 1.0 * scale,
     antialias: high ? true : medium ? dpr < 2 : false,
-    dynamicScaleLadder: low ? Object.freeze([1.0, 0.85, 0.7, 0.6]) : null,
+    dynamicScaleLadder: low ? Object.freeze([1.0, 0.85, 0.7]) : null,
     fluidSimRes: high ? 256 : medium ? 128 : 96,
     fluidDyeRes: high ? 512 : medium ? 384 : 256,
     fluidDyeType: (high || medium) && halfFloatOK ? THREE.HalfFloatType : THREE.UnsignedByteType,
@@ -188,6 +188,14 @@ export class Quality {
     this.lastMedian = 0;
     this._sessionMaxMedian = 0;
     this._persistedOnce = false;
+    this._noPersist = false;        // set by the no-gain guard
+    this._holdUntil = 0;            // see hold()
+    this._held = false;
+    // Consecutive automatic downgrades: rung we left and the median that triggered it.
+    this._downFrom = [-1, -1];
+    this._downMedian = [0, 0];
+    this._downCount = 0;
+    this._evalPending = false;
 
     this._payload = { tier: this.tier, scale: this.scale };
 
@@ -260,9 +268,41 @@ export class Quality {
     this._resetSampling();
   }
 
+  /**
+   * Suspend frame-time sampling, so a deliberate heavy moment (the Slay
+   * reveal, a polaroid capture, a dynamic import) never causes a permanent
+   * downgrade.
+   *   quality.hold(4500)   // ignore samples for the next 4.5 s
+   *   quality.hold()       // ignore samples until release()
+   *   quality.release()    // resume (after the usual 2 s warm-up)
+   * Holds do not stack: a timed hold extends to the latest end time, and
+   * release() ends any hold.
+   */
+  hold(ms) {
+    if (ms === undefined || ms === null || !isFinite(ms)) {
+      this._held = true;
+    } else {
+      const until = performance.now() + Math.max(0, ms);
+      if (until > this._holdUntil) this._holdUntil = until;
+    }
+    this._resetSampling();
+  }
+
+  release() {
+    this._held = false;
+    this._holdUntil = 0;
+    this._resetSampling();
+  }
+
+  get isHeld() {
+    return this._held || performance.now() < this._holdUntil;
+  }
+
   /** Force a tier (debug / console: `app.quality.setTier('low')`). */
   setTier(tier, scale = 1.0) {
     if (!TIERS.includes(tier)) return;
+    this._downCount = 0;
+    this._evalPending = false;
     this._apply(rungIndex(tier, scale), true);
   }
 
@@ -273,6 +313,7 @@ export class Quality {
     if (typeof document !== 'undefined' && document.hidden) return;
     const now = performance.now();
     if (now < this._ignoreUntil) return;
+    if (this._held || now < this._holdUntil) return;
 
     this._samples[this._sampleHead] = ms;
     this._sampleHead = (this._sampleHead + 1) % SAMPLE_COUNT;
@@ -285,6 +326,29 @@ export class Quality {
     this.lastMedian = median;
     if (median > this._sessionMaxMedian) this._sessionMaxMedian = median;
 
+    // No-gain guard: the first median after the second of two consecutive
+    // downgrades must be at least 10% better than the median that triggered
+    // the first. If not, the frame time is not ours to fix (a 30 fps rAF cap
+    // in iOS low-power mode or a cross-origin iframe reads as 33 ms): go back
+    // to where we started, stop switching, and never save that tier.
+    if (this._evalPending) {
+      this._evalPending = false;
+      if (this._downCount >= 2 && median > this._downMedian[0] * (1 - MIN_GAIN)) {
+        const back = this._downFrom[0];
+        this._downCount = 0;
+        this.autoSwitch = false;
+        this._noPersist = true;
+        this._apply(back, true);
+        return;
+      }
+      if (this._downCount >= 2) {
+        // The pair paid off; keep only the latest step as the start of the next pair.
+        this._downFrom[0] = this._downFrom[1];
+        this._downMedian[0] = this._downMedian[1];
+        this._downCount = 1;
+      }
+    }
+
     if (this._changes >= MAX_CHANGES) return;
 
     // Down.
@@ -292,6 +356,11 @@ export class Quality {
       this._overChecks++;
       this._fastSince = -1;
       if (this._overChecks >= 2 && this._rung < RUNGS.length - 1) {
+        const k = this._downCount < 2 ? this._downCount : 1;
+        this._downFrom[k] = this._rung;
+        this._downMedian[k] = median;
+        this._downCount = k + 1;
+        this._evalPending = this._downCount >= 2;
         this._apply(this._rung + 1, false);
       }
       return;
@@ -303,6 +372,7 @@ export class Quality {
       if (this._fastSince < 0) this._fastSince = now;
       else if (now - this._fastSince >= UP_HOLD_MS) {
         this._upUsed = true;
+        this._downCount = 0;
         this._apply(rungIndex('high', 1.0), false);
       }
     } else {
@@ -359,7 +429,7 @@ export class Quality {
    * visit retries one rung higher.
    */
   persist() {
-    if (!this.storage || this.forced) return;
+    if (!this.storage || this.forced || this._noPersist) return;
     let rung = this._rung;
     if (this._sessionMaxMedian > 0 && this._sessionMaxMedian < RETRY_UP_MEDIAN_MS && rung > 0) rung -= 1;
     this.storage.set('q.tier', RUNGS[rung].tier);
