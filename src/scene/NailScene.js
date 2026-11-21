@@ -94,6 +94,8 @@ export class NailScene {
         });
         el.addEventListener('webglcontextrestored', () => {
             this.contextLost = false;
+            // three.js rebuilds its GL state on restore; put our clear colour back.
+            this.renderer.setClearColor(this.clearColor, 1);
             if (this.onContextRestored) this.onContextRestored();
             this.invalidate();
         });

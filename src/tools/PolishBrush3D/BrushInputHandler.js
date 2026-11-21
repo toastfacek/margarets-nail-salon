@@ -49,12 +49,30 @@ export class BrushInputHandler {
     };
     this.lastValidHit = null;
 
+    // Canvas rect, cached: getBoundingClientRect allocates, so it is only
+    // re-read on attach, pointerdown and window resize.
+    this._rectLeft = 0;
+    this._rectTop = 0;
+    this._rectWidth = 1;
+    this._rectHeight = 1;
+    this._refreshRect = this._refreshRect.bind(this);
+
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerMove = this.onPointerMove.bind(this);
     this.onPointerUp = this.onPointerUp.bind(this);
   }
 
+  _refreshRect() {
+    const rect = this.domElement.getBoundingClientRect();
+    this._rectLeft = rect.left;
+    this._rectTop = rect.top;
+    this._rectWidth = rect.width || 1;
+    this._rectHeight = rect.height || 1;
+  }
+
   attach() {
+    this._refreshRect();
+    window.addEventListener('resize', this._refreshRect);
     this.domElement.addEventListener('pointerdown', this.onPointerDown);
     this.domElement.addEventListener('pointermove', this.onPointerMove);
     this.domElement.addEventListener('pointerup', this.onPointerUp);
@@ -63,6 +81,7 @@ export class BrushInputHandler {
   }
 
   detach() {
+    window.removeEventListener('resize', this._refreshRect);
     this.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.domElement.removeEventListener('pointermove', this.onPointerMove);
     this.domElement.removeEventListener('pointerup', this.onPointerUp);
@@ -73,15 +92,15 @@ export class BrushInputHandler {
   }
 
   updateMousePosition(event) {
-    const rect = this.domElement.getBoundingClientRect();
-    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.mouse.x = ((event.clientX - this._rectLeft) / this._rectWidth) * 2 - 1;
+    this.mouse.y = -((event.clientY - this._rectTop) / this._rectHeight) * 2 + 1;
     this.pointerPosition.set(event.clientX, event.clientY);
     this.hasPointer = true;
     this.moved = true;
   }
 
   onPointerDown(event) {
+    this._refreshRect();
     this.isPointerDown = true;
     this.updateMousePosition(event);
     this.simulatedPressure = 0.35;  // immediate pressure for a responsive feel

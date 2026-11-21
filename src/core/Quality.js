@@ -253,6 +253,11 @@ export class Quality {
     }
   }
 
+  /** Call once the game is interactive: the 2 s warm-up starts now. */
+  markLoaded() {
+    this._resetSampling();
+  }
+
   /** Force a tier (debug / console: `app.quality.setTier('low')`). */
   setTier(tier, scale = 1.0) {
     if (!TIERS.includes(tier)) return;

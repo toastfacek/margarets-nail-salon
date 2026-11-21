@@ -100,6 +100,7 @@ class NailArtistApp {
       // compileAsync is an optimisation; rendering compiles anyway.
     }
     this.invalidate();
+    this.quality.markLoaded();
     this.__ready = true;
   }
 

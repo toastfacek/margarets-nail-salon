@@ -554,6 +554,11 @@ export class FluidSimulator {
     this.framesSinceSplat = 0;
   }
 
+  /** Count one frame (call every frame the sim is bound, awake or not). */
+  tick() {
+    if (this.framesSinceSplat < SLEEP_FRAMES) this.framesSinceSplat++;
+  }
+
   isAwake() {
     if (!this.velocity) return false;
     return this.energy > SLEEP_ENERGY || this.framesSinceSplat < SLEEP_FRAMES;
@@ -612,7 +617,6 @@ export class FluidSimulator {
     }
 
     this.energy *= decay;
-    this.framesSinceSplat++;
   }
 
   // ------------------------------------------------------------- dye i/o --

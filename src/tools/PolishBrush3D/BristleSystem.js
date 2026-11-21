@@ -3,8 +3,11 @@
  * Instanced bristle chains (4 joints, 3 segments each) with CPU Verlet physics.
  *
  * Performance rules:
- * - The InstancedMesh is allocated once for the maximum bristle count; tiers
- *   change `instancedMesh.count`.
+ * - The bristle mesh is allocated once for the maximum bristle count; tiers
+ *   change its draw range. Bristles are ONE merged mesh of tapered ribbons
+ *   (one draw call) rewritten on the CPU only while they move: an
+ *   InstancedMesh of 384 tiny cylinders cost several ms per frame on
+ *   software GPUs, which pay a fixed price per instance.
  * - At most `physicsSubstepsMax` fixed steps per frame; leftover time is
  *   dropped (no spiral of death).
  * - Collision is against the tangent plane at the brush hit (one plane per
@@ -31,7 +34,7 @@ const PHYSICS_CONFIG = Object.freeze({
   constraintIterations: 4,
   collisionPushback: 0.0008,
   physicsTimestep: 1 / 120,
-  restEnergy: 1e-12,        // squared joint displacement per step considered "at rest"
+  restEnergy: 1e-9,         // squared joint displacement per step (~30 um) considered "at rest"
 });
 
 // Flat fan, like a real nail polish brush.
@@ -82,10 +85,7 @@ export class BristleSystem {
     this._tempVec = new THREE.Vector3();
     this._tempVec2 = new THREE.Vector3();
     this._tempVec3 = new THREE.Vector3();
-    this._scale = new THREE.Vector3();
-    this._tempMatrix = new THREE.Matrix4();
     this._invMatrix = new THREE.Matrix4();
-    this._tempQuaternion = new THREE.Quaternion();
     this._planePoint = new THREE.Vector3();
     this._planeNormal = new THREE.Vector3(0, 1, 0);
     this._hits = [];
@@ -114,14 +114,26 @@ export class BristleSystem {
   }
 
   createGeometry() {
-    const geometry = new THREE.CylinderGeometry(
-      PHYSICS_CONFIG.tipRadius,
-      PHYSICS_CONFIG.bristleRadius,
-      this.segmentLength,
-      4, 1, false
-    );
-    geometry.rotateX(Math.PI / 2);
-    geometry.translate(0, 0, this.segmentLength / 2);
+    const maxSegments = MAX_BRISTLES * SEGMENTS;
+    const positions = new Float32Array(maxSegments * 4 * 3);
+    const normals = new Float32Array(maxSegments * 4 * 3);
+    const index = new Uint16Array(maxSegments * 6);
+    for (let k = 0; k < maxSegments; k++) {
+      const v = k * 4;
+      const o = k * 6;
+      index[o] = v; index[o + 1] = v + 1; index[o + 2] = v + 2;
+      index[o + 3] = v + 2; index[o + 4] = v + 1; index[o + 5] = v + 3;
+    }
+    // Ribbons lie in the flat brush plane (local x-z); their normal is local +y.
+    for (let i = 0; i < normals.length; i += 3) normals[i + 1] = 1;
+
+    const geometry = new THREE.BufferGeometry();
+    this._positionAttr = new THREE.BufferAttribute(positions, 3);
+    this._positionAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('position', this._positionAttr);
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setIndex(new THREE.BufferAttribute(index, 1));
+    geometry.setDrawRange(0, this.bristleCount * SEGMENTS * 6);
 
     const material = new THREE.MeshLambertMaterial({
       color: this.color,
@@ -130,13 +142,17 @@ export class BristleSystem {
       side: THREE.DoubleSide,
     });
 
-    this.instancedMesh = new THREE.InstancedMesh(geometry, material, MAX_BRISTLES * SEGMENTS);
-    this.instancedMesh.name = 'Bristles';
-    this.instancedMesh.frustumCulled = false;
-    this.instancedMesh.count = this.bristleCount * SEGMENTS;
-    this.group.add(this.instancedMesh);
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.name = 'Bristles';
+    this.mesh.frustumCulled = false;
+    this.group.add(this.mesh);
 
     this.createBrushHandle();
+  }
+
+  /** Legacy name kept for callers that reach for the bristle mesh. */
+  get instancedMesh() {
+    return this.mesh;
   }
 
   createBrushHandle() {
@@ -163,7 +179,7 @@ export class BristleSystem {
     if (count !== this.bristleCount || radiusScale !== this.radiusScale) {
       this.bristleCount = count;
       this.radiusScale = radiusScale;
-      this.instancedMesh.count = count * SEGMENTS;
+      this.mesh.geometry.setDrawRange(0, count * SEGMENTS * 6);
       this.initializePhysics();
     }
   }
@@ -218,7 +234,7 @@ export class BristleSystem {
     }
     this.physicsAccumulator = 0;
     this.energy = 0;
-    this.updateInstanceMatrices();
+    this.updateGeometry();
   }
 
   /**
@@ -463,28 +479,42 @@ export class BristleSystem {
     }
   }
 
-  updateInstanceMatrices() {
-    const segLen = this.segmentLength;
+  /**
+   * Rewrite the ribbon vertices from the joints (only called while moving).
+   */
+  updateGeometry() {
     const jp = this.jointPositions;
+    const pos = this._positionAttr.array;
     const rs = this.radiusScale;
+    const r0 = PHYSICS_CONFIG.bristleRadius * rs;
+    const dr = (PHYSICS_CONFIG.tipRadius - PHYSICS_CONFIG.bristleRadius) * rs / SEGMENTS;
     for (let i = 0; i < this.bristleCount; i++) {
       for (let s = 0; s < SEGMENTS; s++) {
         const a = (i * JOINTS + s) * 3;
         const b = a + 3;
-        this._tempVec.set(jp[a], jp[a + 1], jp[a + 2]);
-        this._tempVec3.set(jp[b] - jp[a], jp[b + 1] - jp[a + 1], jp[b + 2] - jp[a + 2]);
-        const len = this._tempVec3.length();
-        if (len <= 0.00001) continue;
-        this._tempVec3.multiplyScalar(1 / len);
-        this._tempQuaternion.setFromUnitVectors(Z_AXIS, this._tempVec3);
-        const taper = (1.0 - s * 0.25) * rs;
-        this._scale.set(taper, taper, len / segLen);
-        this._tempMatrix.compose(this._tempVec, this._tempQuaternion, this._scale);
-        this.instancedMesh.setMatrixAt(i * SEGMENTS + s, this._tempMatrix);
+        const ax = jp[a], ay = jp[a + 1], az = jp[a + 2];
+        const bx = jp[b], by = jp[b + 1], bz = jp[b + 2];
+        // side = normalize(cross(b - a, +y)) = (-dz, 0, dx)
+        let sx = -(bz - az);
+        let sz = bx - ax;
+        const len = Math.sqrt(sx * sx + sz * sz);
+        if (len > 1e-9) { sx /= len; sz /= len; } else { sx = 1; sz = 0; }
+        const wa = r0 + dr * s;
+        const wb = r0 + dr * (s + 1);
+        const o = (i * SEGMENTS + s) * 12;
+        pos[o] = ax + sx * wa; pos[o + 1] = ay; pos[o + 2] = az + sz * wa;
+        pos[o + 3] = ax - sx * wa; pos[o + 4] = ay; pos[o + 5] = az - sz * wa;
+        pos[o + 6] = bx + sx * wb; pos[o + 7] = by; pos[o + 8] = bz + sz * wb;
+        pos[o + 9] = bx - sx * wb; pos[o + 10] = by; pos[o + 11] = bz - sz * wb;
       }
     }
-    this.instancedMesh.instanceMatrix.needsUpdate = true;
+    this._positionAttr.needsUpdate = true;
     this._needsMatrices = false;
+  }
+
+  /** Legacy name. */
+  updateInstanceMatrices() {
+    this.updateGeometry();
   }
 
   /**
@@ -500,7 +530,7 @@ export class BristleSystem {
 
   setColor(color) {
     this.color.set(color);
-    const m = this.instancedMesh && this.instancedMesh.material;
+    const m = this.mesh && this.mesh.material;
     if (m) {
       m.color.copy(this.color);
       m.emissive.copy(this.color);
@@ -527,7 +557,7 @@ export class BristleSystem {
     }
     this.updatePhysics(deltaTime);
     const contacts = this.handleCollision(nailMesh, raycaster);
-    this.updateInstanceMatrices();
+    this.updateGeometry();
     return contacts;
   }
 
@@ -536,9 +566,9 @@ export class BristleSystem {
   }
 
   dispose() {
-    if (this.instancedMesh) {
-      this.instancedMesh.geometry.dispose();
-      this.instancedMesh.material.dispose();
+    if (this.mesh) {
+      this.mesh.geometry.dispose();
+      this.mesh.material.dispose();
     }
     if (this.handle) {
       this.handle.geometry.dispose();

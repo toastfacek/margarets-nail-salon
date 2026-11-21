@@ -400,6 +400,7 @@ export class PolishBrush3D {
 
     // Fluid: step only while awake (idle cost is zero passes).
     const sim = this.fluidSim;
+    if (sim) sim.tick();
     if (sim && this.useFluidSim && sim.isAwake()) {
       // Low tier: halve the sim rate while frames are slow.
       if (this.settings && this.settings.tier === 'low') this.simEveryNFrames = dt > 0.033 ? 2 : 1;
