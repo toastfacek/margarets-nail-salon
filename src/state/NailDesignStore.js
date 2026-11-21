@@ -5,6 +5,16 @@
 
 import { FINGER_ORDER, DEFAULT_FINGER, DEFAULT_HAND } from '../scene/FingerConfig.js';
 
+// TODO(WP8): route through core/Storage. Until then every localStorage access
+// below stays inside try/catch so the game runs with storage blocked.
+const STORAGE_KEY = 'nailDesigns';
+const STORAGE_KEY_HAND = 'nailDesignsHand';
+const STORAGE_KEY_FINGER = 'nailDesignsFinger';
+
+// Only these small fields are persisted. Canvas images are never written to
+// localStorage (ten 1024x1024 PNGs blow the quota).
+const PERSISTED_FIELDS = ['shape', 'polishColor', 'finishType', 'timestamp'];
+
 export class NailDesignStore {
     constructor() {
         this.currentHand = DEFAULT_HAND;
@@ -63,13 +73,12 @@ export class NailDesignStore {
         Object.assign(design, designData, { timestamp: Date.now() });
     }
 
-    // Save canvas state as data URL before switching fingers
+    // Deprecated: canvas snapshots are no longer kept here (no toDataURL, no
+    // localStorage images). Per-nail paint lives in HandModel. Kept (it only
+    // stamps the design) so old callers do not break.
     saveCanvasState(canvas) {
-        const design = this.getCurrentDesign();
         if (canvas) {
-            // Use JPEG with moderate quality to save space
-            design.canvasDataUrl = canvas.toDataURL('image/png');
-            design.timestamp = Date.now();
+            this.getCurrentDesign().timestamp = Date.now();
         }
     }
 
@@ -136,30 +145,68 @@ export class NailDesignStore {
         this.saveToLocalStorage();
     }
 
+    // Copy of the designs holding only the persisted fields.
+    serializeDesigns() {
+        const out = { left: {}, right: {} };
+        for (const hand of ['left', 'right']) {
+            for (const finger of FINGER_ORDER) {
+                const src = this.designs[hand][finger];
+                const rec = {};
+                for (const key of PERSISTED_FIELDS) {
+                    rec[key] = src[key] ?? null;
+                }
+                out[hand][finger] = rec;
+            }
+        }
+        return out;
+    }
+
+    // Merge a parsed record onto an empty design, keeping only known small fields.
+    sanitizeDesign(raw) {
+        const design = this.createEmptyDesign();
+        if (!raw || typeof raw !== 'object') return design;
+        if (typeof raw.shape === 'string') design.shape = raw.shape;
+        if (typeof raw.polishColor === 'string') design.polishColor = raw.polishColor;
+        if (typeof raw.finishType === 'string') design.finishType = raw.finishType;
+        if (typeof raw.timestamp === 'number') design.timestamp = raw.timestamp;
+        return design;
+    }
+
     // LocalStorage persistence
     saveToLocalStorage() {
         try {
-            localStorage.setItem('nailDesigns', JSON.stringify(this.designs));
-            localStorage.setItem('nailDesignsHand', this.currentHand);
-            localStorage.setItem('nailDesignsFinger', this.currentFinger);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(this.serializeDesigns()));
+            localStorage.setItem(STORAGE_KEY_HAND, this.currentHand);
+            localStorage.setItem(STORAGE_KEY_FINGER, this.currentFinger);
+            return true;
         } catch (e) {
             console.warn('Failed to save designs to localStorage:', e);
+            return false;
         }
     }
 
     loadFromLocalStorage() {
         try {
-            const saved = localStorage.getItem('nailDesigns');
+            const saved = localStorage.getItem(STORAGE_KEY);
             if (saved) {
                 const parsed = JSON.parse(saved);
                 // Validate structure
-                if (parsed.left && parsed.right) {
-                    this.designs = parsed;
+                if (parsed && parsed.left && parsed.right) {
+                    for (const hand of ['left', 'right']) {
+                        for (const finger of FINGER_ORDER) {
+                            this.designs[hand][finger] = this.sanitizeDesign(parsed[hand][finger]);
+                        }
+                    }
+                    // Older saves carried canvas PNGs; rewrite without them to
+                    // give the quota back.
+                    if (saved.indexOf('canvasDataUrl') !== -1) {
+                        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.serializeDesigns()));
+                    }
                 }
             }
 
-            const savedHand = localStorage.getItem('nailDesignsHand');
-            const savedFinger = localStorage.getItem('nailDesignsFinger');
+            const savedHand = localStorage.getItem(STORAGE_KEY_HAND);
+            const savedFinger = localStorage.getItem(STORAGE_KEY_FINGER);
             if (savedHand && (savedHand === 'left' || savedHand === 'right')) {
                 this.currentHand = savedHand;
             }

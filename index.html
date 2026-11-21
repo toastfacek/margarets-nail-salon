@@ -2,13 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="description" content="A fun nail salon game for kids - file, paint, and decorate beautiful nails!" />
     <title>NAIL ICON - Glam Studio</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Lilita+One&family=Fredoka:wght@400;500;600;700&family=Bangers&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles/main.css">
+    <link rel="stylesheet" href="./styles/main.css">
   </head>
   <body>
     <!-- 3D Canvas Container -->
@@ -106,6 +103,10 @@
       <span class="deco deco-gem">💎</span>
     </div>
     
-    <script type="module" src="/src/main.js"></script>
+    <script>
+      // No long-press / right-click menu over the game canvas.
+      document.getElementById('canvas-container').addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    </script>
+    <script type="module" src="./src/main.js"></script>
   </body>
 </html>
