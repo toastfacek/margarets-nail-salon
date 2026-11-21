@@ -317,12 +317,46 @@ export class HandModel {
         }
 
         const rec = new NailRecord(this, hand, finger, nailMesh, material);
-        const bb = geometry.boundingBox;
-        const sizeX = bb.max.x - bb.min.x;
-        const sizeY = bb.max.y - bb.min.y;
-        rec.uvAspect = sizeY > 0 ? sizeX / sizeY : 1;
+        rec.uvAspect = this._computeUVAspect(geometry);
 
         this.hands[hand].nails[finger] = rec;
+    }
+
+    /**
+     * World length of one unit of u over one unit of v, as the area-weighted
+     * mean of |dP/du| / |dP/dv| over the nail's triangles. (The bounding-box
+     * ratio is wrong on curved nails: the thumb read 1.62 instead of ~1.2,
+     * which made dabs visibly oval.) Uniform mesh scale cancels out.
+     */
+    _computeUVAspect(geometry) {
+        const pos = geometry.attributes.position;
+        const uv = geometry.attributes.uv;
+        if (!pos || !uv) return 1;
+        const index = geometry.index;
+        const triCount = Math.floor((index ? index.count : pos.count) / 3);
+        let weight = 0;
+        let sum = 0;
+        for (let t = 0; t < triCount; t++) {
+            const a = index ? index.getX(t * 3) : t * 3;
+            const b = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+            const c = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+            const e1x = pos.getX(b) - pos.getX(a), e1y = pos.getY(b) - pos.getY(a), e1z = pos.getZ(b) - pos.getZ(a);
+            const e2x = pos.getX(c) - pos.getX(a), e2y = pos.getY(c) - pos.getY(a), e2z = pos.getZ(c) - pos.getZ(a);
+            const du1 = uv.getX(b) - uv.getX(a), dv1 = uv.getY(b) - uv.getY(a);
+            const du2 = uv.getX(c) - uv.getX(a), dv2 = uv.getY(c) - uv.getY(a);
+            const det = du1 * dv2 - du2 * dv1;
+            if (Math.abs(det) < 1e-12) continue;
+            const pux = (e1x * dv2 - e2x * dv1) / det, puy = (e1y * dv2 - e2y * dv1) / det, puz = (e1z * dv2 - e2z * dv1) / det;
+            const pvx = (e2x * du1 - e1x * du2) / det, pvy = (e2y * du1 - e1y * du2) / det, pvz = (e2z * du1 - e1z * du2) / det;
+            const lu = Math.sqrt(pux * pux + puy * puy + puz * puz);
+            const lv = Math.sqrt(pvx * pvx + pvy * pvy + pvz * pvz);
+            if (lv < 1e-12) continue;
+            const cx = e1y * e2z - e1z * e2y, cy = e1z * e2x - e1x * e2z, cz = e1x * e2y - e1y * e2x;
+            const area = 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+            weight += area;
+            sum += area * (lu / lv);
+        }
+        return weight > 0 ? sum / weight : 1;
     }
 
     /**
