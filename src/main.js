@@ -4,8 +4,6 @@
  */
 import { NailScene } from './scene/NailScene.js';
 import { HandModel, FINGERS, NAIL_SHAPES } from './scene/HandModel.js';
-import { nailDesignStore } from './state/NailDesignStore.js';
-import { FileTool } from './tools/FileTool.js';
 import { StickerTool, STICKERS } from './tools/StickerTool.js';
 import { GemTool, GEM_TYPES } from './tools/GemTool.js';
 import { BrushTool, PEN_MATERIALS, PEN_COLORS } from './tools/BrushTool.js';
@@ -13,47 +11,105 @@ import { PolishTool } from './tools/PolishTool.js';
 import { PolishBrush3D } from './tools/PolishBrush3D/index.js';
 import { POLISH_LAYERS, LAYER_ORDER } from './state/PolishLayerState.js';
 import { soundManager } from './audio/SoundManager.js';
-import * as THREE from 'three';
+import { GameEvents, EVENTS } from './core/GameEvents.js';
+import { storage } from './core/Storage.js';
+import { Quality } from './core/Quality.js';
+import { FrameLoop } from './core/FrameLoop.js';
 
 class NailArtistApp {
   constructor() {
-    this.currentTool = 'shape';
+    this.__ready = false;
+
+    this.currentTool = null;
     this.selectedShape = NAIL_SHAPES.ROUND;
     this.selectedColor = '#ff2a6d'; // Default neon demon pink
 
-    // Track time for animation
-    this.lastTime = 0;
+    // App spine (build plan 0.4)
+    this.params = new URLSearchParams(window.location.search);
+    this.perf = this.params.get('perf') === '1';
+    this.events = new GameEvents();
+    this.storage = storage;
+    this.quality = new Quality({ storage: this.storage, events: this.events, params: this.params });
+    this.loop = new FrameLoop({ quality: this.quality, perf: this.perf });
+    this.sound = soundManager;
+    this.invalidate = () => this.loop.invalidate();
 
     // Initialize asynchronously
-    this.init();
+    this.init().catch((err) => console.error('Failed to start', err));
   }
 
   async init() {
-    // Get container
     const container = document.getElementById('canvas-container');
 
-    // Create scene
-    this.scene = new NailScene(container);
+    this.events.on(EVENTS.QUALITY_CHANGE, () => this.applyQuality());
 
-    // Create hand model (async load)
-    this.nail = new HandModel();
+    // Scene + renderer (antialias is fixed here from the starting tier)
+    this.scene = new NailScene(container, {
+      settings: this.quality.settings,
+      invalidate: this.invalidate,
+      probeContext: this.quality.takeProbeContext(),
+    });
+    this.quality.setRendererCaps(this.scene.renderer);
+    this.scene.onContextRestored = () => this.polishBrush3D?.onContextRestored();
+
+    // Hand model (left hand now, right hand on demand)
+    this.nail = new HandModel({
+      settings: this.quality.settings,
+      renderer: this.scene.renderer,
+      lighting: this.scene.nailLighting,
+    });
+    this.nail.onChange = this.invalidate;
     await this.nail.load();
     this.scene.add(this.nail.getMesh());
 
-    // Set up nail selection click handling
     this.setupNailSelection();
 
     // Set initial active nail (index finger) and zoom to it
     this.nail.setActiveNail(FINGERS.INDEX);
     this.zoomToFinger(FINGERS.INDEX);
 
-    // Continue setup after model loads
     this.setupUI();
     this.setupTools();
-    this.renderPolishOptions(); // Start with polish instead of shape
-    this.startAnimationLoop();
 
-    console.log('💅 NAIL ICON initialized // Glam Studio ready!');
+    // Start on the polish tool, for real (brush live).
+    this.selectTool('polish');
+
+    // The one frame loop: scene/camera (5), brush (10), features (50), render (90).
+    this._updateScene = (dt) => this.scene.update(dt);
+    this._updateBrush = (dt) => {
+      if (this.polishBrush3D && this.polishBrush3D.isActive) this.polishBrush3D.update(dt);
+    };
+    this._render = () => this.scene.render();
+    this.loop.add(this._updateScene, 5);
+    this.loop.add(this._updateBrush, 10);
+    this.loop.add(this._render, 90, { render: true });
+    this.loop.start();
+
+    // Features (each WP adds its own src/features/<name>.feature.js)
+    const mods = import.meta.glob('./features/*.feature.js', { eager: true });
+    Object.values(mods)
+      .sort((a, b) => (a.order ?? 100) - (b.order ?? 100))
+      .forEach((m) => m.install(this));
+
+    // Pre-warm: compile every program now so nothing compiles on the first stroke.
+    this.polishBrush3D.prewarm();
+    this.nail.precompileVariants(this.scene.renderer, this.scene.scene, this.scene.camera);
+    try {
+      await this.scene.renderer.compileAsync(this.scene.scene, this.scene.camera);
+    } catch (err) {
+      // compileAsync is an optimisation; rendering compiles anyway.
+    }
+    this.invalidate();
+    this.__ready = true;
+  }
+
+  /** Push the current quality settings into every module. */
+  applyQuality() {
+    const s = this.quality.settings;
+    this.scene?.setQuality(s);
+    this.nail?.setQuality(s);
+    this.polishBrush3D?.setQuality(s);
+    this.invalidate();
   }
 
   /**
@@ -61,6 +117,10 @@ class NailArtistApp {
    */
   setupNailSelection() {
     const canvas = this.scene.renderer.domElement;
+
+    // Any tap may change what is on screen (gems, stickers): redraw.
+    canvas.addEventListener('pointerdown', this.invalidate);
+    canvas.addEventListener('pointerup', this.invalidate);
 
     canvas.addEventListener('click', (event) => {
       // Don't select nails while using decoration/painting tools
@@ -77,14 +137,9 @@ class NailArtistApp {
         const finger = this.nail.getFingerFromMesh(clickedMesh);
 
         if (finger) {
-          // Set active nail
-          this.nail.setActiveNail(finger);
+          this.selectNail(finger);
           soundManager.playClick();
-
-          // Zoom to the clicked nail
           this.zoomToFinger(finger);
-
-          // Update UI to reflect new selection
           this.updateFingerSelectorUI();
         }
       }
@@ -121,10 +176,6 @@ class NailArtistApp {
     // Initialize sound manager
     soundManager.init();
 
-    // Create filing tool
-    // this.fileTool = new FileTool(this.scene.scene, this.nail);
-    // this.fileTool.activate(); // Start with filing active when shape tool selected
-
     // Create sticker tool
     this.stickerTool = new StickerTool(this.scene.scene, this.scene.camera, this.nail);
 
@@ -142,7 +193,8 @@ class NailArtistApp {
       this.scene.scene,
       this.scene.camera,
       this.nail,
-      this.scene.renderer  // Pass renderer for fluid simulation
+      this.scene.renderer,
+      { events: this.events, settings: this.quality.settings, invalidate: this.invalidate }
     );
 
     // Set up polish tool callbacks
@@ -159,68 +211,15 @@ class NailArtistApp {
     };
   }
 
-  startAnimationLoop() {
-    const animate = (time) => {
-      const deltaTime = (time - this.lastTime) / 1000; // Convert to seconds
-      this.lastTime = time;
-
-      // Update file tool particles
-      if (this.fileTool) {
-        this.fileTool.update(deltaTime);
-      }
-
-      // Update 3D polish brush (bristle physics)
-      if (this.polishBrush3D?.isActive) {
-        this.polishBrush3D.update(time);
-      }
-
-      requestAnimationFrame(animate);
-    };
-    requestAnimationFrame(animate);
-  }
-
   setupUI() {
     // Tool selection
     const toolButtons = document.querySelectorAll('.tool-btn');
     toolButtons.forEach(btn => {
       btn.addEventListener('click', () => {
-        // Remove active from all
-        toolButtons.forEach(b => b.classList.remove('active'));
-        // Add active to clicked
-        btn.classList.add('active');
-
-        this.currentTool = btn.dataset.tool;
-        this.updateOptionsPanel();
-
-        // Play click sound
+        // Clicking the live tool again is harmless (perf harness relies on it).
+        if (btn.dataset.tool === this.currentTool) return;
+        this.selectTool(btn.dataset.tool);
         soundManager.playClick();
-
-        // Deactivate all tools first
-        this.fileTool?.deactivate();
-        this.stickerTool?.deactivate();
-        this.gemTool?.deactivate();
-        this.brushTool?.deactivate();
-        this.polishTool?.deactivate();
-        this.polishBrush3D?.deactivate();
-
-        // Activate the selected tool
-        switch (this.currentTool) {
-          case 'shape':
-            this.fileTool?.activate();
-            break;
-          case 'polish':
-            // Use 3D brush with bristle physics
-            this.polishBrush3D?.activate();
-            break;
-          case 'bling':
-            // Both sticker and gem tools listen, UI determines which is active
-            this.stickerTool?.activate();
-            this.gemTool?.activate();
-            break;
-          case 'brush':
-            this.brushTool?.activate();
-            break;
-        }
 
         // Satisfying click animation
         btn.style.animation = 'none';
@@ -235,18 +234,17 @@ class NailArtistApp {
     });
 
     document.getElementById('btn-undo')?.addEventListener('click', () => {
-      // TODO: Implement undo
-      console.log('Undo clicked');
+      // Undo arrives with WP8.
     });
 
     document.getElementById('btn-done')?.addEventListener('click', () => {
-      // TODO: Screenshot functionality
-      console.log('Done clicked - screenshot!');
-      this.showCelebration();
+      if (this.events.listenerCount(EVENTS.UI_DONE) > 0) this.events.emit(EVENTS.UI_DONE);
+      else this.showCelebration();
     });
 
     document.getElementById('btn-gallery')?.addEventListener('click', () => {
-      this.toggleGallery(true);
+      if (this.events.listenerCount(EVENTS.UI_GALLERY) > 0) this.events.emit(EVENTS.UI_GALLERY);
+      else this.toggleGallery(true);
     });
 
     document.getElementById('gallery-close')?.addEventListener('click', () => {
@@ -258,6 +256,52 @@ class NailArtistApp {
 
     // Initial options panel
     this.updateOptionsPanel();
+  }
+
+  /**
+   * Switch tools. Painting tools never orbit the camera.
+   * @param {'shape'|'polish'|'bling'|'brush'} tool
+   */
+  selectTool(tool) {
+    if (tool === this.currentTool) return;
+    this.currentTool = tool;
+
+    document.querySelectorAll('.tool-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tool === tool);
+    });
+
+    this.stickerTool?.deactivate();
+    this.gemTool?.deactivate();
+    this.brushTool?.deactivate();
+    this.polishTool?.deactivate();
+    this.polishBrush3D?.deactivate();
+
+    switch (tool) {
+      case 'polish':
+        this.polishBrush3D?.activate();
+        break;
+      case 'bling':
+        // Both sticker and gem tools listen, UI determines which is active
+        this.stickerTool?.activate();
+        this.gemTool?.activate();
+        break;
+      case 'brush':
+        this.brushTool?.activate();
+        break;
+      default:
+        break;
+    }
+
+    this.scene.setRotateEnabled(tool === 'shape');
+    this.updateOptionsPanel();
+    this.events.emit(EVENTS.TOOL_CHANGE, { tool });
+    this.invalidate();
+  }
+
+  /** Make a finger active on the current hand and tell everyone. */
+  selectNail(finger) {
+    this.nail.setActiveNail(finger);
+    this.events.emit(EVENTS.NAIL_SELECT, { hand: this.nail.getCurrentHand(), finger: this.nail.getActiveNail() });
   }
 
   /**
@@ -338,15 +382,20 @@ class NailArtistApp {
     }
   }
 
-  switchHand(newHand) {
+  async switchHand(newHand) {
     if (newHand !== 'left' && newHand !== 'right') return;
     if (newHand === this.nail.getCurrentHand()) return;
 
-    // Switch the hand model
-    this.nail.switchHand(newHand);
-
-    // Play feedback sound
+    // Feedback right away; the right hand may still be loading.
     soundManager.playClick();
+    try {
+      await this.nail.switchHand(newHand);
+    } catch (err) {
+      console.error('Failed to switch hand', err);
+      return;
+    }
+    if (!this.nail.nails[this.nail.activeNail]) return;
+    this.events.emit(EVENTS.NAIL_SELECT, { hand: this.nail.getCurrentHand(), finger: this.nail.getActiveNail() });
 
     // Update UI
     this.updateFingerSelectorUI();
@@ -356,9 +405,8 @@ class NailArtistApp {
     this.zoomToFinger(this.nail.activeNail);
   }
 
-  async switchToFinger(newFinger) {
-    // Set the active nail on the hand model
-    this.nail.setActiveNail(newFinger);
+  switchToFinger(newFinger) {
+    this.selectNail(newFinger);
 
     // Always zoom to the finger (even if same finger - allows re-centering)
     this.zoomToFinger(newFinger);
@@ -582,7 +630,8 @@ class NailArtistApp {
 
     // Quick fill button
     document.getElementById('quick-fill-btn')?.addEventListener('click', () => {
-      this.polishTool?.quickFill();
+      this.polishBrush3D?.fillNail(this.selectedColor);
+      soundManager.playClick();
     });
 
     // Dry button
@@ -593,7 +642,7 @@ class NailArtistApp {
 
     // Undo button
     document.getElementById('polish-undo-btn')?.addEventListener('click', () => {
-      this.polishTool?.undo();
+      // Undo arrives with WP8.
     });
 
     // Color selection
@@ -622,7 +671,7 @@ class NailArtistApp {
         panel.querySelectorAll('.finish-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
-        this.polishTool?.setFinish(btn.dataset.finish);
+        // The brush applies the finish to the nail shader (uniforms only).
         this.polishBrush3D?.setFinish(btn.dataset.finish);
         soundManager.playClick();
       });
@@ -845,14 +894,11 @@ class NailArtistApp {
   }
 
   clearNail() {
-    // Clear polish tool layers
-    this.polishTool?.clear();
-
-    // Clear polish on active nail
+    // Paint first (sim + baked), then the legacy colour, then decorations.
+    this.polishBrush3D?.clearNail();
     this.nail.clearPolish();
-
-    // Clear all decorations on active nail
     this.nail.clearDrawing();
+    this.updateCoverageUI(0);
 
     // Play sound
     soundManager.playClick();
