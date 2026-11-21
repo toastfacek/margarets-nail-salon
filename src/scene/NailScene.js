@@ -1,15 +1,29 @@
 /**
  * NailScene.js
- * Main Three.js scene setup with lighting and camera
+ * Three.js scene, camera, renderer, lights and orbit controls.
+ *
+ * NailScene no longer owns a requestAnimationFrame: the app's FrameLoop calls
+ * `update(dt)` (camera animation + controls) and `render()`.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createNailLighting } from './NailMaterial.js';
+import { CONTEXT_ATTRIBUTES } from '../core/Quality.js';
+
+const DEFAULT_SETTINGS = Object.freeze({ antialias: true, pixelRatio: 1, rimLight: false });
 
 export class NailScene {
-    constructor(container) {
+    /**
+     * @param {HTMLElement} container
+     * @param {{ settings?: object, invalidate?: () => void, probeContext?: {canvas: HTMLCanvasElement, context: WebGL2RenderingContext} }} [opts]
+     */
+    constructor(container, { settings = null, invalidate = null, probeContext = null } = {}) {
         this.container = container;
         this.width = container.clientWidth;
         this.height = container.clientHeight;
+        this.settings = settings || DEFAULT_SETTINGS;
+        this.invalidate = invalidate || (() => {});
+        this.probeContext = probeContext;
 
         // Camera animation state
         this.isAnimating = false;
@@ -27,126 +41,133 @@ export class NailScene {
         // Zoom state
         this.isZoomedIn = false;
         this.zoomedFinger = null;
+        this.isCameraLocked = false;
+        this.contextLost = false;
+        this.onContextRestored = null;
+
+        // Lighting uniforms shared by every nail material.
+        this.nailLighting = createNailLighting();
+
+        this._raycaster = new THREE.Raycaster();
+        this._mouse = new THREE.Vector2();
 
         this.init();
         this.setupLighting();
         this.setupControls();
-        this.animate();
 
-        // Handle resize
-        window.addEventListener('resize', () => this.onResize());
+        this._onResize = () => this.onResize();
+        window.addEventListener('resize', this._onResize);
     }
 
     init() {
-        // Scene with gradient background
         this.scene = new THREE.Scene();
 
-        // Create gradient background
-        const canvas = document.createElement('canvas');
-        canvas.width = 2;
-        canvas.height = 512;
-        const ctx = canvas.getContext('2d');
-        const gradient = ctx.createLinearGradient(0, 0, 0, 512);
-        gradient.addColorStop(0, '#FFE5EC');
-        gradient.addColorStop(1, '#FFF0F5');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 2, 512);
+        // Backdrop: a flat clear colour (the old gradient texture rendered as
+        // this one colour after tone mapping, and cost a full-screen pass).
+        // WP3 replaces this with the real backdrop.
+        this.scene.background = null;
+        this.clearColor = new THREE.Color(0xE7E5E6);
 
-        const texture = new THREE.CanvasTexture(canvas);
-        this.scene.background = texture;
-
-        // Camera - frontal view looking straight down at nail
-        this.camera = new THREE.PerspectiveCamera(
-            45,
-            this.width / this.height,
-            0.1,
-            1000
-        );
-        // Camera positioned above nail, looking down at surface
+        this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 1.5, 0.3);
         this.camera.lookAt(0, 0, 0);
 
-        // Renderer
+        const s = this.settings;
+        // Reuse the quality probe's context when it fits (no antialias), else
+        // create one with the same opaque attributes.
+        let canvas = null;
+        let context = null;
+        const probe = this.probeContext;
+        if (probe && !s.antialias) {
+            canvas = probe.canvas;
+            context = probe.context;
+        } else {
+            canvas = document.createElement('canvas');
+            context = canvas.getContext('webgl2', Object.assign({}, CONTEXT_ATTRIBUTES, { antialias: !!s.antialias }));
+            if (!context) canvas = null; // let three.js report the failure its own way
+        }
         this.renderer = new THREE.WebGLRenderer({
-            antialias: true,
-            alpha: true
+            antialias: !!s.antialias,
+            alpha: false,
+            powerPreference: 'high-performance',
+            canvas: canvas || undefined,
+            context,
         });
+        this.renderer.setPixelRatio(s.pixelRatio || 1);
         this.renderer.setSize(this.width, this.height);
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.enabled = false;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
         this.renderer.toneMappingExposure = 1.2;
+        this.renderer.setClearColor(this.clearColor, 1);
 
-        this.container.appendChild(this.renderer.domElement);
+        const el = this.renderer.domElement;
+        el.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            this.contextLost = true;
+        });
+        el.addEventListener('webglcontextrestored', () => {
+            this.contextLost = false;
+            // three.js rebuilds its GL state on restore; put our clear colour back.
+            this.renderer.setClearColor(this.clearColor, 1);
+            if (this.onContextRestored) this.onContextRestored();
+            this.invalidate();
+        });
+
+        this.container.appendChild(el);
     }
 
     setupLighting() {
-        // Soft ambient light for overall illumination
-        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
-        this.scene.add(ambient);
+        // Budget (plan 1.3): 1 hemisphere + 1 directional (+1 rim on high), no shadows.
+        this.hemiLight = new THREE.HemisphereLight(0xffffff, 0xffd9e4, 1.2);
+        this.scene.add(this.hemiLight);
 
-        // Main key light from above (salon overhead light)
-        const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
-        keyLight.position.set(0, 5, 1);
-        keyLight.castShadow = true;
-        keyLight.shadow.mapSize.width = 1024;
-        keyLight.shadow.mapSize.height = 1024;
-        keyLight.shadow.camera.near = 0.5;
-        keyLight.shadow.camera.far = 10;
-        this.scene.add(keyLight);
+        this.keyLight = new THREE.DirectionalLight(0xfffaf5, 1.6);
+        this.keyLight.position.set(0.6, 5, 2.2);
+        this.scene.add(this.keyLight);
 
-        // Fill light from left side
-        const fillLight = new THREE.DirectionalLight(0xfff0f5, 0.5);
-        fillLight.position.set(-3, 3, 0);
-        this.scene.add(fillLight);
+        // The rim light only exists when the session starts on high. Lower
+        // tiers never add it, and a downgrade sets its intensity to 0 so the
+        // skin program never recompiles.
+        this.rimLight = null;
+        if (this.settings.rimLight) {
+            this.rimLight = new THREE.DirectionalLight(0xffb6c1, 0.5);
+            this.rimLight.position.set(0, 1, -3);
+            this.scene.add(this.rimLight);
+        }
 
-        // Fill light from right side
-        const fillLight2 = new THREE.DirectionalLight(0xfff0f5, 0.5);
-        fillLight2.position.set(3, 3, 0);
-        this.scene.add(fillLight2);
-
-        // Front fill light for nail surface highlights
-        const frontLight = new THREE.DirectionalLight(0xffffff, 0.4);
-        frontLight.position.set(0, 2, 3);
-        this.scene.add(frontLight);
-
-        // Subtle rim light from behind finger
-        const rimLight = new THREE.DirectionalLight(0xffb6c1, 0.3);
-        rimLight.position.set(0, 1, -3);
-        this.scene.add(rimLight);
+        // Nail shader v1 uses the same key light direction.
+        this.nailLighting.uLightDir.value.copy(this.keyLight.position).normalize();
     }
 
     setupControls() {
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-
-        // Set orbit target to center of hand
         this.controls.target.set(0, 0, 0);
-
-        // Limit controls for a pleasant experience
         this.controls.enableDamping = true;
         this.controls.dampingFactor = 0.08;
-
-        // Limit zoom for frontal view - allow close positioning
         this.controls.minDistance = 0.5;
         this.controls.maxDistance = 3.0;
-
-        // Allow free rotation for debugging
         this.controls.minPolarAngle = 0;
         this.controls.maxPolarAngle = Math.PI;
-
-        // Allow full horizontal rotation
         this.controls.minAzimuthAngle = -Infinity;
         this.controls.maxAzimuthAngle = Infinity;
-
-        // Disable pan for simplicity
         this.controls.enablePan = false;
-
-        // Touch settings for mobile
         this.controls.touches = {
             ONE: THREE.TOUCH.ROTATE,
             TWO: THREE.TOUCH.DOLLY_ROTATE
         };
+        this.controls.addEventListener('change', () => this.invalidate());
+    }
+
+    /**
+     * React to a quality change (pixel ratio, rim light). Antialias is fixed at
+     * context creation and does not change.
+     */
+    setQuality(settings) {
+        this.settings = settings;
+        this.renderer.setPixelRatio(settings.pixelRatio || 1);
+        this.renderer.setSize(this.width, this.height);
+        if (this.rimLight) this.rimLight.intensity = settings.rimLight ? 0.5 : 0;
+        this.invalidate();
     }
 
     add(object) {
@@ -160,46 +181,43 @@ export class NailScene {
     onResize() {
         this.width = this.container.clientWidth;
         this.height = this.container.clientHeight;
-
         this.camera.aspect = this.width / this.height;
         this.camera.updateProjectionMatrix();
-
         this.renderer.setSize(this.width, this.height);
+        this.invalidate();
     }
 
-    animate() {
-        requestAnimationFrame(() => this.animate());
-
-        // Update camera animation if active
+    /**
+     * Per-frame update: camera animation and controls damping.
+     * @param {number} dt seconds
+     */
+    update(dt) {
         if (this.isAnimating) {
-            this.updateCameraAnimation();
+            this.updateCameraAnimation(dt);
+            this.invalidate();
         }
+        // update() returns true while damping is still moving the camera.
+        if (this.controls.update(dt)) this.invalidate();
+    }
 
-        this.controls.update();
+    render() {
+        if (this.contextLost) return;
         this.renderer.render(this.scene, this.camera);
     }
 
     /**
      * Update camera animation using smooth easing
+     * @param {number} dt seconds
      */
-    updateCameraAnimation() {
-        // Calculate delta time (approximately 60fps)
-        const deltaTime = 1 / 60;
-        this.animationProgress += deltaTime / this.animationDuration;
-
+    updateCameraAnimation(dt) {
+        this.animationProgress += dt / this.animationDuration;
         if (this.animationProgress >= 1) {
-            // Animation complete
             this.animationProgress = 1;
             this.isAnimating = false;
         }
-
-        // Smooth easing function (ease-out cubic)
+        // ease-out cubic
         const t = 1 - Math.pow(1 - this.animationProgress, 3);
-
-        // Interpolate camera position
         this.camera.position.lerpVectors(this.startCameraPos, this.targetCameraPos, t);
-
-        // Interpolate orbit target
         this.controls.target.lerpVectors(this.startTarget, this.targetTarget, t);
     }
 
@@ -207,36 +225,30 @@ export class NailScene {
      * Focus camera on a specific world position with close-up frontal view
      * @param {THREE.Vector3} position - World position to focus on
      * @param {string} finger - Finger identifier for tracking
-     * @param {number} distance - Distance from nail (default 0.4 for close-up)
      */
-    focusOnPosition(position, finger, distance = 0.4) {
-        // Store current camera state
+    focusOnPosition(position, finger) {
         this.startCameraPos.copy(this.camera.position);
         this.startTarget.copy(this.controls.target);
 
-        // Target is slightly into the finger for better centering
         this.targetTarget.set(
             position.x,
-            position.y - 0.03,   // Slightly toward cuticle for centering
-            position.z - 0.03    // Into finger body
+            position.y - 0.03,
+            position.z - 0.03
         );
-
-        // Camera position - more directly above for frontal view like Blender reference
         this.targetCameraPos.set(
             position.x,
-            position.y + 0.5,    // Above nail surface
-            position.z + 0.08    // Minimal Z offset for more top-down view
+            position.y + 0.5,
+            position.z + 0.08
         );
 
-        // Start animation
         this.animationProgress = 0;
         this.isAnimating = true;
         this.isZoomedIn = true;
         this.zoomedFinger = finger;
 
-        // Tighten zoom limits while zoomed in - allow very close
         this.controls.minDistance = 0.2;
         this.controls.maxDistance = 1.5;
+        this.invalidate();
     }
 
     /**
@@ -244,71 +256,55 @@ export class NailScene {
      */
     zoomOut() {
         if (!this.isZoomedIn) return;
-
-        // Store current camera state
         this.startCameraPos.copy(this.camera.position);
         this.startTarget.copy(this.controls.target);
-
-        // Target default position
         this.targetCameraPos.copy(this.defaultCameraPos);
         this.targetTarget.copy(this.defaultTarget);
-
-        // Start animation
         this.animationProgress = 0;
         this.isAnimating = true;
         this.isZoomedIn = false;
         this.zoomedFinger = null;
-
-        // Restore zoom limits for frontal view
         this.controls.minDistance = 0.5;
         this.controls.maxDistance = 3.0;
+        this.invalidate();
     }
 
-    /**
-     * Check if camera is currently zoomed in on a finger
-     */
     getIsZoomedIn() {
         return this.isZoomedIn;
     }
 
     /**
      * Lock or unlock camera controls
-     * @param {boolean} locked - Whether camera should be locked
+     * @param {boolean} locked
      */
     setCameraLocked(locked) {
         this.controls.enabled = !locked;
         this.isCameraLocked = locked;
     }
 
-    /**
-     * Check if camera is currently locked
-     */
     isCameraLockedState() {
         return this.isCameraLocked || false;
     }
 
-    /**
-     * Get the currently zoomed finger
-     */
+    /** Rotation on/off without touching the lock (painting never orbits). */
+    setRotateEnabled(enabled) {
+        this.controls.enableRotate = enabled;
+    }
+
     getZoomedFinger() {
         return this.zoomedFinger;
     }
 
-    // For raycasting (click detection)
+    /**
+     * Raycaster set from a pointer event (reused instance).
+     */
     getRaycaster(event) {
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-
-        // Get mouse/touch position
         const rect = this.renderer.domElement.getBoundingClientRect();
         const clientX = event.touches ? event.touches[0].clientX : event.clientX;
         const clientY = event.touches ? event.touches[0].clientY : event.clientY;
-
-        mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-
-        raycaster.setFromCamera(mouse, this.camera);
-
-        return raycaster;
+        this._mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+        this._mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        this._raycaster.setFromCamera(this._mouse, this.camera);
+        return this._raycaster;
     }
 }
