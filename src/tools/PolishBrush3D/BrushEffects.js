@@ -86,6 +86,8 @@ export class BrushEffects {
       this.particles.push(new Particle());
     }
     this.nextParticle = 0;
+    this.activeCount = 0;
+    this.visible = true;
 
     // Particle mesh (instanced spheres)
     this.particleMesh = null;
@@ -117,6 +119,7 @@ export class BrushEffects {
     );
     this.particleMesh.name = 'PaintParticles';
     this.particleMesh.frustumCulled = false;
+    this.particleMesh.visible = false; // shown only while particles are alive
 
     // Initialize all instances as invisible (scale 0)
     for (let i = 0; i < PARTICLE_CONFIG.maxParticles; i++) {
@@ -174,41 +177,37 @@ export class BrushEffects {
     // Add some velocity along normal (away from surface)
     this._tempVec.addScaledVector(normal, PARTICLE_CONFIG.spreadVelocity * 0.5);
 
+    if (!particle.active) this.activeCount++;
     particle.spawn(position, this.color, this._tempVec);
+    this.particleMesh.visible = this.visible;
   }
 
   /**
-   * Update all particles
+   * Update all particles. Costs nothing (and draws nothing) while no particle
+   * is alive.
    */
   update(deltaTime) {
-    let needsUpdate = false;
+    if (this.activeCount === 0) {
+      if (this.particleMesh.visible) this.particleMesh.visible = false;
+      return false;
+    }
 
+    let alive = 0;
     for (let i = 0; i < this.particles.length; i++) {
       const particle = this.particles[i];
-
       if (particle.active) {
         particle.update(deltaTime);
-        needsUpdate = true;
-
-        // Update instance matrix
-        const scale = particle.size * particle.getOpacity();
-        this._tempMatrix.makeTranslation(
-          particle.position.x,
-          particle.position.y,
-          particle.position.z
-        );
+        const scale = particle.active ? particle.size * particle.getOpacity() : 0;
+        if (particle.active) alive++;
+        this._tempMatrix.makeTranslation(particle.position.x, particle.position.y, particle.position.z);
         this._tempMatrix.scale(this._tempVec.set(scale, scale, scale));
-        this.particleMesh.setMatrixAt(i, this._tempMatrix);
-      } else {
-        // Hide inactive particles
-        this._tempMatrix.makeScale(0, 0, 0);
         this.particleMesh.setMatrixAt(i, this._tempMatrix);
       }
     }
-
-    if (needsUpdate) {
-      this.particleMesh.instanceMatrix.needsUpdate = true;
-    }
+    this.activeCount = alive;
+    this.particleMesh.visible = this.visible && alive > 0;
+    this.particleMesh.instanceMatrix.needsUpdate = true;
+    return true;
   }
 
   /**
@@ -238,6 +237,8 @@ export class BrushEffects {
     for (const particle of this.particles) {
       particle.active = false;
     }
+    this.activeCount = 0;
+    this.particleMesh.visible = false;
 
     // Reset all instance matrices to invisible
     for (let i = 0; i < PARTICLE_CONFIG.maxParticles; i++) {
@@ -251,8 +252,9 @@ export class BrushEffects {
    * Set visibility
    */
   setVisible(visible) {
+    this.visible = visible;
     if (this.particleMesh) {
-      this.particleMesh.visible = visible;
+      this.particleMesh.visible = visible && this.activeCount > 0;
     }
   }
 
