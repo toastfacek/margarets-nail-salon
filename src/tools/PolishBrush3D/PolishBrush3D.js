@@ -8,12 +8,19 @@
  * hand, or the brush is put away) the dye is saved into the previous nail's
  * baked target and the next nail's baked paint is loaded, so every nail keeps
  * its own paint.
+ *
+ * Juice (WP4): every splat segment also marks the nail's CoverageMap (no GPU
+ * readback) -> `nail:coverage` / `nail:covered`; strokes drive per-nail
+ * wetness (WetCure); fast strokes flick droplets (BrushEffects); the brush
+ * carries a bead of polish that shrinks as it paints and refills at rest.
  */
 import * as THREE from 'three';
 import { BristleSystem } from './BristleSystem.js';
 import { BrushInputHandler } from './BrushInputHandler.js';
 import { BrushEffects } from './BrushEffects.js';
 import { FluidSimulator } from './FluidSimulator.js';
+import { WetCure } from './WetCure.js';
+import { CoverageMap } from '../../utils/CoverageMap.js';
 import { EVENTS } from '../../core/GameEvents.js';
 import { soundManager } from '../../audio/SoundManager.js';
 
@@ -21,6 +28,13 @@ const BRUSH_RADIUS = 0.085;     // stroke radius in aspect-corrected UV units at
 const MIN_PRESSURE_RADIUS = 0.7; // radius multiplier at the lightest touch
 const INITIAL_POSITION = Object.freeze(new THREE.Vector3(0, 0.2, 0));
 const INITIAL_NORMAL = Object.freeze(new THREE.Vector3(0, 1, 0));
+const COVERAGE_RES = 32;
+const COVERED_AT = 0.9;
+const MOUSE_TILT = -Math.PI / 3;
+const TOUCH_TILT = -Math.PI * 0.42;   // more upright so the tip clears the finger
+const LOAD_PER_UV = 0.3;              // bead used up per UV of stroke length
+const LOAD_MIN = 0.3;
+const LOAD_REFILL = 0.45;             // per second at rest
 
 function simOptions(settings) {
   return {
@@ -69,6 +83,8 @@ export class PolishBrush3D {
     }
     this.inputHandler = null;
     this.brushEffects = new BrushEffects(scene);
+    if (s) this.brushEffects.setQuality(s);
+    this.wetCure = new WetCure(handModel, this.events);
 
     this.fluidSim = null;
     this.useFluidSim = true;
@@ -100,6 +116,18 @@ export class PolishBrush3D {
     this._strokeStartPayload = { hand: 'left', finger: 'index', color: this.color, finish: this.finish };
     this._strokePayload = { speed: 0, pressure: 0, u: 0, v: 0, worldPos: new THREE.Vector3() };
     this._strokeEndPayload = { hand: 'left', finger: 'index' };
+    this._coveragePayload = { hand: 'left', finger: 'index', coverage: 0 };
+    this._coveredPayload = { hand: 'left', finger: 'index' };
+
+    // Juice state (no allocations while painting)
+    this._speed = 0;                       // smoothed stroke speed, UV/s
+    this._lastWorld = new THREE.Vector3();
+    this._worldVel = new THREE.Vector3();
+    this._hasLastWorld = false;
+    this._lastDt = 1 / 60;
+    this._autoActive = false;               // autoStroke() in progress
+    this._autoFrame = -10;
+    this._autoLast = new THREE.Vector2();
 
     this.bristleSystem.setVisible(false);
     this.bristleSystem.setBrushTransform(INITIAL_POSITION, INITIAL_NORMAL);
@@ -130,9 +158,58 @@ export class PolishBrush3D {
     this.fluidSim = new FluidSimulator(this.renderer, opts);
   }
 
-  /** Compile every fluid pass now so the first stroke never compiles. */
+  /** Compile every fluid pass (and the droplet program) now so the first stroke never compiles. */
   prewarm() {
     if (this.fluidSim) this.fluidSim.prewarm();
+    this.brushEffects.prewarm(this.renderer, this.camera);
+  }
+
+  // ------------------------------------------------------------ coverage --
+
+  /** The nail's CoverageMap (lazy, stored on the nail record). */
+  getCoverageMap(hand, finger, create = true) {
+    const rec = this.handModel ? this.handModel.getNail(hand, finger) : null;
+    if (!rec) return null;
+    if (!rec.coverageMap && create) {
+      rec.coverageMap = new CoverageMap(COVERAGE_RES, this.handModel.getNailMask(hand, finger));
+    }
+    return rec.coverageMap || null;
+  }
+
+  /** 0..1 coverage of a nail (defaults to the active nail). */
+  getCoverage(hand = this.handModel.getCurrentHand(), finger = this.handModel.getActiveNail()) {
+    const map = this.getCoverageMap(hand, finger, false);
+    return map ? map.coverage : 0;
+  }
+
+  /** Announce coverage on >= 1% change, and the first 0.9 crossing. */
+  _reportCoverage(hand, finger, map, force) {
+    const c = map.coverage;
+    const rec = this.handModel.getNail(hand, finger);
+    if (rec) rec.coverage = c;
+    const delta = c - map.lastReported;
+    if (force || delta >= 0.01 || delta <= -0.01 || (c === 1 && map.lastReported < 1)) {
+      map.lastReported = c;
+      if (this.events) {
+        const p = this._coveragePayload;
+        p.hand = hand;
+        p.finger = finger;
+        p.coverage = c;
+        this.events.emit(EVENTS.NAIL_COVERAGE, p);
+      }
+      if (this.onCoverageChange && hand === this.handModel.getCurrentHand() && finger === this.handModel.getActiveNail()) {
+        this.onCoverageChange(c * 100);
+      }
+    }
+    if (!map.coveredFired && c >= COVERED_AT) {
+      map.coveredFired = true;
+      if (this.events) {
+        const p = this._coveredPayload;
+        p.hand = hand;
+        p.finger = finger;
+        this.events.emit(EVENTS.NAIL_COVERED, p);
+      }
+    }
   }
 
   // ------------------------------------------------------------- binding --
@@ -239,6 +316,7 @@ export class PolishBrush3D {
     this.color = color;
     this._setColorSRGB(color);
     this.bristleSystem.setColor(color);
+    this.bristleSystem.setLoad(1); // a fresh dip
     this.brushEffects.setColor(color);
     this.invalidate();
   }
@@ -255,6 +333,7 @@ export class PolishBrush3D {
    */
   setQuality(settings) {
     this.settings = settings;
+    this.brushEffects.setQuality(settings);
     this.bristleSystem.configure({
       bristles: settings.bristles,
       radiusScale: settings.bristleRadiusScale || 1,
@@ -277,12 +356,21 @@ export class PolishBrush3D {
   // --------------------------------------------------------- per frame --
 
   _endStroke() {
+    if (this._autoActive) this._endAutoStroke();
     if (!this.isPainting) return;
     this.isPainting = false;
     this._hasLastUV = false;
+    this._hasLastWorld = false;
+    this._emitStrokeEnd();
+  }
+
+  _emitStrokeEnd() {
+    const hand = this._boundHand || this.handModel.getCurrentHand();
+    const finger = this._boundFinger || this.handModel.getActiveNail();
+    this.wetCure.release(hand, finger);
     if (this.events) {
-      this._strokeEndPayload.hand = this._boundHand || this.handModel.getCurrentHand();
-      this._strokeEndPayload.finger = this._boundFinger || this.handModel.getActiveNail();
+      this._strokeEndPayload.hand = hand;
+      this._strokeEndPayload.finger = finger;
       this.events.emit(EVENTS.BRUSH_STROKE_END, this._strokeEndPayload);
     }
     if (this.onPaintEnd) this.onPaintEnd();
@@ -291,7 +379,14 @@ export class PolishBrush3D {
   _startStroke() {
     this.isPainting = true;
     this._hasLastUV = false;
+    this._hasLastWorld = false;
+    this._speed = 0;
     this._strokeSeed = Math.random() * 6.2831;
+    this._emitStrokeStart();
+  }
+
+  _emitStrokeStart() {
+    this.wetCure.wet(this._boundHand, this._boundFinger);
     if (this.events) {
       const p = this._strokeStartPayload;
       p.hand = this._boundHand;
@@ -301,6 +396,17 @@ export class PolishBrush3D {
       this.events.emit(EVENTS.BRUSH_STROKE_START, p);
     }
     if (this.onPaintStart) this.onPaintStart();
+  }
+
+  _emitStroke(speed, pressure, u, v, worldPos) {
+    if (!this.events) return;
+    const p = this._strokePayload;
+    p.speed = speed;
+    p.pressure = pressure;
+    p.u = u;
+    p.v = v;
+    p.worldPos.copy(worldPos);
+    this.events.emit(EVENTS.BRUSH_STROKE, p);
   }
 
   _splat(ax, ay, bx, by, pressure, dt) {
@@ -315,6 +421,9 @@ export class PolishBrush3D {
       sim.splatVelocity(ax, ay, bx, by, radius, (bx - ax) / dt, (by - ay) / dt, aspect);
     }
     this._dyeDirty = true;
+    // Same segment into the coverage grid (CPU, a few dozen cells).
+    const map = this.getCoverageMap(hand, finger, true);
+    if (map && map.addSegment(ax, ay, bx, by, radius, aspect)) this._reportCoverage(hand, finger, map, false);
   }
 
   /**
@@ -324,7 +433,11 @@ export class PolishBrush3D {
   update(dt) {
     if (!this.isActive) return;
     this._frame++;
+    if (dt > 0) this._lastDt = dt;
     const hm = this.handModel;
+
+    // An autoStroke() sequence ends when a frame passes without a call.
+    if (this._autoActive && this._frame > this._autoFrame + 1) this._endAutoStroke();
 
     // Safety net: someone changed the active nail without emitting nail:select.
     if (this.fluidSim && (hm.getCurrentHand() !== this._boundHand || hm.getActiveNail() !== this._boundFinger)) {
@@ -349,7 +462,7 @@ export class PolishBrush3D {
       transform = input.getBrushTransform(nailMesh);
       this._camChanged = false;
       this._needsTransform = false;
-      this.bristleSystem.setBrushTransform(transform.position, transform.normal);
+      this.bristleSystem.setBrushTransform(transform.position, transform.normal, transform.isTouch ? TOUCH_TILT : MOUSE_TILT);
       this.bristleSystem.setSurface(transform.surfacePoint, transform.surfaceNormal, transform.isValid);
       changed = true;
     }
@@ -379,17 +492,26 @@ export class PolishBrush3D {
               this._splat(this._lastUV.x, this._lastUV.y, uv.x, uv.y, pressure, dt);
               speed = dt > 0 ? dist / dt : 0;
               this._lastUV.copy(uv);
+              // the bead empties as it paints
+              const b = this.bristleSystem;
+              if (b.load > LOAD_MIN) b.setLoad(Math.max(LOAD_MIN, b.load - dist * LOAD_PER_UV));
             }
           }
-          if (this.events) {
-            const p = this._strokePayload;
-            p.speed = speed;
-            p.pressure = transform.pressure;
-            p.u = uv.x;
-            p.v = uv.y;
-            p.worldPos.copy(transform.surfacePoint);
-            this.events.emit(EVENTS.BRUSH_STROKE, p);
+          // Smoothed stroke speed and world velocity (droplets fly along the stroke).
+          const k = dt > 0 ? Math.min(1, dt * 14) : 1;
+          this._speed += (speed - this._speed) * k;
+          const sp = transform.surfacePoint;
+          if (this._hasLastWorld && dt > 0) {
+            const inv = 1 / dt;
+            this._worldVel.x += ((sp.x - this._lastWorld.x) * inv - this._worldVel.x) * k;
+            this._worldVel.y += ((sp.y - this._lastWorld.y) * inv - this._worldVel.y) * k;
+            this._worldVel.z += ((sp.z - this._lastWorld.z) * inv - this._worldVel.z) * k;
+          } else {
+            this._worldVel.set(0, 0, 0);
           }
+          this._lastWorld.copy(sp);
+          this._hasLastWorld = true;
+          this._emitStroke(speed, transform.pressure, uv.x, uv.y, sp);
         }
       } else {
         this.bristleSystem.pressure = 0;
@@ -413,10 +535,16 @@ export class PolishBrush3D {
     if (this.isPainting) changed = true;
 
     // Bristles: skipped entirely while at rest.
-    if (!this.bristleSystem.isAtRest()) {
-      this.bristleSystem.update(dt, nailMesh, this.raycaster);
+    const bristles = this.bristleSystem;
+    if (!bristles.isAtRest()) {
+      const contacts = bristles.update(dt, nailMesh, this.raycaster);
+      if (this.isPainting && contacts > 0) {
+        this.brushEffects.emitFromStroke(bristles.contactPoints, contacts, this._speed, this._worldVel, dt);
+      }
       changed = true;
     }
+    // Refill the bead at rest.
+    if (!this.isPainting && bristles.load < 1 && bristles.setLoad(bristles.load + dt * LOAD_REFILL)) changed = true;
 
     if (this.brushEffects.update(dt)) changed = true;
 
@@ -440,6 +568,7 @@ export class PolishBrush3D {
       this.fluidSim.clear();
       this._setColorSRGB(this.color);
       this.handModel.setPaintTexture(hand, finger, target.texture);
+      this._filled(hand, finger);
       this.invalidate();
       return;
     }
@@ -449,7 +578,17 @@ export class PolishBrush3D {
     this._setColorSRGB(this.color);
     this._dyeDirty = true;
     this._refreshBoundTexture();
+    if (this._boundHand !== null) this._filled(this._boundHand, this._boundFinger);
     this.invalidate();
+  }
+
+  _filled(hand, finger) {
+    const map = this.getCoverageMap(hand, finger, true);
+    if (map) {
+      map.fill();
+      this._reportCoverage(hand, finger, map, true);
+    }
+    this.wetCure.splash(hand, finger);
   }
 
   /** Clear paint on the active nail (sim + baked). Never touches decorations. */
@@ -462,7 +601,14 @@ export class PolishBrush3D {
     }
     this.handModel.clearPaint(hand, finger);
     this._hasLastUV = false;
-    if (this.onCoverageChange) this.onCoverageChange(0);
+    const map = this.getCoverageMap(hand, finger, false);
+    if (map) {
+      map.clear();
+      this._reportCoverage(hand, finger, map, true);
+    } else if (this.onCoverageChange) {
+      this.onCoverageChange(0);
+    }
+    this.wetCure.reset(hand, finger);
     this.invalidate();
   }
 
@@ -476,8 +622,29 @@ export class PolishBrush3D {
     this._rebind();
     if (this._boundHand === null) return;
     const k = Math.max(0, Math.min(1, t));
-    this._splat(u0, v0, u0 + (u1 - u0) * k, v0 + (v1 - v0) * k, 0.8, 0);
+    const bx = u0 + (u1 - u0) * k;
+    const by = v0 + (v1 - v0) * k;
+    // A run of calls on consecutive frames is one stroke: start/end events
+    // bracket it (the end fires from update() once the calls stop).
+    if (!this._autoActive) {
+      this._autoActive = true;
+      this._autoLast.set(u0, v0);
+      if (!this.isPainting) this._emitStrokeStart();
+    }
+    this._splat(u0, v0, bx, by, 0.8, 0);
+    const du = bx - this._autoLast.x;
+    const dv = by - this._autoLast.y;
+    const speed = Math.sqrt(du * du + dv * dv) / this._lastDt;
+    this._autoLast.set(bx, by);
+    this._autoFrame = this._frame;
+    const world = this.handModel.getNailWorldPosition(this._boundFinger, this._strokePayload.worldPos);
+    this._emitStroke(speed, 0.8, bx, by, world || this._strokePayload.worldPos);
     this.invalidate();
+  }
+
+  _endAutoStroke() {
+    this._autoActive = false;
+    if (!this.isPainting) this._emitStrokeEnd();
   }
 
   setUseFluidSim(enabled) {

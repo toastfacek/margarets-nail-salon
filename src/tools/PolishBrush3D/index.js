@@ -7,3 +7,4 @@ export { BristleSystem } from './BristleSystem.js';
 export { BrushInputHandler } from './BrushInputHandler.js';
 export { BrushEffects } from './BrushEffects.js';
 export { FluidSimulator } from './FluidSimulator.js';
+export { WetCure, WET } from './WetCure.js';
