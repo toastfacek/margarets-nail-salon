@@ -2,60 +2,48 @@
  * ModelLoader.js
  * Utility for loading GLTF/GLB 3D models into the scene
  */
-import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+/**
+ * Root-absolute asset paths ('/models/x.glb') would break when the build is
+ * served from a sub-path (Poki), so rebase them on Vite's BASE_URL ('./').
+ */
+function resolveAssetUrl(url) {
+  if (url.charAt(0) === '/' && url.charAt(1) !== '/') {
+    return import.meta.env.BASE_URL + url.slice(1);
+  }
+  return url;
+}
 
 class ModelLoader {
   constructor() {
+    // The hand GLBs are not Draco-compressed, so no decoder is needed (and none
+    // may be fetched from another host).
     this.gltfLoader = new GLTFLoader();
-
-    // Optional: Set up Draco decoder for compressed models
-    this.dracoLoader = new DRACOLoader();
-    this.dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
-    this.gltfLoader.setDRACOLoader(this.dracoLoader);
-
-    // Cache for loaded models
-    this.cache = new Map();
   }
 
   /**
    * Load a GLTF/GLB model
    * @param {string} url - Path to the model file
    * @param {Object} options - Loading options
-   * @param {boolean} options.useCache - Whether to cache the model (default: true)
    * @param {Function} options.onProgress - Progress callback
    * @returns {Promise<THREE.Group>} The loaded model
    */
   async load(url, options = {}) {
-    const { useCache = true, onProgress } = options;
-
-    // Check cache first - disabled for now due to clone issues
-    // if (useCache && this.cache.has(url)) {
-    //   return this.cache.get(url).clone();
-    // }
+    const { onProgress } = options;
 
     return new Promise((resolve, reject) => {
       this.gltfLoader.load(
-        url,
+        resolveAssetUrl(url),
         (gltf) => {
           const model = gltf.scene;
 
-          // Store animations if present (but not the full gltf to avoid circular refs)
+          // Store animations if present (not the full gltf: circular refs)
           model.userData.animations = gltf.animations;
-          // Don't store gltf itself - causes circular reference issues with clone()
-
-          // Cache the model
-          if (useCache) {
-            this.cache.set(url, model);
-          }
-
-          // Return directly without clone for first load
-          // Clone only from cache on subsequent loads
           resolve(model);
         },
         (progress) => {
-          if (onProgress) {
+          if (onProgress && progress.total) {
             const percent = (progress.loaded / progress.total) * 100;
             onProgress(percent);
           }
@@ -99,19 +87,14 @@ class ModelLoader {
   }
 
   /**
-   * Clear the model cache
+   * Kept for API compatibility; there is no cache any more.
    */
-  clearCache() {
-    this.cache.clear();
-  }
+  clearCache() {}
 
   /**
-   * Dispose of the loader and free resources
+   * Kept for API compatibility; nothing to free.
    */
-  dispose() {
-    this.dracoLoader.dispose();
-    this.cache.clear();
-  }
+  dispose() {}
 }
 
 // Export singleton instance
