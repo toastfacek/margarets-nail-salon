@@ -1,11 +1,15 @@
 /**
  * HandModel.js
- * Adapter for loaded hand.glb model, providing the same interface as NailModel
- * Supports 5 independent nails with click-to-select functionality
+ * Adapter for the loaded hand GLBs: five independent nails per hand, each with
+ * its own NailMaterial, a lazily created decoration canvas (stickers, drawing)
+ * and a lazily created baked paint render target.
+ *
+ * Public API: build plan section 0.6.
  */
 import * as THREE from 'three';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { modelLoader } from './ModelLoader.js';
+import { createNailMaterial, createNailLighting, applyNailFinish } from './NailMaterial.js';
 
 // Enable BVH-accelerated raycasting globally for all meshes
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -28,6 +32,9 @@ export const FINGERS = {
     PINKY: 'pinky'
 };
 
+const FINGER_LIST = Object.freeze([FINGERS.THUMB, FINGERS.INDEX, FINGERS.MIDDLE, FINGERS.RING, FINGERS.PINKY]);
+const HAND_LIST = Object.freeze(['left', 'right']);
+
 // Map finger names to mesh names in the GLB
 const NAIL_MESH_NAMES = {
     [FINGERS.THUMB]: 'Nail_Thumb',
@@ -37,22 +44,71 @@ const NAIL_MESH_NAMES = {
     [FINGERS.PINKY]: 'Nail_Pinky'
 };
 
+const DECO_DESIGN_RES = 1024; // tools draw in 1024x1024 coordinates on every tier
+const MASK_RES = 32;
+
+const DEFAULT_SETTINGS = Object.freeze({ decoCanvasRes: 1024, bakedPaintRes: 512 });
+
+function modelUrl(hand) {
+    return `${import.meta.env.BASE_URL}models/hand-${hand}.glb`;
+}
+
+/**
+ * One nail. `canvas`, `ctx` and `texture` are lazy: the decoration canvas is
+ * only created the first time a tool asks for it.
+ */
+class NailRecord {
+    constructor(owner, hand, finger, mesh, material) {
+        this._owner = owner;
+        this.hand = hand;
+        this.finger = finger;
+        this.mesh = mesh;
+        this.material = material;
+        this.finish = 'glossy';
+        this.polishColor = null;
+        this.paintTarget = null;
+        this.coverage = 0;
+        this.uvAspect = 1;
+        this._nailMask = null;
+        this._canvas = null;
+        this._ctx = null;
+        this._texture = null;
+        this._decoScale = 1;
+    }
+
+    get canvas() { this._owner._ensureDeco(this); return this._canvas; }
+    get ctx() { this._owner._ensureDeco(this); return this._ctx; }
+    get texture() { this._owner._ensureDeco(this); return this._texture; }
+    get hasDeco() { return this._canvas !== null; }
+}
+
 export class HandModel {
-    constructor() {
+    /**
+     * @param {{ settings?: object, renderer?: THREE.WebGLRenderer, lighting?: object }} [opts]
+     */
+    constructor({ settings = null, renderer = null, lighting = null } = {}) {
         this.group = new THREE.Group();
+        this.settings = settings || DEFAULT_SETTINGS;
+        this.renderer = renderer;
+        this.lighting = lighting || createNailLighting();
 
         // Dual-hand support
         this.currentHand = 'left';
         this.hands = {
-            left: { model: null, nails: {} },
-            right: { model: null, nails: {} }
+            left: { model: null, nails: {}, skins: [] },
+            right: { model: null, nails: {}, skins: [] }
         };
+        this._loading = { left: null, right: null };
 
         this.activeNail = FINGERS.INDEX;  // Default to index finger
         this.currentShape = NAIL_SHAPES.ROUND;  // Default shape
 
-        // Shared materials
         this.baseColor = new THREE.Color('#FFDDD2');
+
+        // Called whenever something visible changes (wired to app.loop.invalidate).
+        this.onChange = null;
+
+        this._clearColor = new THREE.Color();
     }
 
     /**
@@ -62,68 +118,137 @@ export class HandModel {
         return this.hands[this.currentHand].nails;
     }
 
+    _invalidate() {
+        if (this.onChange) this.onChange();
+    }
+
+    setRenderer(renderer) {
+        this.renderer = renderer;
+    }
+
     /**
-     * Load both hand models and set up nail overlays
+     * New settings apply to resources created from now on; the skin material
+     * variant switches immediately (both variants are pre-compiled).
+     */
+    setQuality(settings) {
+        this.settings = settings || this.settings;
+        this._applySkinVariant();
+    }
+
+    // =========================================
+    // Skin (interim tiering until WP3's SkinMaterial)
+    // =========================================
+
+    _setupSkin(hand, model) {
+        const skins = this.hands[hand].skins;
+        model.traverse((child) => {
+            if (!child.isMesh || child.material === undefined) return;
+            if (Object.values(this.hands[hand].nails).some((n) => n.mesh === child)) return;
+            const standard = child.material;
+            if (!standard || Array.isArray(standard)) return;
+            // Low tier: Lambert + hemisphere (plan section 2, 'skin').
+            const lambert = new THREE.MeshLambertMaterial({
+                name: 'SkinLambert',
+                color: standard.color ? standard.color.clone() : new THREE.Color(0xfcd0c5),
+                map: standard.map || null,
+                side: standard.side,
+            });
+            skins.push({ mesh: child, standard, lambert });
+        });
+        this._applySkinVariant();
+    }
+
+    _skinVariant() {
+        return this.settings.skin === 'lambert' ? 'lambert' : 'standard';
+    }
+
+    _applySkinVariant() {
+        const variant = this._skinVariant();
+        for (let h = 0; h < HAND_LIST.length; h++) {
+            const skins = this.hands[HAND_LIST[h]].skins;
+            for (let i = 0; i < skins.length; i++) {
+                const s = skins[i];
+                s.mesh.material = variant === 'lambert' ? s.lambert : s.standard;
+            }
+        }
+        this._invalidate();
+    }
+
+    /**
+     * Compile the skin variant that is NOT in use, so a tier change never
+     * compiles a shader. Call once after load (the current variant is compiled
+     * by the normal pre-warm).
+     */
+    precompileVariants(renderer, scene, camera) {
+        const variant = this._skinVariant();
+        let swapped = false;
+        for (const hand of HAND_LIST) {
+            for (const s of this.hands[hand].skins) {
+                s.mesh.material = variant === 'lambert' ? s.standard : s.lambert;
+                swapped = true;
+            }
+        }
+        if (swapped) {
+            try { renderer.compile(scene, camera); } catch (err) { /* compile on demand instead */ }
+            this._applySkinVariant();
+        }
+    }
+
+    // =========================================
+    // Loading
+    // =========================================
+
+    /**
+     * Load the current hand (the other hand loads on demand, see ensureHandLoaded).
      * @param {string} shape - Nail shape to load (default: round)
      * @returns {Promise<void>}
      */
     async load(shape = NAIL_SHAPES.ROUND) {
         this.currentShape = shape;
-        console.log(`Loading hand models with shape: ${shape}...`);
-
         try {
-            // Load both hand models in parallel
-            // TODO: When shape-specific GLB files are available, use:
-            // modelLoader.load(`/models/hand-left-${shape}.glb`)
-            const [leftModel, rightModel] = await Promise.all([
-                modelLoader.load('/models/hand-left.glb'),
-                modelLoader.load('/models/hand-right.glb')
-            ]);
-
-            console.log('Left hand model loaded:', leftModel);
-            console.log('Right hand model loaded:', rightModel);
-
-            // Store models
-            this.hands.left.model = leftModel;
-            this.hands.right.model = rightModel;
-
-            // Add both to group
-            this.group.add(leftModel);
-            this.group.add(rightModel);
-
-            // Hide right hand initially
-            rightModel.visible = false;
-
-            // Set up nails for both hands
-            this.setupHandNails('left', leftModel);
-            this.setupHandNails('right', rightModel);
-
-            // Position and orient the hand model
+            await this.ensureHandLoaded(this.currentHand);
             this.setupOrientation();
-
-            console.log('Hand models setup complete. Group:', this.group);
         } catch (error) {
-            console.error('Failed to load hand models:', error);
+            console.error('Failed to load hand model:', error);
         }
+    }
+
+    /**
+     * Load a hand if it is not loaded yet. Resolves once its nails are set up.
+     * @param {'left'|'right'} hand
+     * @returns {Promise<void>}
+     */
+    ensureHandLoaded(hand) {
+        if (hand !== 'left' && hand !== 'right') return Promise.resolve();
+        if (this.hands[hand].model) return Promise.resolve();
+        if (this._loading[hand]) return this._loading[hand];
+
+        this._loading[hand] = modelLoader.load(modelUrl(hand)).then((model) => {
+            this.hands[hand].model = model;
+            model.visible = hand === this.currentHand;
+            this.group.add(model);
+            this.setupHandNails(hand, model);
+            this._setupSkin(hand, model);
+            if (hand === this.currentHand) this.setNailHighlight(this.activeNail, true);
+            this._invalidate();
+        }).catch((error) => {
+            this._loading[hand] = null;
+            throw error;
+        });
+        return this._loading[hand];
+    }
+
+    isHandLoaded(hand) {
+        return !!(this.hands[hand] && this.hands[hand].model);
     }
 
     /**
      * Set up all nails for a specific hand
      */
     setupHandNails(hand, model) {
-        // Debug: Log all objects in the model
-        model.traverse((child) => {
-            if (child.isMesh) {
-                console.log(`[${hand}] Found mesh:`, child.name);
-            }
-        });
-
-        // Find and set up each nail mesh
         for (const [finger, meshName] of Object.entries(NAIL_MESH_NAMES)) {
             const nailMesh = this.findMeshByName(model, meshName, hand);
-
             if (nailMesh) {
-                console.log(`[${hand}] Setting up nail: ${finger} -> ${meshName}`);
                 this.setupNailForHand(hand, finger, nailMesh);
             } else {
                 console.warn(`[${hand}] Nail mesh not found: ${meshName}`);
@@ -136,179 +261,285 @@ export class HandModel {
      * Also tries with _Left suffix for left hand models
      */
     findMeshByName(object, name, hand = null) {
-        // Try exact match first
         if (object.name === name && object.isMesh) {
             return object;
         }
-
-        // Try with _Left suffix for left hand
         if (hand === 'left' && object.name === `${name}_Left` && object.isMesh) {
             return object;
         }
-
         for (const child of object.children) {
             const found = this.findMeshByName(child, name, hand);
             if (found) return found;
         }
-
         return null;
     }
 
     /**
      * Generate UV coordinates for a nail geometry based on bounding box projection
-     * This allows canvas-based tools (stickers, glitter, brush) to work on GLB models
+     * (local x -> u, local y -> v). Kept identical to the original mapping so
+     * raycast UVs, canvas tools and paint agree.
      */
     generateNailUVs(geometry) {
-        // Compute bounding box if not already computed
         if (!geometry.boundingBox) {
             geometry.computeBoundingBox();
         }
-
         const bbox = geometry.boundingBox;
         const positions = geometry.attributes.position;
         const uvs = new Float32Array(positions.count * 2);
-
-        // Get extent of the nail in local space
-        const size = new THREE.Vector3();
-        bbox.getSize(size);
-
-        // Avoid division by zero
-        const sizeX = size.x || 1;
-        const sizeY = size.y || 1;
-
-        // Map each vertex position to UV coordinates (0-1 range)
+        const sizeX = (bbox.max.x - bbox.min.x) || 1;
+        const sizeY = (bbox.max.y - bbox.min.y) || 1;
         for (let i = 0; i < positions.count; i++) {
-            const x = positions.getX(i);
-            const y = positions.getY(i);
-
-            // Normalize to 0-1 based on bounding box
-            uvs[i * 2] = (x - bbox.min.x) / sizeX;
-            uvs[i * 2 + 1] = (y - bbox.min.y) / sizeY;
+            uvs[i * 2] = (positions.getX(i) - bbox.min.x) / sizeX;
+            uvs[i * 2 + 1] = (positions.getY(i) - bbox.min.y) / sizeY;
         }
-
-        // Add UV attribute to geometry
         geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-        console.log(`Generated UVs for nail geometry (${positions.count} vertices)`);
     }
 
     /**
-     * Set up a single nail with overlay and canvas texture for a specific hand
+     * Set up a single nail for a specific hand.
      */
     setupNailForHand(hand, finger, nailMesh) {
-        // Ensure nail mesh has UV coordinates for canvas-based tools
-        if (!nailMesh.geometry.attributes.uv) {
-            console.log(`[${hand}] Generating UVs for ${finger} nail`);
-            this.generateNailUVs(nailMesh.geometry);
+        const geometry = nailMesh.geometry;
+        if (!geometry.attributes.uv) {
+            this.generateNailUVs(geometry);
+        }
+        if (!geometry.boundsTree) {
+            geometry.boundsTree = new MeshBVH(geometry);
+        }
+        if (!geometry.boundingBox) geometry.computeBoundingBox();
+
+        const oldMaterial = nailMesh.material;
+        const material = createNailMaterial(this.settings, this.lighting);
+        nailMesh.material = material;
+        if (oldMaterial && oldMaterial !== material) {
+            if (Array.isArray(oldMaterial)) oldMaterial.forEach((m) => m.dispose());
+            else oldMaterial.dispose();
         }
 
-        // Add BVH for fast raycasting
-        if (!nailMesh.geometry.boundsTree) {
-            nailMesh.geometry.boundsTree = new MeshBVH(nailMesh.geometry);
-            console.log(`[${hand}] BVH generated for ${finger} nail`);
-        }
+        const rec = new NailRecord(this, hand, finger, nailMesh, material);
+        const bb = geometry.boundingBox;
+        const sizeX = bb.max.x - bb.min.x;
+        const sizeY = bb.max.y - bb.min.y;
+        rec.uvAspect = sizeY > 0 ? sizeX / sizeY : 1;
 
-        // Create overlay mesh for drawing
-        const overlayGeometry = nailMesh.geometry.clone();
-        const overlayMaterial = new THREE.MeshBasicMaterial({
-            map: null,
-            transparent: true,
-            opacity: 1,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-            depthTest: true,
-            polygonOffset: true,
-            polygonOffsetFactor: -1,
-            polygonOffsetUnits: -1,
-        });
-
-        const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
-        overlayMesh.name = `${hand}_${finger}_overlay`;
-        overlayMesh.visible = true;
-        overlayMesh.renderOrder = 10;  // Render after nail mesh
-
-        // Copy local transforms from nail mesh
-        overlayMesh.position.copy(nailMesh.position);
-        overlayMesh.rotation.copy(nailMesh.rotation);
-        overlayMesh.scale.copy(nailMesh.scale);
-
-        // Copy the world matrix to ensure proper positioning
-        overlayMesh.matrixAutoUpdate = true;
-
-        // Parent the overlay to the same parent as the nail
-        // so it follows any armature/bone transforms
-        if (nailMesh.parent) {
-            nailMesh.parent.add(overlayMesh);
-        } else {
-            this.group.add(overlayMesh);
-        }
-
-        // Create drawing canvas
-        const canvas = document.createElement('canvas');
-        canvas.width = 1024;
-        canvas.height = 1024;
-        const ctx = canvas.getContext('2d');
-
-        // Create texture
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.flipY = false;
-        overlayMaterial.map = texture;
-
-        // Store nail state for this hand
-        this.hands[hand].nails[finger] = {
-            mesh: nailMesh,
-            overlay: overlayMesh,
-            canvas,
-            ctx,
-            texture,
-            polishColor: null,
-            finish: 'glossy',
-            originalMaterial: nailMesh.material.clone()
-        };
-
-        // Create proper nail material if needed
-        this.setupNailMaterialForHand(hand, finger);
-    }
-
-    /**
-     * Set up nail material with proper physical properties for a specific hand
-     */
-    setupNailMaterialForHand(hand, finger) {
-        const nail = this.hands[hand].nails[finger];
-        if (!nail) return;
-
-        // Create physical material for glossy nail finish
-        const nailMaterial = new THREE.MeshPhysicalMaterial({
-            color: this.baseColor,
-            roughness: 0.25,
-            metalness: 0.0,
-            clearcoat: 1.0,
-            clearcoatRoughness: 0.1,
-            reflectivity: 0.6,
-            envMapIntensity: 1.0,
-            side: THREE.FrontSide,
-        });
-
-        nail.mesh.material = nailMaterial;
-        nail.material = nailMaterial;
+        this.hands[hand].nails[finger] = rec;
     }
 
     /**
      * Set up hand orientation and position
      */
     setupOrientation() {
-        // We want: looking down at the back of the hand (nail side up)
-        // Fingers pointing away from camera, palm down
-
-        // Rotate hand so nails face up toward camera
-        this.group.rotation.x = 0;
-        this.group.rotation.y = Math.PI;  // Rotate 180 so fingers point away
-        this.group.rotation.z = 0;
-
-        // Position to center in view (adjust based on model bounds)
+        // Looking down at the back of the hand (nail side up), fingers pointing away
+        this.group.rotation.set(0, Math.PI, 0);
         this.group.position.set(0, -1, 0);
-
-        // Scale if needed
         this.group.scale.setScalar(1.0);
+    }
+
+    // =========================================
+    // Lazy per-nail resources
+    // =========================================
+
+    _ensureDeco(rec) {
+        if (rec._canvas) return;
+        const res = this.settings.decoCanvasRes || DECO_DESIGN_RES;
+        const canvas = document.createElement('canvas');
+        canvas.width = res;
+        canvas.height = res;
+        const ctx = canvas.getContext('2d');
+        const scale = res / DECO_DESIGN_RES;
+        // Tools hard-code 1024 coordinates; pre-scale smaller canvases.
+        if (scale !== 1) ctx.setTransform(scale, 0, 0, scale, 0, 0);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.name = 'NailDeco';
+        texture.flipY = false;
+        texture.generateMipmaps = false;
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.premultiplyAlpha = true;
+
+        rec._canvas = canvas;
+        rec._ctx = ctx;
+        rec._texture = texture;
+        rec._decoScale = scale;
+        rec.material.uniforms.uDecoMap.value = texture;
+        rec.material.uniforms.uHasDeco.value = 1;
+        this._invalidate();
+    }
+
+    _clearTarget(target) {
+        const renderer = this.renderer;
+        if (!renderer || !target) return;
+        const prevTarget = renderer.getRenderTarget();
+        const prevAlpha = renderer.getClearAlpha();
+        renderer.getClearColor(this._clearColor);
+        renderer.setRenderTarget(target);
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, false, false);
+        renderer.setClearColor(this._clearColor, prevAlpha);
+        renderer.setRenderTarget(prevTarget);
+    }
+
+    _createPaintTarget(res) {
+        const target = new THREE.WebGLRenderTarget(res, res, {
+            type: THREE.UnsignedByteType,
+            format: THREE.RGBAFormat,
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            wrapS: THREE.ClampToEdgeWrapping,
+            wrapT: THREE.ClampToEdgeWrapping,
+            depthBuffer: false,
+            stencilBuffer: false,
+            generateMipmaps: false,
+        });
+        target.texture.name = 'BakedPaint';
+        this._clearTarget(target);
+        return target;
+    }
+
+    /**
+     * The nail's baked paint render target (lazy).
+     */
+    getPaintTarget(hand, finger, create = true) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return null;
+        if (!rec.paintTarget && create) {
+            rec.paintTarget = this._createPaintTarget(this.settings.bakedPaintRes || 512);
+        }
+        return rec.paintTarget;
+    }
+
+    /**
+     * Re-create baked targets at a new resolution, preserving their content.
+     * @param {number} res
+     * @param {(src: THREE.Texture, dst: THREE.WebGLRenderTarget) => void} blit
+     */
+    resizePaintTargets(res, blit) {
+        for (let h = 0; h < HAND_LIST.length; h++) {
+            const nails = this.hands[HAND_LIST[h]].nails;
+            for (let f = 0; f < FINGER_LIST.length; f++) {
+                const rec = nails[FINGER_LIST[f]];
+                if (!rec || !rec.paintTarget || rec.paintTarget.width === res) continue;
+                const old = rec.paintTarget;
+                const next = this._createPaintTarget(res);
+                if (blit) blit(old.texture, next);
+                rec.paintTarget = next;
+                if (rec.material.uniforms.uPaintMap.value === old.texture) {
+                    rec.material.uniforms.uPaintMap.value = next.texture;
+                }
+                old.dispose();
+            }
+        }
+        this._invalidate();
+    }
+
+    /**
+     * Point the nail shader's uPaintMap at a texture (null hides paint).
+     */
+    setPaintTexture(hand, finger, texture) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return;
+        const u = rec.material.uniforms;
+        if (u.uPaintMap.value === texture) return;
+        u.uPaintMap.value = texture;
+        u.uHasPaint.value = texture ? 1 : 0;
+        this._invalidate();
+    }
+
+    /**
+     * Clear the baked paint and reset coverage. Never touches decorations.
+     */
+    clearPaint(hand, finger) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return;
+        if (rec.paintTarget) this._clearTarget(rec.paintTarget);
+        rec.coverage = 0;
+        this._invalidate();
+    }
+
+    /** 0 = cured, 1 = wet. */
+    setWetness(hand, finger, w) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return;
+        rec.material.uniforms.uWet.value = w;
+        this._invalidate();
+    }
+
+    /** 0..1 sparkle sweep used by the reveal. */
+    setRevealPulse(hand, finger, x) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return;
+        rec.material.uniforms.uRevealPulse.value = x;
+        this._invalidate();
+    }
+
+    /** Nail width / length in world units (u extent / v extent), for round splats. */
+    getUVAspect(hand, finger) {
+        const rec = this.getNail(hand, finger);
+        return rec ? rec.uvAspect : 1;
+    }
+
+    /**
+     * 32x32 Uint8Array: 1 where the UV cell has nail geometry. Built once from
+     * the triangles (rasterised on the CPU), then cached.
+     */
+    getNailMask(hand, finger) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return null;
+        if (!rec._nailMask) rec._nailMask = this._buildNailMask(rec.mesh.geometry);
+        return rec._nailMask;
+    }
+
+    _buildNailMask(geometry) {
+        const N = MASK_RES;
+        const mask = new Uint8Array(N * N);
+        const uv = geometry.attributes.uv;
+        if (!uv) return mask;
+        const index = geometry.index;
+        const triCount = Math.floor((index ? index.count : uv.count) / 3);
+        const cell = (v) => Math.min(N - 1, Math.max(0, Math.floor(v)));
+        for (let t = 0; t < triCount; t++) {
+            const ia = index ? index.getX(t * 3) : t * 3;
+            const ib = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+            const ic = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+            const ax = uv.getX(ia) * N, ay = uv.getY(ia) * N;
+            const bx = uv.getX(ib) * N, by = uv.getY(ib) * N;
+            const cx = uv.getX(ic) * N, cy = uv.getY(ic) * N;
+            // Vertices always mark their own cell, so tiny triangles count.
+            mask[cell(ay) * N + cell(ax)] = 1;
+            mask[cell(by) * N + cell(bx)] = 1;
+            mask[cell(cy) * N + cell(cx)] = 1;
+            const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            if (Math.abs(area) < 1e-12) continue;
+            const x0 = cell(Math.min(ax, bx, cx)), x1 = cell(Math.max(ax, bx, cx));
+            const y0 = cell(Math.min(ay, by, cy)), y1 = cell(Math.max(ay, by, cy));
+            for (let y = y0; y <= y1; y++) {
+                const py = y + 0.5;
+                for (let x = x0; x <= x1; x++) {
+                    const px = x + 0.5;
+                    const w0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area;
+                    const w1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;
+                    if (w0 >= 0 && w1 >= 0 && 1 - w0 - w1 >= 0) mask[y * N + x] = 1;
+                }
+            }
+        }
+        return mask;
+    }
+
+    /** The nail record for a hand/finger. */
+    getNail(hand, finger) {
+        const h = this.hands[hand];
+        return h ? (h.nails[finger] || null) : null;
+    }
+
+    /** Iterate the loaded nails of one hand: fn(record, finger). */
+    forEachNail(hand, fn) {
+        const h = this.hands[hand];
+        if (!h) return;
+        for (let i = 0; i < FINGER_LIST.length; i++) {
+            const rec = h.nails[FINGER_LIST[i]];
+            if (rec) fn(rec, FINGER_LIST[i]);
+        }
     }
 
     // =========================================
@@ -316,39 +547,34 @@ export class HandModel {
     // =========================================
 
     /**
-     * Switch between left and right hand
+     * Switch between left and right hand (loads the hand first if needed).
      * @param {string} hand - 'left' or 'right'
+     * @returns {Promise<boolean>} whether the hand changed
      */
     switchHand(hand) {
         if (hand !== 'left' && hand !== 'right') {
             console.warn(`Invalid hand: ${hand}`);
-            return;
+            return Promise.resolve(false);
         }
-        if (hand === this.currentHand) return;
-
-        // Hide current hand model
-        if (this.hands[this.currentHand].model) {
-            this.hands[this.currentHand].model.visible = false;
+        if (hand === this.currentHand) return Promise.resolve(false);
+        if (!this.hands[hand].model) {
+            return this.ensureHandLoaded(hand).then(() => this._swapHand(hand));
         }
-
-        // Show new hand model
-        if (this.hands[hand].model) {
-            this.hands[hand].model.visible = true;
-        }
-
-        // Update current hand
-        this.currentHand = hand;
-
-        // Re-apply highlight to active nail on new hand
-        this.setNailHighlight(this.activeNail, true);
-
-        console.log(`Switched to ${hand} hand`);
+        return Promise.resolve(this._swapHand(hand));
     }
 
-    /**
-     * Get the currently active hand
-     * @returns {string} 'left' or 'right'
-     */
+    _swapHand(hand) {
+        if (hand === this.currentHand) return false;
+        const prev = this.hands[this.currentHand];
+        this.setNailHighlight(this.activeNail, false);
+        if (prev.model) prev.model.visible = false;
+        if (this.hands[hand].model) this.hands[hand].model.visible = true;
+        this.currentHand = hand;
+        this.setNailHighlight(this.activeNail, true);
+        this._invalidate();
+        return true;
+    }
+
     getCurrentHand() {
         return this.currentHand;
     }
@@ -357,262 +583,158 @@ export class HandModel {
     // NailModel Interface Methods
     // =========================================
 
-    /**
-     * Get the root group for scene addition
-     */
     getMesh() {
         return this.group;
     }
 
-    /**
-     * Get the currently active nail mesh (for tools raycasting)
-     */
+    /** The currently active nail mesh (for tools raycasting) */
     getNailMesh() {
         const nail = this.nails[this.activeNail];
         return nail ? nail.mesh : null;
     }
 
-    /**
-     * Get all nail meshes (for selection raycasting)
-     */
+    /** All nail meshes of the current hand (for selection raycasting) */
     getNailMeshes() {
         return Object.values(this.nails).map(n => n.mesh);
     }
 
-    /**
-     * Get the drawing context for the active nail
-     */
+    /** Drawing context for the active nail (created on first use) */
     getDrawingContext() {
         const nail = this.nails[this.activeNail];
         return nail ? nail.ctx : null;
     }
 
-    /**
-     * Get the drawing texture for the active nail
-     */
+    /** Drawing texture for the active nail (created on first use) */
     getDrawingTexture() {
         const nail = this.nails[this.activeNail];
         return nail ? nail.texture : null;
     }
 
-    /**
-     * Update the drawing texture after canvas modifications
-     */
+    /** Upload the active nail's drawing canvas on the next frame */
     updateDrawingTexture() {
         const nail = this.nails[this.activeNail];
-        if (nail && nail.texture) {
-            nail.texture.needsUpdate = true;
+        if (nail && nail._texture) {
+            nail._texture.needsUpdate = true;
+            this._invalidate();
         }
     }
 
-    /**
-     * Clear drawing on the active nail
-     */
+    _clearDeco(nail) {
+        if (!nail || !nail._ctx) return;
+        const ctx = nail._ctx;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, nail._canvas.width, nail._canvas.height);
+        ctx.restore();
+        nail._texture.needsUpdate = true;
+    }
+
+    /** Clear drawing on the active nail (decorations only, never paint) */
     clearDrawing() {
-        const nail = this.nails[this.activeNail];
-        if (nail && nail.ctx) {
-            nail.ctx.clearRect(0, 0, 1024, 1024);
-            this.updateDrawingTexture();
-        }
+        this._clearDeco(this.nails[this.activeNail]);
+        this._invalidate();
     }
 
-    /**
-     * Clear drawing on all nails
-     */
+    /** Clear drawing on all nails of the current hand */
     clearAllDrawings() {
-        for (const nail of Object.values(this.nails)) {
-            if (nail.ctx) {
-                nail.ctx.clearRect(0, 0, 1024, 1024);
-                nail.texture.needsUpdate = true;
-            }
-        }
+        for (const nail of Object.values(this.nails)) this._clearDeco(nail);
+        this._invalidate();
     }
 
     // =========================================
     // Nail Selection Methods
     // =========================================
 
-    /**
-     * Set the active nail by finger name
-     * @param {string} finger - One of FINGERS values
-     */
     setActiveNail(finger) {
         if (!this.nails[finger]) {
             console.warn(`Unknown finger: ${finger}`);
             return;
         }
-
-        // Remove highlight from previous
         this.setNailHighlight(this.activeNail, false);
-
-        // Set new active
         this.activeNail = finger;
-
-        // Add highlight to new active
         this.setNailHighlight(finger, true);
+        this._invalidate();
     }
 
-    /**
-     * Get the currently active nail finger name
-     */
     getActiveNail() {
         return this.activeNail;
     }
 
-    /**
-     * Get the finger name from a nail mesh
-     * @param {THREE.Mesh} mesh - A nail mesh
-     * @returns {string|null} Finger name or null if not a nail
-     */
     getFingerFromMesh(mesh) {
         for (const [finger, nail] of Object.entries(this.nails)) {
-            if (nail.mesh === mesh) {
-                return finger;
-            }
+            if (nail.mesh === mesh) return finger;
         }
         return null;
     }
 
     /**
-     * Get the world position of a nail's visible surface center
-     * @param {string} finger - Finger identifier
-     * @returns {THREE.Vector3|null} World position or null if finger not found
+     * World position of a nail's visible surface centre.
+     * @param {string} finger
+     * @param {THREE.Vector3} [target]
+     * @returns {THREE.Vector3|null}
      */
-    getNailWorldPosition(finger) {
+    getNailWorldPosition(finger, target = new THREE.Vector3()) {
         const nail = this.nails[finger];
         if (!nail || !nail.mesh) return null;
-
         const mesh = nail.mesh;
-
-        // Ensure geometry has bounding box computed
-        if (!mesh.geometry.boundingBox) {
-            mesh.geometry.computeBoundingBox();
-        }
-
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
         const bbox = mesh.geometry.boundingBox;
-
-        // Get the TOP surface center of the nail (not volumetric center)
-        // Use center X/Z for horizontal centering, but max Y for the visible surface
-        const surfaceCenter = new THREE.Vector3(
-            (bbox.min.x + bbox.max.x) / 2,  // center X
-            bbox.max.y,                      // top surface Y
-            (bbox.min.z + bbox.max.z) / 2   // center Z
+        target.set(
+            (bbox.min.x + bbox.max.x) / 2,
+            bbox.max.y,
+            (bbox.min.z + bbox.max.z) / 2
         );
-
-        // Transform to world space
         mesh.updateWorldMatrix(true, false);
-        surfaceCenter.applyMatrix4(mesh.matrixWorld);
-
-        return surfaceCenter;
+        return target.applyMatrix4(mesh.matrixWorld);
     }
 
-    /**
-     * Get the world position of the currently active nail
-     * @returns {THREE.Vector3|null} World position or null
-     */
     getActiveNailWorldPosition() {
         return this.getNailWorldPosition(this.activeNail);
     }
 
-    /**
-     * Set visual highlight on a nail (selection indicator)
-     */
+    /** Selection highlight (uniform only, no recompile) */
     setNailHighlight(finger, highlighted) {
         const nail = this.nails[finger];
         if (!nail || !nail.material) return;
-
-        if (highlighted) {
-            // Add subtle emissive glow
-            nail.material.emissive = new THREE.Color(0xffaacc);
-            nail.material.emissiveIntensity = 0.3;
-        } else {
-            // Remove glow
-            nail.material.emissive = new THREE.Color(0x000000);
-            nail.material.emissiveIntensity = 0;
-        }
-        nail.material.needsUpdate = true;
+        nail.material.uniforms.uHighlight.value = highlighted ? 1 : 0;
     }
 
     // =========================================
     // Polish & Finish Methods
     // =========================================
 
-    /**
-     * Set polish color on the active nail
-     */
+    /** Legacy solid colour under the paint, on the active nail */
     setPolishColor(color) {
         const nail = this.nails[this.activeNail];
-        if (!nail || !nail.material) return;
-
-        nail.polishColor = new THREE.Color(color);
-        nail.material.color = nail.polishColor;
-        nail.material.roughness = 0.1;
-        nail.material.clearcoat = 1.0;
-        nail.material.clearcoatRoughness = 0.05;
-        nail.material.needsUpdate = true;
+        if (!nail) return;
+        const u = nail.material.uniforms;
+        u.uUnderColor.value.set(color);
+        u.uUnderAmount.value = 1;
+        nail.polishColor = u.uUnderColor.value;
+        this._invalidate();
     }
 
-    /**
-     * Clear polish from the active nail
-     */
+    /** Remove the legacy solid colour from the active nail */
     clearPolish() {
         const nail = this.nails[this.activeNail];
-        if (!nail || !nail.material) return;
-
+        if (!nail) return;
+        nail.material.uniforms.uUnderAmount.value = 0;
         nail.polishColor = null;
-        nail.material.color = this.baseColor;
-        nail.material.roughness = 0.25;
-        nail.material.clearcoat = 1.0;
-        nail.material.metalness = 0.0;
-        nail.material.needsUpdate = true;
+        this._invalidate();
     }
 
     /**
-     * Set finish type on the active nail
+     * Set finish type.
+     * @param {'glossy'|'matte'|'shimmer'|'chrome'|'holographic'} type
+     * @param {string} [hand] defaults to the current hand
+     * @param {string} [finger] defaults to the active nail
      */
-    setFinish(type) {
-        const nail = this.nails[this.activeNail];
-        if (!nail || !nail.material) return;
-
+    setFinish(type, hand = this.currentHand, finger = this.activeNail) {
+        const nail = this.getNail(hand, finger);
+        if (!nail) return;
         nail.finish = type;
-
-        switch (type) {
-            case 'matte':
-                nail.material.roughness = 0.8;
-                nail.material.clearcoat = 0.0;
-                nail.material.metalness = 0.0;
-                break;
-
-            case 'shimmer':
-                nail.material.roughness = 0.2;
-                nail.material.clearcoat = 1.0;
-                nail.material.metalness = 0.3;
-                break;
-
-            case 'chrome':
-                nail.material.roughness = 0.05;
-                nail.material.clearcoat = 1.0;
-                nail.material.metalness = 0.9;
-                break;
-
-            case 'holographic':
-                nail.material.roughness = 0.1;
-                nail.material.clearcoat = 1.0;
-                nail.material.metalness = 0.4;
-                nail.material.iridescence = 1.0;
-                nail.material.iridescenceIOR = 1.5;
-                break;
-
-            case 'glossy':
-            default:
-                nail.material.roughness = 0.1;
-                nail.material.clearcoat = 1.0;
-                nail.material.clearcoatRoughness = 0.05;
-                nail.material.metalness = 0.0;
-                break;
-        }
-
-        nail.material.needsUpdate = true;
+        applyNailFinish(nail.material, type);
+        this._invalidate();
     }
 
     // =========================================
@@ -620,70 +742,74 @@ export class HandModel {
     // =========================================
 
     /**
-     * Save current nail state (polish, finish, drawings) for all nails
-     * @returns {Object} State object with left/right hand nail states
+     * Save nail state (legacy polish, finish, drawings) for all loaded nails.
+     * Drawings are copied canvas-to-canvas (no readback). Only used by setShape.
      */
     saveNailState() {
         const state = { left: {}, right: {} };
-        for (const hand of ['left', 'right']) {
+        for (const hand of HAND_LIST) {
             for (const [finger, nail] of Object.entries(this.hands[hand].nails)) {
                 state[hand][finger] = {
-                    polishColor: nail.polishColor?.clone(),
+                    polishColor: nail.polishColor ? nail.polishColor.clone() : null,
                     finish: nail.finish,
-                    canvasData: nail.canvas.toDataURL()
+                    canvasData: nail.hasDeco ? this._copyCanvas(nail._canvas) : null
                 };
             }
         }
         return state;
     }
 
-    /**
-     * Restore nail state (polish, finish, drawings) to all nails
-     * @param {Object} state - State object from saveNailState()
-     */
+    _copyCanvas(src) {
+        const c = document.createElement('canvas');
+        c.width = src.width;
+        c.height = src.height;
+        c.getContext('2d').drawImage(src, 0, 0);
+        return c;
+    }
+
+    _drawSaved(nail, image) {
+        const ctx = nail.ctx;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(image, 0, 0, nail._canvas.width, nail._canvas.height);
+        ctx.restore();
+        nail._texture.needsUpdate = true;
+        this._invalidate();
+    }
+
     restoreNailState(state) {
         const originalHand = this.currentHand;
         const originalNail = this.activeNail;
 
-        for (const hand of ['left', 'right']) {
-            for (const [finger, saved] of Object.entries(state[hand])) {
+        for (const hand of HAND_LIST) {
+            for (const [finger, saved] of Object.entries(state[hand] || {})) {
                 const nail = this.hands[hand].nails[finger];
                 if (!nail) continue;
-
-                // Restore polish color
-                if (saved.polishColor) {
-                    this.currentHand = hand;
-                    this.activeNail = finger;
-                    this.setPolishColor(saved.polishColor);
-                }
-
-                // Restore finish
-                if (saved.finish) {
-                    this.setFinish(saved.finish);
-                }
-
-                // Restore canvas drawing
-                if (saved.canvasData && saved.canvasData !== 'data:,') {
+                this.currentHand = hand;
+                this.activeNail = finger;
+                if (saved.polishColor) this.setPolishColor(saved.polishColor);
+                if (saved.finish) this.setFinish(saved.finish, hand, finger);
+                const data = saved.canvasData;
+                if (data && typeof data === 'object' && data.getContext) {
+                    this._drawSaved(nail, data);
+                } else if (typeof data === 'string' && data !== 'data:,') {
+                    // Older saves stored a data URL.
                     const img = new Image();
-                    img.onload = () => {
-                        nail.ctx.drawImage(img, 0, 0);
-                        nail.texture.needsUpdate = true;
-                    };
-                    img.src = saved.canvasData;
+                    img.onload = () => this._drawSaved(nail, img);
+                    img.src = data;
                 }
             }
         }
 
-        // Restore original selection
         this.currentHand = originalHand;
         this.activeNail = originalNail;
     }
 
     /**
-     * Set nail shape by loading different GLB models
-     * Preserves polish colors and drawings across shape changes
+     * Set nail shape. Only 'round' has a model today, so this only reports
+     * availability; the reload path is kept for when shape GLBs exist.
      * @param {string} shape - One of NAIL_SHAPES values
-     * @returns {boolean} Whether shape was changed
+     * @returns {Promise<boolean>} Whether shape was changed
      */
     async setShape(shape) {
         if (shape === this.currentShape) return false;
@@ -691,68 +817,39 @@ export class HandModel {
             console.warn(`Invalid shape: ${shape}`);
             return false;
         }
+        if (!this.isShapeAvailable(shape)) return false;
 
-        // TODO: Enable when shape-specific GLB files are available
-        // For now, only 'round' shape is available (current model)
-        if (shape !== NAIL_SHAPES.ROUND) {
-            console.info(`Shape '${shape}' not yet available - needs GLB model`);
-            return false;
-        }
-
-        console.log(`Switching nail shape from ${this.currentShape} to ${shape}`);
-
-        // Save current state (polish colors, drawings)
         const savedState = this.saveNailState();
-        const wasRightHand = this.currentHand === 'right';
-
-        // Clean up current models
-        if (this.hands.left.model) {
-            this.group.remove(this.hands.left.model);
-            this.disposeModel(this.hands.left.model);
+        const hand = this.currentHand;
+        for (const h of HAND_LIST) {
+            const model = this.hands[h].model;
+            for (const nail of Object.values(this.hands[h].nails)) {
+                if (nail.paintTarget) nail.paintTarget.dispose();
+                if (nail._texture) nail._texture.dispose();
+            }
+            if (model) {
+                this.group.remove(model);
+                this.disposeModel(model);
+            }
+            for (const sk of this.hands[h].skins) sk.lambert.dispose();
+            this.hands[h].model = null;
+            this.hands[h].nails = {};
+            this.hands[h].skins = [];
+            this._loading[h] = null;
         }
-        if (this.hands.right.model) {
-            this.group.remove(this.hands.right.model);
-            this.disposeModel(this.hands.right.model);
-        }
-
-        // Reset nail references
-        this.hands.left.nails = {};
-        this.hands.right.nails = {};
-
-        // Load new shape models
-        await this.load(shape);
-
-        // Restore which hand was visible
-        if (wasRightHand) {
-            this.hands.left.model.visible = false;
-            this.hands.right.model.visible = true;
-            this.currentHand = 'right';
-        }
-
-        // Restore state to new nails
+        this.currentShape = shape;
+        await this.ensureHandLoaded(hand);
         this.restoreNailState(savedState);
-
-        // Re-apply highlight to active nail
         this.setNailHighlight(this.activeNail, true);
-
-        console.log(`Shape changed to ${shape}`);
+        this._invalidate();
         return true;
     }
 
-    /**
-     * Check if a shape is available (has GLB model)
-     * @param {string} shape - Shape to check
-     * @returns {boolean} Whether shape is available
-     */
     isShapeAvailable(shape) {
-        // TODO: Update this list as shape GLB files become available
-        const availableShapes = [NAIL_SHAPES.ROUND];
-        return availableShapes.includes(shape);
+        return shape === NAIL_SHAPES.ROUND;
     }
 
-    /**
-     * Dispose of a model and its resources
-     */
+    /** Dispose of a model's geometry and materials */
     disposeModel(model) {
         model.traverse((child) => {
             if (child.isMesh) {
@@ -768,37 +865,19 @@ export class HandModel {
         });
     }
 
-    /**
-     * Get current nail shape
-     * @returns {string} Current shape
-     */
     getShape() {
         return this.currentShape;
     }
 
-    /**
-     * Set finger type - not applicable for HandModel
-     */
-    setFingerType(fingerType) {
-        console.info('setFingerType not applicable for HandModel - use setActiveNail instead');
-    }
+    /** Not applicable for HandModel */
+    setFingerType() {}
 
     // =========================================
-    // Overlay Methods
+    // Overlay Methods: no-ops. The overlay mesh is gone; paint and deco are
+    // layers inside the nail shader.
     // =========================================
 
-    setOverlayTexture(texture) {
-        const nail = this.nails[this.activeNail];
-        if (nail && nail.overlay) {
-            nail.overlay.material.map = texture;
-            nail.overlay.material.needsUpdate = true;
-        }
-    }
+    setOverlayTexture() {}
 
-    setOverlayVisible(visible) {
-        const nail = this.nails[this.activeNail];
-        if (nail && nail.overlay) {
-            nail.overlay.visible = visible;
-        }
-    }
+    setOverlayVisible() {}
 }
