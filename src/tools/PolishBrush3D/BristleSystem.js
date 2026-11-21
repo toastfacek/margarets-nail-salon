@@ -47,6 +47,12 @@ const BRUSH_CONFIG = Object.freeze({
   edgeStiffness: 0.08,
 });
 
+// Wet look: bristles darken toward the ferrule and gloss toward the tip; a bead
+// of polish hangs at the tip while the brush is loaded.
+const WET_RAMP = Object.freeze({ ferrule: 0.32, tip: 1.12, power: 1.3 });
+const BEAD_RADIUS = 0.00135;
+const DEFAULT_TILT = -Math.PI / 3;
+
 const RAY_BANDS = 8;
 const Z_AXIS = Object.freeze(new THREE.Vector3(0, 0, 1));
 
@@ -108,6 +114,10 @@ export class BristleSystem {
 
     this.color = new THREE.Color('#ff2a6d');
 
+    // Bead: 0 = empty brush, 1 = freshly loaded.
+    this.load = 1;
+    this._centerBristle = 0;
+
     this.bristleCount = Math.min(MAX_BRISTLES, bristleCount);
     this.createGeometry();
     this.initializePhysics();
@@ -126,19 +136,35 @@ export class BristleSystem {
     }
     // Ribbons lie in the flat brush plane (local x-z); their normal is local +y.
     for (let i = 0; i < normals.length; i += 3) normals[i + 1] = 1;
+    // Static wet ramp along each bristle (vertex colour multiplies the polish colour).
+    const shades = new Float32Array(maxSegments * 4 * 3);
+    for (let k = 0; k < maxSegments; k++) {
+      const s = k % SEGMENTS;
+      const fa = WET_RAMP.ferrule + (WET_RAMP.tip - WET_RAMP.ferrule) * Math.pow(s / SEGMENTS, WET_RAMP.power);
+      const fb = WET_RAMP.ferrule + (WET_RAMP.tip - WET_RAMP.ferrule) * Math.pow((s + 1) / SEGMENTS, WET_RAMP.power);
+      for (let v = 0; v < 4; v++) {
+        const f = v < 2 ? fa : fb;
+        const o = (k * 4 + v) * 3;
+        shades[o] = shades[o + 1] = shades[o + 2] = f;
+      }
+    }
 
     const geometry = new THREE.BufferGeometry();
     this._positionAttr = new THREE.BufferAttribute(positions, 3);
     this._positionAttr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('position', this._positionAttr);
     geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(shades, 3));
     geometry.setIndex(new THREE.BufferAttribute(index, 1));
     geometry.setDrawRange(0, this.bristleCount * SEGMENTS * 6);
 
-    const material = new THREE.MeshLambertMaterial({
+    const material = new THREE.MeshPhongMaterial({
       color: this.color,
       emissive: this.color,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.16,
+      specular: 0x9a9a9a,
+      shininess: 70,
+      vertexColors: true,
       side: THREE.DoubleSide,
     });
 
@@ -146,6 +172,19 @@ export class BristleSystem {
     this.mesh.name = 'Bristles';
     this.mesh.frustumCulled = false;
     this.group.add(this.mesh);
+
+    // The hanging bead: one small glossy sphere, squashed on contact.
+    const beadMaterial = new THREE.MeshPhongMaterial({
+      color: this.color,
+      emissive: this.color,
+      emissiveIntensity: 0.22,
+      specular: 0xffffff,
+      shininess: 110,
+    });
+    this.bead = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), beadMaterial);
+    this.bead.name = 'BrushBead';
+    this.bead.frustumCulled = false;
+    this.group.add(this.bead);
 
     this.createBrushHandle();
   }
@@ -194,6 +233,7 @@ export class BristleSystem {
     const n = this.bristleCount;
     const rowCount = n >= 96 ? 6 : n >= 48 ? 4 : 2;
     const colCount = Math.ceil(n / rowCount);
+    this._centerBristle = Math.min(n - 1, Math.floor(rowCount / 2) * colCount + Math.floor(colCount / 2));
 
     let b = 0;
     for (let row = 0; row < rowCount && b < n; row++) {
@@ -510,6 +550,41 @@ export class BristleSystem {
     }
     this._positionAttr.needsUpdate = true;
     this._needsMatrices = false;
+    this.updateBead();
+  }
+
+  /**
+   * Place the bead at the centre bristle's tip, sized by load and squashed
+   * by pressure. Cheap (a few float writes); called with the geometry and
+   * whenever the load changes.
+   */
+  updateBead() {
+    const bead = this.bead;
+    if (!bead) return;
+    const load = this.load;
+    if (load <= 0.02) {
+      bead.visible = false;
+      return;
+    }
+    bead.visible = true;
+    const p = this.isContacting ? Math.min(1, this.pressure) : 0;
+    const r = BEAD_RADIUS * (0.4 + 0.6 * load);
+    const wide = r * (1 + 0.3 * p);
+    const tall = r * (1 - 0.5 * p);
+    const k = (this._centerBristle * JOINTS + SEGMENTS) * 3;
+    const jp = this.jointPositions;
+    // Hangs just past the tip; pressed flat into the paint on contact.
+    bead.position.set(jp[k], jp[k + 1], jp[k + 2] + tall * (0.55 - 0.45 * p));
+    bead.scale.set(wide, wide * 0.92, tall);
+  }
+
+  /** 0..1 how much polish the brush holds (bead size). */
+  setLoad(load) {
+    const l = load < 0 ? 0 : load > 1 ? 1 : load;
+    if (Math.abs(l - this.load) < 0.002) return false;
+    this.load = l;
+    this.updateBead();
+    return true;
   }
 
   /** Legacy name. */
@@ -521,11 +596,11 @@ export class BristleSystem {
    * Position and orient the brush. The orientation is a fixed diagonal
    * (handle bottom-right, bristles pointing left).
    */
-  setBrushTransform(position, normal) {
+  setBrushTransform(position, normal, tilt = DEFAULT_TILT) {
     this.brushPosition.copy(position);
     this.brushNormal.copy(normal);
     this.group.position.copy(position);
-    this.group.rotation.set(0, 0, -Math.PI / 3);
+    this.group.rotation.set(0, 0, tilt);
   }
 
   setColor(color) {
@@ -534,6 +609,11 @@ export class BristleSystem {
     if (m) {
       m.color.copy(this.color);
       m.emissive.copy(this.color);
+    }
+    const b = this.bead && this.bead.material;
+    if (b) {
+      b.color.copy(this.color);
+      b.emissive.copy(this.color);
     }
   }
 
@@ -569,6 +649,10 @@ export class BristleSystem {
     if (this.mesh) {
       this.mesh.geometry.dispose();
       this.mesh.material.dispose();
+    }
+    if (this.bead) {
+      this.bead.geometry.dispose();
+      this.bead.material.dispose();
     }
     if (this.handle) {
       this.handle.geometry.dispose();

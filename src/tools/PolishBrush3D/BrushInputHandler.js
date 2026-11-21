@@ -15,6 +15,9 @@ const BRUSH_CONFIG = Object.freeze({
 // Offset to put the brush tip at the cursor (diagonal brush), camera space.
 const TIP_OFFSET = Object.freeze(new THREE.Vector3(0.005, -0.005, 0));
 const UP = Object.freeze(new THREE.Vector3(0, 1, 0));
+// On touch the paint point sits this far above the fingertip (CSS px), so the
+// bristle tip stays visible instead of hiding under the finger.
+const TOUCH_LIFT_PX = 40;
 
 export class BrushInputHandler {
   constructor(camera, domElement) {
@@ -29,6 +32,7 @@ export class BrushInputHandler {
     this.pointerPosition = new THREE.Vector2();
     this.hasPointer = false;
     this.moved = false;            // set by pointer events, cleared by consumeMoved()
+    this.isTouch = false;          // last pointer was a finger
 
     this.simulatedPressure = 0;
     this.pressureVelocity = 0;
@@ -46,6 +50,7 @@ export class BrushInputHandler {
       hasUV: false,
       pressure: 0,
       isValid: false,
+      isTouch: false,
     };
     this.lastValidHit = null;
 
@@ -92,8 +97,10 @@ export class BrushInputHandler {
   }
 
   updateMousePosition(event) {
+    this.isTouch = event.pointerType === 'touch';
+    const y = this.isTouch ? event.clientY - TOUCH_LIFT_PX : event.clientY;
     this.mouse.x = ((event.clientX - this._rectLeft) / this._rectWidth) * 2 - 1;
-    this.mouse.y = -((event.clientY - this._rectTop) / this._rectHeight) * 2 + 1;
+    this.mouse.y = -((y - this._rectTop) / this._rectHeight) * 2 + 1;
     this.pointerPosition.set(event.clientX, event.clientY);
     this.hasPointer = true;
     this.moved = true;
@@ -148,6 +155,7 @@ export class BrushInputHandler {
   getBrushTransform(nailMesh) {
     const out = this.result;
     const cam = this.camera;
+    out.isTouch = this.isTouch;
     this.raycaster.setFromCamera(this.mouse, cam);
 
     if (nailMesh && this.hasPointer) {
