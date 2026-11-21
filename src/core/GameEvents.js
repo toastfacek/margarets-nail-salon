@@ -18,6 +18,8 @@ export const EVENTS = Object.freeze({
   NAIL_COVERED: 'nail:covered',
   NAIL_CURED: 'nail:cured',
   DECO_PLACED: 'deco:placed',
+  DRYER_START: 'dryer:start',
+  DRYER_STOP: 'dryer:stop',
   UI_DONE: 'ui:done',
   UI_GALLERY: 'ui:gallery',
   UI_MUTE: 'ui:mute',

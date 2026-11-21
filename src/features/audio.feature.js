@@ -13,11 +13,6 @@ import { soundManager } from '../audio/SoundManager.js';
 
 export const order = 20;
 
-// Not yet in the event catalogue: WP4's dryer may emit these (proposed), or
-// call soundManager.dryerStart()/dryerStop() directly.
-const DRYER_START = 'dryer:start';
-const DRYER_STOP = 'dryer:stop';
-
 const TOOL_TAP = { shape: 2, bling: 5, sticker: 5, gem: 6, brush: 3, file: 1 };
 
 export function install(app) {
@@ -55,8 +50,8 @@ export function install(app) {
     sm.dryerStop();
     sm.cureTing();
   });
-  ev.on(DRYER_START, () => sm.dryerStart());
-  ev.on(DRYER_STOP, () => sm.dryerStop());
+  ev.on(EVENTS.DRYER_START, () => sm.dryerStart());
+  ev.on(EVENTS.DRYER_STOP, () => sm.dryerStop());
 
   // ----------------------------------------------------- decoration --
   ev.on(EVENTS.DECO_PLACED, (p) => {
