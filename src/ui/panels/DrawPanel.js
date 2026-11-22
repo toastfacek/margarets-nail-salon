@@ -16,7 +16,7 @@ export class DrawPanel {
     el.className = 'opt opt-draw';
     el.innerHTML = `<div class="grp grp-pen">${Object.values(PEN_MATERIALS).map((m) => `<button class="opt-btn pen" data-pen="${m.id}" aria-label="${m.id}">${PEN_ICONS[m.id] || ''}</button>`).join('')}</div>`
       + `<div class="grp grp-size">${SIZES.map((s) => `<button class="opt-btn size" data-size="${s}" aria-label="${s}"><i style="--s:${s * 2 + 4}px"></i></button>`).join('')}</div>`
-      + `<div class="grp grp-col">${PEN_COLORS.map((c) => `<button class="swatch" data-color="${c.color}" style="--c:${c.color}"></button>`).join('')}</div>`;
+      + `<div class="grp grp-col">${PEN_COLORS.map((c) => `<button class="swatch" data-color="${c.color}" style="--c:${c.color}" aria-label="${c.id}"></button>`).join('')}</div>`;
     this.buttons = Array.from(el.querySelectorAll('button'));
 
     el.addEventListener('click', (e) => {

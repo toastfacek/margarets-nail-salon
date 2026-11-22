@@ -25,7 +25,7 @@ export class PolishPanel {
     el.innerHTML = `<div class="grp grp-act"><button class="opt-btn fill-btn" aria-label="fill">${BUCKET}</button>`
       + '<span class="cov"><i></i></span></div>'
       + `<div class="grp grp-fin">${FINISHES.map((f) => `<button class="opt-btn fin" data-finish="${f}" aria-label="${f}"><i></i></button>`).join('')}</div>`
-      + `<div class="grp grp-col">${POLISH_COLORS.map((c) => `<button class="swatch" data-color="${c}" style="--c:${c}"></button>`).join('')}</div>`;
+      + `<div class="grp grp-col">${POLISH_COLORS.map((c) => `<button class="swatch" data-color="${c}" style="--c:${c}" aria-label="${c}"></button>`).join('')}</div>`;
     this.bar = el.querySelector('.cov i');
     this.swatches = Array.from(el.querySelectorAll('.swatch'));
     this.fins = Array.from(el.querySelectorAll('.fin'));

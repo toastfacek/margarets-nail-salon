@@ -17,7 +17,7 @@ export class BlingPanel {
     const el = (this.el = document.createElement('div'));
     el.className = 'opt opt-bling';
     el.innerHTML = `<div class="grp grp-cat">${['stickers', 'gems'].map((c) => `<button class="opt-btn cat" data-cat="${c}" aria-label="${c}">${CAT_ICONS[c]}</button>`).join('')}</div>`
-      + `<div class="grp grp-items" data-for="stickers">${STICKERS.map((s) => `<button class="opt-btn item emoji" data-id="${s.id}">${s.emoji}</button>`).join('')}</div>`
+      + `<div class="grp grp-items" data-for="stickers">${STICKERS.map((s) => `<button class="opt-btn item emoji" data-id="${s.id}" aria-label="${s.id}">${s.emoji}</button>`).join('')}</div>`
       + `<div class="grp grp-items" data-for="gems">${GEM_TYPES.map((g) => `<button class="opt-btn item" data-id="${g.id}" aria-label="${g.id}">${GEM_ICONS[g.id] || GEM_ICONS.diamond}</button>`).join('')}</div>`;
     this.cats = Array.from(el.querySelectorAll('.cat'));
     this.grids = Array.from(el.querySelectorAll('.grp-items'));

@@ -200,6 +200,8 @@ body.revealing #ui-overlay * { pointer-events: none !important; }
   border-radius: 24px;
 }
 .options-panel::-webkit-scrollbar { display: none; }
+/* a mouse drag scrolls the tray (main.js); no snapping fights it meanwhile */
+.options-panel.dragging { scroll-snap-type: none; cursor: grabbing; }
 .opt { display: flex; flex-direction: column; gap: 10px; }
 .grp { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; align-items: center; }
 .grp-act { flex-wrap: nowrap; }
@@ -384,7 +386,8 @@ body:not(.muted) .snd-off { display: none; }
     overflow: auto hidden;
     scroll-snap-type: x proximity;
   }
-  .opt { flex-direction: row; width: max-content; gap: 14px; }
+  /* two rows of 48 px targets: the widest panel fits a 820 px tablet unscrolled */
+  .opt { --tap: 48px; flex-direction: row; width: max-content; gap: 14px; }
   .opt .grp {
     display: grid;
     grid-auto-flow: column;

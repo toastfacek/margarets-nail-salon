@@ -202,6 +202,7 @@ class NailArtistApp {
       p.el.hidden = true;
       panel.appendChild(p.el);
     }
+    dragScroll(panel);
 
     // Rotation and phone toolbars: settle, then re-fit the renderer once.
     let relayout = 0;
@@ -343,6 +344,61 @@ class NailArtistApp {
   toggleGallery(show) {
     document.getElementById('gallery-modal')?.classList.toggle('open', !!show);
   }
+}
+
+/**
+ * Make a scrolling tray usable with a mouse: the wheel scrolls it sideways
+ * when it scrolls sideways, and a mouse/pen drag scrolls it (past a 6 px
+ * threshold, after which the click is swallowed so taps still select).
+ * Touch keeps the browser's native pan.
+ * @param {HTMLElement} el
+ */
+function dragScroll(el) {
+  el.addEventListener('wheel', (e) => {
+    if (el.scrollWidth <= el.clientWidth + 1 || e.ctrlKey) return;
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    el.scrollLeft += e.deltaMode === 1 ? d * 32 : d;
+    e.preventDefault();
+  }, { passive: false });
+
+  let id = -1, x0 = 0, y0 = 0, l0 = 0, t0 = 0, dragging = false, swallow = false;
+  el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    id = e.pointerId;
+    x0 = e.clientX; y0 = e.clientY; l0 = el.scrollLeft; t0 = el.scrollTop;
+    dragging = false;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== id) return;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (!dragging && Math.hypot(dx, dy) > 6) {
+      dragging = true;
+      el.classList.add('dragging');
+      try { el.setPointerCapture(id); } catch (err) { /* ignore */ }
+    }
+    if (dragging) {
+      el.scrollLeft = l0 - dx;
+      el.scrollTop = t0 - dy;
+    }
+  });
+  const end = (e) => {
+    if (e.pointerId !== id) return;
+    id = -1;
+    if (dragging) {
+      swallow = true;
+      setTimeout(() => { swallow = false; }, 0);
+      el.classList.remove('dragging');
+    }
+    dragging = false;
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  el.addEventListener('click', (e) => {
+    if (!swallow) return;
+    swallow = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
 }
 
 // Initialize app when DOM is ready
