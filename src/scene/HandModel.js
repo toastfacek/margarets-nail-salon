@@ -7,15 +7,12 @@
  * Public API: build plan section 0.6.
  */
 import * as THREE from 'three';
-import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { modelLoader } from './ModelLoader.js';
 import { createNailMaterial, createNailLighting, applyNailFinish, nailVariantKey } from './NailMaterial.js';
 import { createSkinMaterials, createSkinShared, setSkinTone } from './SkinMaterial.js';
 import { computeSettings } from '../core/Quality.js';
 import { whenIdle, warmRender } from './Warmup.js';
 
-// Enable BVH-accelerated raycasting globally for all meshes
-THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // Nail shape options
 export const NAIL_SHAPES = {
@@ -371,9 +368,6 @@ export class HandModel {
         const geometry = nailMesh.geometry;
         if (!geometry.attributes.uv) {
             this.generateNailUVs(geometry);
-        }
-        if (!geometry.boundsTree) {
-            geometry.boundsTree = new MeshBVH(geometry);
         }
         if (!geometry.boundingBox) geometry.computeBoundingBox();
 

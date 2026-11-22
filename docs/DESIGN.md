@@ -1,146 +1,55 @@
-# Design Guide
+# Design guide
 
-## Art Direction
+North star: one huge glossy nail under a ring light, a fat wet brush, and a
+reveal that makes a five-year-old squeal. The nail is the brightest, sharpest,
+most saturated thing on screen; the UI stays small, soft and out of its way.
 
-**Style**: Bubbly, kawaii-inspired, cartoony and playful
+## No words
 
-### Key Principles
-1. **Soft & Rounded** - No sharp edges, everything has curves
-2. **Pastel Paradise** - Soft, dreamy colors
-3. **Sparkle Everywhere** - Subtle particle effects and shine
-4. **Big & Friendly** - Oversized touch targets, welcoming feel
+The player never needs to read. Every control is an icon drawn in code
+(inline SVG or CSS), every request is a picture, progress is stars and pips,
+and feedback is motion and sound. Numerals are allowed. `aria-label` carries
+the accessible name; it is never the only signal. Emoji are used only for
+stickers (they are what lands on the nail), never as UI icons, because they
+render differently on Chromebooks and iOS.
 
----
+## Palette
 
-## Color Palette
+| Role | Value |
+|---|---|
+| Ink (outlines, active marks) | `#5a2a82` |
+| Hot pink (primary, Done heart, active nail) | `#ff2a6d` |
+| Lilac (secondary icons) | `#c77dff`, `#9d4edd` |
+| Gold (stars, sparkles) | `#ffd21f` |
+| Panels | white at 85 to 90% opacity, `0 6px 18px rgba(90,42,130,.18)` shadow |
+| Salon backdrop | code-built, plum to lilac (`Backdrop.js`) |
 
-### Primary Colors
-| Name | Hex | Usage |
-|------|-----|-------|
-| Bubblegum | `#FF69B4` | Primary buttons, accents |
-| Cotton Candy | `#FFB6C1` | Secondary elements |
-| Lavender Dream | `#E6E6FA` | Backgrounds, cards |
-| Mint Fresh | `#98FF98` | Success states, accents |
-| Peach Glow | `#FFDAB9` | Warm accents |
+Polish colours: the eight client colours in `src/game/ClientRequests.js`
+(`PALETTE`) plus eight more in the free-mode `PolishPanel`.
 
-### Backgrounds
-| Name | Value |
-|------|-------|
-| Main BG | Gradient `#FFE5EC` → `#FFF0F5` |
-| Card BG | `#FFFFFF` with 80% opacity |
-| Overlay | `#000000` with 30% opacity |
+## Layout (`styles/main.css`)
 
-### Text Colors
-| Usage | Hex |
-|-------|-----|
-| Headings | `#9370DB` (Medium Purple) |
-| Body | `#8B7B8B` (Soft Gray) |
-| On Dark | `#FFFFFF` |
+| Screen | Round mode | Free mode |
+|---|---|---|
+| Landscape, taller than 420 px | bubble + stars top-left, door / mute / photo stack top-right, bottle tray bottom-centre, dryer and Done heart bottom-right | tool rail left, options right, actions bottom-left, finger map top-centre |
+| Small landscape (<= 420 px tall, 640x360, phones) | the same, scaled down | one bottom tray: tools, scrolling options, actions |
+| Portrait | bubble top-left, bottles in two rows at the bottom, heart and dryer above them | finger map under the top icons, two-row scrolling options, tools/actions row at the bottom |
 
----
+- Touch targets: 48 px (up to 64 px on big screens); 40 px with 6 px gaps
+  only at <= 370 px tall (640x360).
+- Safe-area insets respected; no scrollbars (panels scroll inside themselves).
+- Nothing covers the active nail; the camera frames it to about 34% of the
+  short side in every aspect (`NailScene._focusTargets`).
 
-## Typography
+## Motion
 
-### Font Family
-- **Primary**: "Baloo 2" (Google Fonts) - Bubbly, playful
-- **Fallback**: "Nunito", sans-serif
+Pops and slides with overshoot (`cubic-bezier(0.34, 1.7, 0.6, 1)`), under
+600 ms. Infinite animations only on `transform`/`opacity` and at most two at
+once (the Done heart pulse and the ghost finger). No flashing faster than
+3 Hz; the reveal has one flash. `prefers-reduced-motion` stops the loops.
 
-### Font Sizes (Mobile-First)
-| Element | Size | Weight |
-|---------|------|--------|
-| H1 | 2rem | 700 |
-| H2 | 1.5rem | 600 |
-| Button | 1.25rem | 600 |
-| Body | 1rem | 400 |
+## Sound
 
----
-
-## UI Components
-
-### Buttons
-```css
-.button {
-  min-height: 48px;      /* Touch-friendly */
-  min-width: 48px;
-  border-radius: 16px;   /* Rounded */
-  padding: 12px 24px;
-  font-weight: 600;
-  box-shadow: 0 4px 0 rgba(0,0,0,0.1);  /* Soft depth */
-  transition: transform 0.1s, box-shadow 0.1s;
-}
-
-.button:active {
-  transform: translateY(2px);
-  box-shadow: 0 2px 0 rgba(0,0,0,0.1);
-}
-```
-
-### Tool Icons
-- Size: 48x48px minimum
-- Style: Filled with soft shadows
-- Active state: Scale up + glow effect
-
-### Cards/Panels
-- Border radius: 20px
-- Background: Semi-transparent white
-- Subtle backdrop blur
-
----
-
-## Animations
-
-### Micro-interactions
-| Action | Animation |
-|--------|-----------|
-| Button tap | Scale down 0.95 → bounce back |
-| Tool select | Pop + sparkle burst |
-| Sticker place | Bounce in + "pop" sound |
-| Success | Confetti + jingle |
-
-### CSS Keyframes
-```css
-@keyframes bounce {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.1); }
-}
-
-@keyframes sparkle {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-5px); }
-}
-```
-
----
-
-## Sound Design
-
-### Categories
-| Category | Style |
-|----------|-------|
-| UI Clicks | Soft, bubbly pops |
-| Tools | Satisfying, ASMR-like |
-| Success | Cheerful jingles |
-| Background | Calm spa/lofi music |
-
-### Sound Guidelines
-- All sounds soft and non-jarring
-- Volume balanced for kids' ears
-- Music should be toggleable
-- Filing sound varies with speed (faster = higher pitch)
-
----
-
-## Responsive Breakpoints
-
-| Device | Width |
-|--------|-------|
-| Phone | < 480px |
-| Tablet (target) | 768px - 1024px |
-| Desktop | > 1024px |
-
-**Note**: Primary target is tablet in landscape orientation.
+Web Audio only, soft and rounded, behind a master limiter. Mute is the
+speaker icon (top-right, both modes) and persists. No sound before the first
+tap.
