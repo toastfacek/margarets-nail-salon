@@ -4,7 +4,7 @@
  * backdrop, desk, contact shadow) and orbit controls.
  *
  * NailScene no longer owns a requestAnimationFrame: the app's FrameLoop calls
- * `update(dt)` (camera animation, controls, backdrop drift) and `render()`.
+ * `update(dt)` (camera animation, controls, room visibility) and `render()`.
  *
  * The salon is built in the constructor; `attachHand(handModel)` (called by
  * src/features/salon.feature.js once the hand is loaded) places the desk under
@@ -17,18 +17,21 @@ import { CONTEXT_ATTRIBUTES } from '../core/Quality.js';
 import { SalonEnvironment, RIG } from './SalonEnvironment.js';
 import { Backdrop } from './Backdrop.js';
 import { ContactShadow } from './ContactShadow.js';
+import { whenIdle, warmRender } from './Warmup.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
     antialias: true, pixelRatio: 1, rimLight: false, tier: 'medium',
-    envCubeRes: 128, envCubeType: THREE.HalfFloatType, backdrop: 'animated8',
-    contactShadowRes: 256, contactShadowBlurPasses: 1,
+    envCubeRes: 128, envCubeType: THREE.HalfFloatType,
 });
 
 // Light intensities at dim = 1 (setDim lerps toward a darker room).
 const HEMI_INTENSITY = 0.85;
 const KEY_INTENSITY = 1.2;
 const RIM_INTENSITY = 0.55;
-const MEDIUM_BACKDROP_HZ = 20;
+// Focused nail: its larger side fills this share of the viewport's short side.
+const FOCUS_FILL = 0.4;
+// The idle warm-up of other-tier variants starts this long after load.
+const WARM_DELAY_MS = 3500;
 
 export class NailScene {
     /**
@@ -73,7 +76,9 @@ export class NailScene {
         this.dim = 1;
         this.handModel = null;
         this.contactShadow = null;
-        this._backdropClock = 0;
+        this._focusPos = new THREE.Vector3();
+        this._box = new THREE.Box3();
+        this._warmQueued = false;
 
         this.init();
         this.setupLighting();
@@ -206,7 +211,6 @@ export class NailScene {
         this.nailLighting.uHasEnv.value = this.environment.texture ? 1 : 0;
         this.nailLighting.uEnvScale.value = this.environment.envScale;
         this.backdrop.rebake();
-        this._bakeHand();
     }
 
     /**
@@ -324,22 +328,13 @@ export class NailScene {
         const cx = (x0 + x1) / 2;
         const cz = (z0 + z1) / 2;
 
-        this.contactShadow.bake({
-            renderer: this.renderer,
-            scene: this.scene,
-            hand: hm.getMesh(),
-            deskY,
-            sample,
-            settings: this.settings,
-        });
+        this.contactShadow.bake({ deskY, sample });
         this.backdrop.bakeDesk({
             deskY, centreX: cx, centreZ: cz,
             towelHalfX: Math.max(1.2, (x1 - x0) / 2 + 0.75),
             towelHalfZ: Math.max(0.9, (z1 - z0) / 2 + 0.55),
             roll: this._findWristRoll(pts, deskY, hm),
         }, this.contactShadow, RIG.keyDir);
-        // The shadow lives in the baked desk now; free its texture.
-        this.contactShadow.dispose();
 
         // The zoomed-out view frames the hand from above.
         this.defaultTarget.set(cx, deskY + 0.15, cz);
@@ -376,18 +371,32 @@ export class NailScene {
         this.renderer.setPixelRatio(settings.pixelRatio || 1);
         this.renderer.setSize(this.width, this.height);
         this._applyRim();
-        // The environment cube and the contact shadow keep what they baked at
-        // load (re-baking would hitch); only the backdrop variant changes.
+        // The environment cube keeps what it baked at load; the desk switches
+        // between its per-pixel and per-vertex variants.
         if (this.backdrop) this.backdrop.setQuality(settings);
         this.invalidate();
+        // The next tier down may come later: warm its variants at idle.
+        this.precompileVariants(1500);
     }
 
     /**
-     * Compile the scene-level variants of the other tiers (backdrop), so a
-     * tier change never compiles a shader. Call once after load.
+     * At idle (not before the first frames), bake the room and compile the
+     * scene-level variants the current view does not use (room dome, the other
+     * desk variant), so neither orbiting nor a tier change compiles a shader.
      */
-    precompileVariants() {
-        if (this.backdrop) this.backdrop.precompile(this.renderer, this.scene, this.camera);
+    precompileVariants(delayMs = WARM_DELAY_MS) {
+        if (!this.backdrop || this._warmQueued) return;
+        this._warmQueued = true;
+        whenIdle(() => {
+            this._warmQueued = false;
+            if (this.contextLost) return;
+            const bd = this.backdrop;
+            if (!bd.roomReady) bd.bakeRoom();
+            const restore = bd.showAllVariants();
+            warmRender(this.renderer, this.scene, this.camera);
+            restore();
+            this.invalidate();
+        }, delayMs);
     }
 
     /**
@@ -427,6 +436,14 @@ export class NailScene {
         this.camera.aspect = this.width / this.height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(this.width, this.height);
+        if (this.isZoomedIn && this.zoomedFinger) {
+            // Re-frame the focused nail for the new aspect (no animation).
+            this._focusTargets(this._focusPos, this.zoomedFinger);
+            if (!this.isAnimating) {
+                this.camera.position.copy(this.targetCameraPos);
+                this.controls.target.copy(this.targetTarget);
+            }
+        }
         this.invalidate();
     }
 
@@ -442,28 +459,22 @@ export class NailScene {
         // update() returns true while damping is still moving the camera.
         if (this.controls.update(dt)) this.invalidate();
 
-        // Backdrop drift: only while some of it can be on screen (looking
-        // steeply down, the desk covers the whole view).
+        // The room dome only exists for views that can see above the desk.
         const bd = this.backdrop;
         if (bd) {
             this.camera.getWorldDirection(this._camDir);
             // Top edge of the view (vertical fov, plus margin for the wide aspect's corners).
             const topElevation = Math.asin(Math.max(-1, Math.min(1, this._camDir.y))) + THREE.MathUtils.degToRad(this.camera.fov * 0.5) * 1.6;
             const roomVisible = topElevation > -0.1;
+            if (roomVisible && !bd.roomReady) bd.bakeRoom();
+            // Pulled back before the idle warm-up: show the wrist roll now.
+            if (!bd.rollReady && !this.isZoomedIn && bd.roll.geometry.attributes.position) {
+                bd.rollReady = true;
+                bd.roll.visible = true;
+            }
             if (bd.mesh.visible !== roomVisible) {
                 bd.mesh.visible = roomVisible;
                 this.invalidate();
-            }
-            if (roomVisible && bd.animated) {
-                bd.update(dt);
-                if (this.settings.renderOnDemand) {
-                    // medium: the drift asks for frames at 20 Hz, not 60
-                    this._backdropClock += dt;
-                    if (this._backdropClock >= 1 / MEDIUM_BACKDROP_HZ) {
-                        this._backdropClock = 0;
-                        this.invalidate();
-                    }
-                }
             }
         }
     }
@@ -497,26 +508,40 @@ export class NailScene {
     focusOnPosition(position, finger) {
         this.startCameraPos.copy(this.camera.position);
         this.startTarget.copy(this.controls.target);
-
-        this.targetTarget.set(
-            position.x,
-            position.y - 0.03,
-            position.z - 0.03
-        );
-        this.targetCameraPos.set(
-            position.x,
-            position.y + 0.5,
-            position.z + 0.08
-        );
+        this._focusPos.copy(position);
+        this._focusTargets(position, finger);
 
         this.animationProgress = 0;
         this.isAnimating = true;
         this.isZoomedIn = true;
         this.zoomedFinger = finger;
-
-        this.controls.minDistance = 0.2;
         this.controls.maxDistance = 1.5;
         this.invalidate();
+    }
+
+    /**
+     * Camera distance from the nail's size and the viewport's aspect, so the
+     * focused nail fills FOCUS_FILL of the short side in landscape and
+     * portrait alike. The nail stays centred, clear of the top-left bubble.
+     */
+    _focusTargets(position, finger) {
+        let size = 0.1;
+        const hm = this.handModel;
+        const rec = hm && finger ? hm.getNail(hm.getCurrentHand(), finger) : null;
+        if (rec) {
+            rec.mesh.updateWorldMatrix(true, false);
+            if (!rec.mesh.geometry.boundingBox) rec.mesh.geometry.computeBoundingBox();
+            this._box.copy(rec.mesh.geometry.boundingBox).applyMatrix4(rec.mesh.matrixWorld);
+            size = Math.max(this._box.max.x - this._box.min.x, this._box.max.z - this._box.min.z) || size;
+        }
+        const aspect = this.width / Math.max(1, this.height);
+        const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+        const d = THREE.MathUtils.clamp(size / (FOCUS_FILL * 2 * tanHalf * Math.min(1, aspect)), 0.18, 1.2);
+        // Same viewing direction as always (from above, slightly toward +z).
+        const k = d / 0.541;
+        this.targetTarget.set(position.x, position.y - 0.03 * k, position.z - 0.03 * k);
+        this.targetCameraPos.set(position.x, position.y + 0.5 * k, position.z + 0.08 * k);
+        this.controls.minDistance = Math.min(0.2, d * 0.7);
     }
 
     /**

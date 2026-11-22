@@ -21,7 +21,7 @@
  * Deco texture (uDecoMap): 2D canvas, premultiplied on upload, sRGB.
  *
  * Tier defines (quality.settings.nailShaderDefines):
- *   high   GLITTER_2, WET_NORMAL_TAPS, ENV_LOD, HOLO
+ *   high   GLITTER_2, WET_NORMAL_TAPS, ENV_LOD (HOLO is ignored)
  *   medium GLITTER_1, WET_NORMAL_DERIV, ENV_LOD
  *   low    GLITTER_CHEAP (single env tap, no wet relief)
  *
@@ -46,14 +46,14 @@ export const FINISH_IDS = Object.freeze({
  *   rough      cured top-coat roughness 0..1 (-> env lod and ring blur)
  *   flake      glitter density 0..1, flakeScale cells per nail length, flakeGain brightness
  *   sheen      soft velvet sheen at grazing angles (matte)
- *   holo       rainbow flakes and sheen (high tier only; plain flakes elsewhere)
  */
 export const FINISHES = Object.freeze({
-  glossy: Object.freeze({ metal: 0.0, coat: 1.0, rough: 0.06, flake: 0.0, flakeScale: 60, flakeGain: 0.0, sheen: 0.0, holo: 0.0 }),
-  matte: Object.freeze({ metal: 0.0, coat: 0.0, rough: 0.6, flake: 0.0, flakeScale: 60, flakeGain: 0.0, sheen: 1.0, holo: 0.0 }),
-  shimmer: Object.freeze({ metal: 0.25, coat: 0.9, rough: 0.08, flake: 0.6, flakeScale: 38, flakeGain: 3.2, sheen: 0.0, holo: 0.0 }),
-  chrome: Object.freeze({ metal: 1.0, coat: 0.3, rough: 0.1, flake: 0.0, flakeScale: 60, flakeGain: 0.0, sheen: 0.0, holo: 0.0 }),
-  holographic: Object.freeze({ metal: 0.35, coat: 1.0, rough: 0.07, flake: 0.55, flakeScale: 52, flakeGain: 2.2, sheen: 0.0, holo: 1.0 }),
+  glossy: Object.freeze({ metal: 0.0, coat: 1.0, rough: 0.06, flake: 0.0, flakeScale: 60, flakeGain: 0.0, sheen: 0.0 }),
+  matte: Object.freeze({ metal: 0.0, coat: 0.0, rough: 0.6, flake: 0.0, flakeScale: 60, flakeGain: 0.0, sheen: 1.0 }),
+  shimmer: Object.freeze({ metal: 0.25, coat: 0.9, rough: 0.08, flake: 0.6, flakeScale: 38, flakeGain: 3.2, sheen: 0.0 }),
+  chrome: Object.freeze({ metal: 1.0, coat: 0.3, rough: 0.1, flake: 0.0, flakeScale: 60, flakeGain: 0.0, sheen: 0.0 }),
+  // nothing offers 'holographic' any more: kept as an alias so the API still accepts it
+  holographic: Object.freeze({ metal: 0.35, coat: 1.0, rough: 0.07, flake: 0.55, flakeScale: 52, flakeGain: 2.2, sheen: 0.0 }),
 });
 
 const vertexShader = /* glsl */ `
@@ -100,7 +100,6 @@ uniform float uFlake;
 uniform float uFlakeScale;
 uniform float uFlakeGain;
 uniform float uSheen;
-uniform float uHolo;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uSkyColor;
@@ -249,9 +248,6 @@ float on = step(1.0 - flake, h) * (1.0 - smoothstep(0.18, 0.34, length(f)));
 vec3 Rf = reflect(-V, Nf);
 float sp = pow(max(dot(Rf, L), 0.0), 40.0) * 3.0 + ringLight(Rf, 0.12) * 1.5;
 vec3 fc = mix(vec3(1.0), pigment * 1.6 + 0.15, 0.55);
-#ifdef HOLO
-fc = mix(fc, 0.55 + 0.45 * cos(6.2831 * (NdV * 1.6 + h * 0.8 + vec3(0.0, 0.33, 0.67))), uHolo);
-#endif
 fl += on * sp * fc;
 }
 #endif
@@ -277,9 +273,6 @@ fl += step(1.0 - flake * 0.6, h) * smoothstep(0.82, 0.98, tw) * (1.0 - smoothste
 #endif
 vec3 haze = (pigment + 0.3) * flake * (0.18 + 0.9 * pow(max(dot(R, L), 0.0), 6.0));
 col += (fl * resolve * uFlakeGain + haze * (1.0 - resolve * 0.6)) * uLightColor * 1.6;
-#ifdef HOLO
-col += uHolo * cov * 0.22 * (0.55 + 0.45 * cos(6.2831 * (NdV * 1.3 + vUv.x * 0.7 + vec3(0.0, 0.33, 0.67)))) * (0.3 + F);
-#endif
 }
 if (coatK > 0.001) {
 float coatRough = mix(rough, 0.0, uWet);
@@ -363,7 +356,6 @@ export function createNailUniforms(lighting) {
     uFlakeScale: { value: f.flakeScale },
     uFlakeGain: { value: f.flakeGain },
     uSheen: { value: f.sheen },
-    uHolo: { value: f.holo },
     uLightDir: shared.uLightDir,
     uLightColor: shared.uLightColor,
     uSkyColor: shared.uSkyColor,
@@ -416,5 +408,4 @@ export function applyNailFinish(material, finish) {
   u.uFlakeScale.value = p.flakeScale;
   u.uFlakeGain.value = p.flakeGain;
   u.uSheen.value = p.sheen;
-  u.uHolo.value = p.holo;
 }

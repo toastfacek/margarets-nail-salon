@@ -12,6 +12,7 @@ import { modelLoader } from './ModelLoader.js';
 import { createNailMaterial, createNailLighting, applyNailFinish, nailVariantKey } from './NailMaterial.js';
 import { createSkinMaterials, createSkinShared, setSkinTone } from './SkinMaterial.js';
 import { computeSettings } from '../core/Quality.js';
+import { whenIdle, warmRender } from './Warmup.js';
 
 // Enable BVH-accelerated raycasting globally for all meshes
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -143,6 +144,8 @@ export class HandModel {
         this.settings = settings || this.settings;
         this._applySkinVariant();
         this._applyNailVariant();
+        // The next tier down may follow: warm its variants at idle.
+        if (this._warmArgs) this.precompileVariants(this._warmArgs[0], this._warmArgs[1], this._warmArgs[2], 1500);
     }
 
     // =========================================
@@ -226,45 +229,33 @@ export class HandModel {
     }
 
     /**
-     * Compile the skin and nail variants of the next tier down (the current
-     * ones are compiled by the normal pre-warm), so an auto-downgrade never
-     * compiles a shader. Call once after load.
+     * Warm the skin and nail variants of the next tier down at idle (the
+     * current ones are compiled by the normal pre-warm), so an auto-downgrade
+     * never compiles a shader and the first frames never wait for it.
+     * Called once after load (main.js) and again after every tier change.
      */
-    precompileVariants(renderer, scene, camera) {
-        const down = this._nextTierDown();
-        if (!down) return;
-        const s = this.settings;
-        const next = computeSettings(down, 1.0, s.pixelRatio || 1, { halfFloat: true });
-        const skinNext = this._skinVariant(next);
-        let swapped = false;
-        for (const hand of HAND_LIST) {
-            for (const sk of this.hands[hand].skins) {
-                sk.mesh.material = sk[skinNext];
-                swapped = true;
-            }
+    precompileVariants(renderer, scene, camera, delayMs = 3500) {
+        this._warmArgs = [renderer, scene, camera];
+        if (this._warmQueued) return;
+        this._warmQueued = true;
+        whenIdle(() => {
+            this._warmQueued = false;
+            const down = this._nextTierDown();
+            if (!down) return;
+            const s = this.settings;
+            const next = computeSettings(down, 1.0, s.pixelRatio || 1, { halfFloat: true });
+            const skinNext = this._skinVariant(next);
+            // Programs are shared by every nail and both hands: the shown hand is enough.
+            const h = this.hands[this.currentHand];
+            for (const sk of h.skins) sk.mesh.material = sk[skinNext];
             for (const f of FINGER_LIST) {
-                const rec = this.hands[hand].nails[f];
-                if (!rec) continue;
-                rec.mesh.material = this._nailVariant(rec, next);
-                swapped = true;
+                const rec = h.nails[f];
+                if (rec) rec.mesh.material = this._nailVariant(rec, next);
             }
-        }
-        if (swapped) {
-            // Hidden hands are skipped by compile(); show them for the compile only.
-            const vis = [];
-            for (const hand of HAND_LIST) {
-                const m = this.hands[hand].model;
-                if (m) { vis.push(m.visible); m.visible = true; }
-            }
-            try { renderer.compile(scene, camera); } catch (err) { /* compile on demand instead */ }
-            let i = 0;
-            for (const hand of HAND_LIST) {
-                const m = this.hands[hand].model;
-                if (m) m.visible = vis[i++];
-            }
+            warmRender(renderer, scene, camera);
             this._applySkinVariant();
             this._applyNailVariant();
-        }
+        }, delayMs);
     }
 
     // =========================================
