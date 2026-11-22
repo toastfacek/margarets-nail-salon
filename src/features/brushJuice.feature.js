@@ -90,7 +90,13 @@ export function install(app) {
   const invalidate = app.invalidate;
   app.stickerTool?.connect?.({ events, sparkles, invalidate });
   app.gemTool?.connect?.({ events, sparkles, invalidate });
-  app.gemTool?.prewarm?.(renderer, camera);
+  // Gem programs (MeshPhysical) are slow to compile on weak GPUs: compile them
+  // at idle time after load instead of delaying the first paintable frame.
+  if (app.gemTool?.prewarm) {
+    const warmGems = () => app.gemTool.prewarm(renderer, camera);
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(warmGems, { timeout: 4000 });
+    else setTimeout(warmGems, 2500);
+  }
   app.brushTool?.connect?.({ invalidate });
 
   // --------------------------------------------------------- dryer glow --
