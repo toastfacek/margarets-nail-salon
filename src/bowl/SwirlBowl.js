@@ -41,7 +41,7 @@ const PROFILE = [0.26, 0, 0.3, 0.04, 0.33, 0.09, 0.345, 0.14, 0.35, 0.155, 0.34,
 const RIM = 0.35;
 const WR = 0.315; // water radius (BowlMaterial's planar uv assumes it)
 const WY = 0.11;  // water height
-const ZOOM = 1.5; // nail footprint scale in the water: more rings per nail
+const ZOOM = 2.4; // nail footprint scale in the water: more rings per nail
 // The camera sits on the mirror of the key light, so the ring light lands in the water.
 const VIEW = new THREE.Vector3(0.3, 1, 0.22).normalize();
 const COLORS = PALETTE.concat('#ffffff');
