@@ -252,7 +252,8 @@ export class HandModel {
                 const rec = h.nails[f];
                 if (rec) rec.mesh.material = this._nailVariant(rec, next);
             }
-            warmRender(renderer, scene, camera);
+            // Nail and skin shaders do not use the scene's lights: the hand alone is enough.
+            warmRender(renderer, this.group, camera);
             this._applySkinVariant();
             this._applyNailVariant();
         }, delayMs);

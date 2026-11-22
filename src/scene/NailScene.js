@@ -29,7 +29,7 @@ const HEMI_INTENSITY = 0.85;
 const KEY_INTENSITY = 1.2;
 const RIM_INTENSITY = 0.55;
 // Focused nail: its larger side fills this share of the viewport's short side.
-const FOCUS_FILL = 0.4;
+const FOCUS_FILL = 0.34;
 // The idle warm-up of other-tier variants starts this long after load.
 const WARM_DELAY_MS = 3500;
 
@@ -79,6 +79,7 @@ export class NailScene {
         this._focusPos = new THREE.Vector3();
         this._box = new THREE.Box3();
         this._warmQueued = false;
+        this.cameraHeld = false;
 
         this.init();
         this.setupLighting();
@@ -129,7 +130,27 @@ export class NailScene {
         this.renderer.toneMappingExposure = 1.2;
         this.renderer.setClearColor(this.clearColor, 1);
 
+        // SwiftShader (and some drivers) lack KHR_parallel_shader_compile, so
+        // compileAsync resolves before anything is really compiled and the
+        // GPU process compiles each program at its first draw, after __ready
+        // (stalling the intro stroke). Finish the job inside it: draw every
+        // object of the scene once, hidden and off-screen ones included, into
+        // one pixel, then wait for the GPU. With the extension this is cheap.
+        const renderer = this.renderer;
+        const compileAsync = renderer.compileAsync.bind(renderer);
+        renderer.compileAsync = (scene, camera, targetScene) => compileAsync(scene, camera, targetScene).then((res) => {
+            if (scene === this.scene && !this.contextLost) {
+                this._warmEverything();
+            }
+            return res;
+        });
+
         const el = this.renderer.domElement;
+        // Deferred warm-ups wait while a finger or the mouse is down.
+        this.pointerDown = false;
+        el.addEventListener('pointerdown', () => { this.pointerDown = true; });
+        window.addEventListener('pointerup', () => { this.pointerDown = false; });
+        window.addEventListener('pointercancel', () => { this.pointerDown = false; });
         el.addEventListener('webglcontextlost', (e) => {
             e.preventDefault();
             this.contextLost = true;
@@ -380,23 +401,77 @@ export class NailScene {
     }
 
     /**
-     * At idle (not before the first frames), bake the room and compile the
-     * scene-level variants the current view does not use (room dome, the other
-     * desk variant), so neither orbiting nor a tier change compiles a shader.
+     * At idle (never during a stroke or a camera move), bake the room and
+     * compile what the current view does not use, one small task each:
+     *   - the room dome (orbit views),
+     *   - the wrist roll (zoomed-out views),
+     *   - the lite desk, only when the next tier down is low.
+     * Each task draws just its object into one pixel.
      */
     precompileVariants(delayMs = WARM_DELAY_MS) {
         if (!this.backdrop || this._warmQueued) return;
         this._warmQueued = true;
+        const bd = this.backdrop;
+        const r = this.renderer;
         whenIdle(() => {
             this._warmQueued = false;
-            if (this.contextLost) return;
-            const bd = this.backdrop;
-            if (!bd.roomReady) bd.bakeRoom();
-            const restore = bd.showAllVariants();
-            warmRender(this.renderer, this.scene, this.camera);
-            restore();
+            if (this.contextLost || bd.roomReady) return;
+            bd.bakeRoom();
+            const vis = bd.mesh.visible;
+            bd.mesh.visible = true;
+            warmRender(r, bd.mesh, this.camera);
+            bd.mesh.visible = vis;
             this.invalidate();
         }, delayMs);
+        whenIdle(() => {
+            if (this.contextLost || bd.rollReady || !bd.roll.geometry.attributes.position) return;
+            bd.roll.visible = true;
+            bd.rollReady = true;
+            // Lambert needs the scene's lights, so the whole scene; the roll is
+            // usually off screen, so skip its culling for this one draw.
+            bd.roll.frustumCulled = false;
+            warmRender(r, this.scene, this.camera);
+            bd.roll.frustumCulled = true;
+            this.invalidate();
+        }, delayMs + 600);
+        if (this.settings.tier === 'medium') {
+            whenIdle(() => {
+                if (this.contextLost || bd.deskLite.visible) return;
+                bd.deskLite.visible = true;
+                warmRender(r, bd.deskLite, this.camera);
+                bd.deskLite.visible = false;
+                this.invalidate();
+            }, delayMs + 1200);
+        }
+    }
+
+    _warmEverything() {
+        const saved = [];
+        // The starting tier's visible scene only: hidden variants (the other
+        // desk, the room dome, the roll) are left to the idle warm-ups.
+        this.scene.traverse((o) => {
+            saved.push(o, o.visible, o.frustumCulled);
+            o.frustumCulled = false;
+        });
+        try {
+            warmRender(this.renderer, this.scene, this.camera);
+        } catch (err) {
+            // a warm-up only
+        }
+        for (let i = 0; i < saved.length; i += 3) {
+            saved[i].visible = saved[i + 1];
+            saved[i].frustumCulled = saved[i + 2];
+        }
+        this.invalidate();
+    }
+
+    /**
+     * The camera belongs to someone else (the Slay reveal): while held, a
+     * resize no longer snaps the camera back to the focused nail.
+     * @param {boolean} hold
+     */
+    holdCamera(hold) {
+        this.cameraHeld = !!hold;
     }
 
     /**
@@ -436,7 +511,7 @@ export class NailScene {
         this.camera.aspect = this.width / this.height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(this.width, this.height);
-        if (this.isZoomedIn && this.zoomedFinger) {
+        if (this.isZoomedIn && this.zoomedFinger && !this.cameraHeld) {
             // Re-frame the focused nail for the new aspect (no animation).
             this._focusTargets(this._focusPos, this.zoomedFinger);
             if (!this.isAnimating) {

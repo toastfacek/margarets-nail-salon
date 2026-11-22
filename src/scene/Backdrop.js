@@ -26,7 +26,7 @@
  *   horizon upward. Looking down at the hand it is hidden (NailScene), so it
  *   costs nothing in the zoomed views. Its colour (warm wall gradient, a
  *   blurred shelf of bottle silhouettes, bokeh discs) is baked once, at idle,
- *   into a 512x256 texture on the sphere's own UVs: one fetch per pixel.
+ *   into a 256x128 texture on the sphere's own UVs: one fetch per pixel.
  *   The room and the desk meet at the horizon in the same colour (FOG), so
  *   there is no horizon line.
  */
@@ -630,7 +630,8 @@ export class Backdrop {
 
   _ensureRoomBaked() {
     if (this._roomTarget) return;
-    this._roomTarget = bakeTarget(512, 256, 'RoomBaked');
+    // small: the room is far and soft, and the bake must stay a short idle task
+    this._roomTarget = bakeTarget(256, 128, 'RoomBaked');
     const mat = new THREE.ShaderMaterial({
       vertexShader: fullscreenVertex,
       fragmentShader: roomBakeFragment,
@@ -644,28 +645,6 @@ export class Backdrop {
     this.bakedMaterial.uniforms.uRoom.value = this._roomTarget.texture;
   }
 
-  /**
-   * Show what an idle warm-up should compile: the room and the desk variant
-   * that is not in use. Returns a function that puts everything back.
-   */
-  showAllVariants() {
-    const vis = [this.mesh.visible, this.deskFull.visible, this.deskLite.visible];
-    this.mesh.visible = this.roomReady;
-    this.deskFull.visible = true;
-    this.deskLite.visible = true;
-    const hasRoll = this.roll.geometry.attributes.position !== undefined;
-    if (hasRoll) this.roll.visible = true;
-    return () => {
-      this.mesh.visible = vis[0];
-      this.deskFull.visible = vis[1];
-      this.deskLite.visible = vis[2];
-      if (hasRoll) {
-        this.rollReady = true;
-        this.roll.visible = true;
-      }
-    };
-  }
-
   /** 1 = normal, 0 = dark (reveal). Uniform only. */
   setDim(x) {
     this.dim = x;
@@ -676,7 +655,7 @@ export class Backdrop {
   get gpuBytes() {
     let b = 0;
     if (this._deskTarget) b += this._deskTarget.width * this._deskTarget.height * 4;
-    if (this._roomTarget) b += 512 * 256 * 4;
+    if (this._roomTarget) b += 256 * 128 * 4;
     return b;
   }
 
