@@ -14,12 +14,14 @@
 .bowl-ui svg { width: 100%; height: 100%; display: block; pointer-events: none; }
 
 .bowl-btn {
+  /* top-left: free in every free-mode layout (WP8 main.css: tool rail left
+     centre or bottom, finger map top centre, sound and door top right) */
   position: fixed;
-  left: 16px;
-  bottom: 16px;
-  width: 72px;
-  height: 72px;
-  padding: 10px;
+  left: calc(var(--sl, 0px) + var(--edge, 10px));
+  top: calc(var(--st, 0px) + var(--edge, 10px));
+  width: var(--tap, 56px);
+  height: var(--tap, 56px);
+  padding: calc(var(--tap, 56px) * 0.12);
   border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #fff 0%, #e8f8ff 60%, #c8ecff 100%);
   box-shadow: 0 6px 16px rgba(0, 120, 200, 0.3);
@@ -126,7 +128,6 @@ body.bowl-open .bowl-ui { display: block; }
 @keyframes bowl-nudge { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
 
 @media (max-width: 760px), (max-height: 420px) {
-  .bowl-btn { width: 56px; height: 56px; padding: 8px; left: 10px; bottom: 10px; }
   .bowl-back { width: 48px; height: 48px; padding: 9px; top: 8px; left: 8px; }
   .bowl-row { gap: 0; padding: 4px 6px; bottom: 6px; }
   .bowl-bottle { width: 40px; height: 48px; }
