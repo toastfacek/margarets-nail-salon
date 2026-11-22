@@ -411,9 +411,7 @@ export class BristleSystem {
     const inv = this._invMatrix;
     const len = PHYSICS_CONFIG.bristleLength;
     const prevFar = raycaster.far;
-    const prevFirst = raycaster.firstHitOnly;
     raycaster.far = len * 1.3;
-    raycaster.firstHitOnly = true;
     const { headWidth } = BRUSH_CONFIG;
     for (let k = 0; k < RAY_BANDS; k++) {
       const tx = (k + 0.5) / RAY_BANDS - 0.5;
@@ -422,9 +420,11 @@ export class BristleSystem {
       raycaster.set(this._tempVec, this._tempVec2);
       const hits = this._hits;
       hits.length = 0;
+      // Mesh.raycast does not sort its hits: take the nearest.
       nailMesh.raycast(raycaster, hits);
-      if (hits.length && hits[0].face) {
-        const h = hits[0];
+      let h = null;
+      for (let i = 0; i < hits.length; i++) if (hits[i].face && (h === null || hits[i].distance < h.distance)) h = hits[i];
+      if (h !== null) {
         this._tempVec3.copy(h.point).applyMatrix4(inv);
         this._tempVec2.copy(h.face.normal).transformDirection(nailMesh.matrixWorld).transformDirection(inv);
         // face the same way as the global plane (towards the brush)
@@ -437,7 +437,6 @@ export class BristleSystem {
       hits.length = 0;
     }
     raycaster.far = prevFar;
-    raycaster.firstHitOnly = prevFirst;
   }
 
   /**
