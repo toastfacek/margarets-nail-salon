@@ -10,4 +10,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 950,
     sourcemap: false,
   },
+  // Minify-time only (plain .js modules are not esbuild-transformed one by one,
+  // so the whole chunk is renamed consistently): private `_lower` members get
+  // short names. `__ready` / `__perf...` (double underscore) and anything
+  // accessed by a quoted string are left alone (mangleQuoted is off).
+  esbuild: { mangleProps: /^_[a-z]/ },
 });

@@ -115,23 +115,39 @@ return col;
 }
 `;
 
+
+// Reveal dim (uDim < 1): toward a deep plum club tone, darker away from the
+// screen centre (the hand) like a soft spotlight. uDim = 1 is an exact no-op.
+const DIM_GLSL = /* glsl */ `
+uniform float uDim;
+uniform vec3 uTint;
+vec3 dimClub(vec3 c, vec2 ndc) {
+float s = uDim * uDim;
+float v = 1.0 - (1.0 - uDim) * 0.85 * smoothstep(0.3, 1.35, length(ndc * vec2(1.0, 0.8)));
+return mix(uTint, c * uDim, s) * v;
+}
+`;
+
 const domeVertex = /* glsl */ `
 varying vec3 vDir;
 varying vec2 vUv;
+varying vec3 vClip;
 void main() {
 vDir = position;
 vUv = uv;
 gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+vClip = gl_Position.xyw;
 }
 `;
 
 const domeFragmentBaked = /* glsl */ `
 uniform sampler2D uRoom;
-uniform float uDim;
+${DIM_GLSL}
 varying vec3 vDir;
 varying vec2 vUv;
+varying vec3 vClip;
 void main() {
-gl_FragColor = vec4(texture2D(uRoom, vUv).rgb * uDim, 1.0);
+gl_FragColor = vec4(dimClub(texture2D(uRoom, vUv).rgb, vClip.xy / vClip.z), 1.0);
 }
 `;
 
@@ -247,20 +263,23 @@ const deskVertex = /* glsl */ `
 uniform vec2 uRegionMin;
 uniform vec2 uRegionSize;
 varying vec2 vUv;
+varying vec3 vClip;
 void main() {
 vec4 wp = modelMatrix * vec4(position, 1.0);
 vUv = (wp.xz - uRegionMin) / uRegionSize;
 gl_Position = projectionMatrix * viewMatrix * wp;
+vClip = gl_Position.xyw;
 }
 `;
 
 // One fetch. The texture is display-referred: no tone mapping, no encoding.
 const deskFragment = /* glsl */ `
 uniform sampler2D uDesk;
-uniform float uDim;
+${DIM_GLSL}
 varying vec2 vUv;
+varying vec3 vClip;
 void main() {
-gl_FragColor = vec4(texture2D(uDesk, vUv).rgb * uDim, 1.0);
+gl_FragColor = vec4(dimClub(texture2D(uDesk, vUv).rgb, vClip.xy / vClip.z), 1.0);
 }
 `;
 
@@ -269,12 +288,12 @@ const deskLiteVertex = /* glsl */ `
 uniform sampler2D uDesk;
 uniform vec2 uRegionMin;
 uniform vec2 uRegionSize;
-uniform float uDim;
+${DIM_GLSL}
 varying vec3 vC;
 void main() {
 vec4 wp = modelMatrix * vec4(position, 1.0);
-vC = textureLod(uDesk, clamp((wp.xz - uRegionMin) / uRegionSize, 0.0, 1.0), 0.0).rgb * uDim;
 gl_Position = projectionMatrix * viewMatrix * wp;
+vC = dimClub(textureLod(uDesk, clamp((wp.xz - uRegionMin) / uRegionSize, 0.0, 1.0), 0.0).rgb, gl_Position.xy / gl_Position.w);
 }
 `;
 const deskLiteFragment = /* glsl */ `
@@ -392,13 +411,14 @@ export class Backdrop {
       uBokeh: { value: bokeh },
       uBokehCol: { value: bokehCol },
       uDim: { value: 1 },
+      uTint: { value: new THREE.Vector3(0.2, 0.08, 0.27) }, // reveal club plum (display sRGB, #33144a)
     };
 
     this.bakedMaterial = new THREE.ShaderMaterial({
       name: 'RoomBaked',
       vertexShader: domeVertex,
       fragmentShader: domeFragmentBaked,
-      uniforms: { uRoom: { value: null }, uDim: this.roomUniforms.uDim },
+      uniforms: { uRoom: { value: null }, uDim: this.roomUniforms.uDim, uTint: this.roomUniforms.uTint },
       depthTest: true,
       depthWrite: false,
       side: THREE.BackSide,
@@ -427,6 +447,7 @@ export class Backdrop {
       uRegionMin: { value: new THREE.Vector2(-5, -4) },
       uRegionSize: { value: new THREE.Vector2(6, 4.5) },
       uDim: this.roomUniforms.uDim,
+      uTint: this.roomUniforms.uTint,
     };
     this.deskMaterial = new THREE.ShaderMaterial({
       name: 'Desk',
@@ -645,7 +666,7 @@ export class Backdrop {
     this.bakedMaterial.uniforms.uRoom.value = this._roomTarget.texture;
   }
 
-  /** 1 = normal, 0 = dark (reveal). Uniform only. */
+  /** 1 = normal, 0 = dark (reveal): a plum club tone with a spotlight on the hand. Uniform only. */
   setDim(x) {
     this.dim = x;
     this.roomUniforms.uDim.value = x;
