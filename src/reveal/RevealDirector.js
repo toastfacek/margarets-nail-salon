@@ -182,8 +182,10 @@ export class RevealDirector {
     app.quality.hold();
     if (this.wall.isOpen) this.wall.close();
 
-    // snapshot the camera, stop any zoom in flight, lock the controls
+    // hold the camera (no resize re-framing), snapshot it, stop any zoom in flight, lock the controls
+    scene.holdCamera(true);
     scene.isAnimating = false;
+    this._aspect = cam.aspect;
     this._pos0.copy(cam.position);
     this._q0.copy(cam.quaternion);
     this._tgt0.copy(scene.controls.target);
@@ -378,11 +380,14 @@ export class RevealDirector {
     app.loop.remove(this._tick);
     app.loop.remove(this._after);
 
-    // exact restore: camera, controls, lights, bones, glints
+    // exact restore: camera, controls, lights, bones, glints. If the screen
+    // changed shape meanwhile, NailScene re-frames the focused nail once released.
+    scene.holdCamera(false);
     scene.camera.position.copy(this._pos0);
     scene.camera.quaternion.copy(this._q0);
     scene.controls.target.copy(this._tgt0);
     scene.controls.enabled = this._ctl;
+    if (scene.camera.aspect !== this._aspect) scene.onResize();
     scene.setDim(1);
     for (let i = 0; i < this._bones.length; i++) this._bones[i].bone.quaternion.copy(this._rest[i]);
     hm.getMesh().rotation.z = this._rock;
