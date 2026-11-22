@@ -17,7 +17,7 @@ import * as THREE from 'three';
 const POOL = 48;              // highest tier's brushParticles
 const LIFE = 0.5;             // seconds (per-droplet jitter in the shader)
 const GRAVITY = -0.6;         // world units / s^2 (a nail is ~0.07 units wide)
-const SIZE = 0.0034;          // world-space droplet diameter
+const SIZE = 0.007;           // world-space droplet diameter
 const SPEED_START = 0.9;      // UV/s: slower strokes flick nothing
 const RATE_PER_SPEED = 9;     // droplets per second per UV/s above SPEED_START
 const MAX_RATE = 60;          // droplets per second

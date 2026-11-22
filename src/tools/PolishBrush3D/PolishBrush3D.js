@@ -158,10 +158,13 @@ export class PolishBrush3D {
     this.fluidSim = new FluidSimulator(this.renderer, opts);
   }
 
-  /** Compile every fluid pass (and the droplet program) now so the first stroke never compiles. */
+  /**
+   * Compile every fluid pass now so the first stroke never compiles. The
+   * droplet program is compiled at idle time after load (brushJuice feature,
+   * `brushEffects.prewarm()`), so it does not delay the first paintable frame.
+   */
   prewarm() {
     if (this.fluidSim) this.fluidSim.prewarm();
-    this.brushEffects.prewarm(this.renderer, this.camera);
   }
 
   // ------------------------------------------------------------ coverage --

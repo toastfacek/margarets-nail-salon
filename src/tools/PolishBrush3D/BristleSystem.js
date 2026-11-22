@@ -174,14 +174,22 @@ export class BristleSystem {
     this.group.add(this.mesh);
 
     // The hanging bead: one small glossy sphere, squashed on contact.
+    // Same program as the bristles (Phong + vertex colours: all white here),
+    // so the bead adds no shader compile.
     const beadMaterial = new THREE.MeshPhongMaterial({
       color: this.color,
       emissive: this.color,
       emissiveIntensity: 0.22,
       specular: 0xffffff,
       shininess: 110,
+      vertexColors: true,
+      side: THREE.DoubleSide,
     });
-    this.bead = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), beadMaterial);
+    const beadGeometry = new THREE.SphereGeometry(1, 14, 10);
+    const white = new Float32Array(beadGeometry.attributes.position.count * 3);
+    white.fill(1);
+    beadGeometry.setAttribute('color', new THREE.BufferAttribute(white, 3));
+    this.bead = new THREE.Mesh(beadGeometry, beadMaterial);
     this.bead.name = 'BrushBead';
     this.bead.frustumCulled = false;
     this.group.add(this.bead);

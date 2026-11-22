@@ -49,25 +49,41 @@ const DRYER_SVG = `
   </g>
 </svg>`;
 
-/** Soft violet ring (transparent centre, so the nail stays visible). */
+// Radial alpha stops of the glow ring: [radius 0..1, alpha].
+const GLOW_STOPS = [[0, 0], [0.45, 0.05], [0.7, 0.85], [0.85, 0.3], [1, 0]];
+
+/**
+ * Soft ring (transparent centre, so the nail stays visible), built straight
+ * into a typed array: a 2D canvas at startup stalls the first GL sync.
+ */
 function makeGlowTexture() {
   const N = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = N;
-  canvas.height = N;
-  const ctx = canvas.getContext('2d');
-  const g = ctx.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
-  g.addColorStop(0, 'rgba(255,255,255,0)');
-  g.addColorStop(0.45, 'rgba(255,255,255,0.05)');
-  g.addColorStop(0.7, 'rgba(255,255,255,0.85)');
-  g.addColorStop(0.85, 'rgba(255,255,255,0.3)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, N, N);
-  const tex = new THREE.CanvasTexture(canvas);
+  const d = new Uint8Array(N * N * 4);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = (x + 0.5) / N * 2 - 1;
+      const dy = (y + 0.5) / N * 2 - 1;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      let a = 0;
+      for (let k = 1; k < GLOW_STOPS.length; k++) {
+        const s0 = GLOW_STOPS[k - 1], s1 = GLOW_STOPS[k];
+        if (r <= s1[0]) {
+          const t = (r - s0[0]) / (s1[0] - s0[0]);
+          a = s0[1] + (s1[1] - s0[1]) * t;
+          break;
+        }
+      }
+      const o = (y * N + x) * 4;
+      d[o] = d[o + 1] = d[o + 2] = 255;
+      d[o + 3] = Math.round(Math.max(0, Math.min(1, a)) * 255);
+    }
+  }
+  const tex = new THREE.DataTexture(d, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.needsUpdate = true;
   tex.name = 'DryerGlow';
   tex.generateMipmaps = false;
   tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
   return tex;
 }
 
@@ -83,20 +99,12 @@ export function install(app) {
 
   // ------------------------------------------------------------ sparkles --
   const sparkles = new Sparkles(scene, camera, app.quality.settings);
-  sparkles.prewarm(renderer, camera);
   app.sparkles = sparkles;
 
   // ----------------------------------------------------- decoration tools --
   const invalidate = app.invalidate;
   app.stickerTool?.connect?.({ events, sparkles, invalidate });
   app.gemTool?.connect?.({ events, sparkles, invalidate });
-  // Gem programs (MeshPhysical) are slow to compile on weak GPUs: compile them
-  // at idle time after load instead of delaying the first paintable frame.
-  if (app.gemTool?.prewarm) {
-    const warmGems = () => app.gemTool.prewarm(renderer, camera);
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(warmGems, { timeout: 4000 });
-    else setTimeout(warmGems, 2500);
-  }
   app.brushTool?.connect?.({ invalidate });
 
   // --------------------------------------------------------- dryer glow --
@@ -116,12 +124,26 @@ export function install(app) {
   glow.renderOrder = 15;
   glow.visible = true;
   scene.add(glow);
-  try {
-    renderer.compile(glow, camera, scene);
-  } catch (err) {
-    // optimisation only
-  }
   glow.visible = false;
+
+  // Every juice program (sparkles, droplets, dryer glow, gems) is compiled at
+  // idle time right after load, not before the first paintable frame: shader
+  // compiles are slow on weak GPUs, and none of these can appear in the first
+  // second (droplets need a fast stroke, sparkles need 90% coverage).
+  const warm = () => {
+    sparkles.prewarm(renderer, camera);
+    brush.brushEffects.prewarm(renderer, camera);
+    glow.visible = true;
+    try {
+      renderer.compile(glow, camera, scene);
+    } catch (err) {
+      // optimisation only
+    }
+    glow.visible = false;
+    app.gemTool?.prewarm?.(renderer, camera);
+  };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(warm, { timeout: 1500 });
+  else setTimeout(warm, 1000);
   let glowAlpha = 0;
   let glowTime = 0;
   const nailPos = new THREE.Vector3();
@@ -146,7 +168,6 @@ export function install(app) {
   const dryer = document.createElement('button');
   dryer.type = 'button';
   dryer.className = 'juice-dryer';
-  dryer.title = 'Dry';
   dryer.setAttribute('aria-label', 'Dry');
   dryer.innerHTML = DRYER_SVG;
   document.body.appendChild(dryer);

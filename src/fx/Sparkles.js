@@ -8,7 +8,7 @@
  *   `aBirth`, `aColor`; the vertex shader computes position, size and
  *   twinkle from `uTime`. The CPU writes attributes only when sparkles spawn.
  * - Hidden (no draw) whenever no sparkle is alive; update() is then free.
- * - The star sprite is drawn once into a 64x64 canvas.
+ * - The star sprite is computed once into a 64x64 DataTexture.
  * - No allocations per frame. burst()/sweep() allocate nothing either.
  *
  * API: burst(worldPos, count, color[, normal]), sweep(mesh[, count, color]),
@@ -77,15 +77,13 @@ void main() {
 }
 `;
 
-/** 64x64 four-point star with a soft glow and a white core. */
+/**
+ * 64x64 four-point star with a soft glow and a white core, built straight into
+ * a typed array (a 2D canvas at startup stalls the first GL sync on weak GPUs).
+ */
 function makeStarTexture() {
   const N = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = N;
-  canvas.height = N;
-  const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(N, N);
-  const d = img.data;
+  const d = new Uint8Array(N * N * 4);
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
       const px = (x + 0.5) / N * 2 - 1;
@@ -110,8 +108,8 @@ function makeStarTexture() {
       d[o + 3] = 255;
     }
   }
-  ctx.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(canvas);
+  const tex = new THREE.DataTexture(d, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.needsUpdate = true;
   tex.name = 'SparkleStar';
   tex.colorSpace = THREE.NoColorSpace;
   tex.generateMipmaps = false;
