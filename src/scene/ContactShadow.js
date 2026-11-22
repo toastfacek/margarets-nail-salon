@@ -29,12 +29,12 @@ uniform sampler2D uSource;
 uniform vec2 uStep;
 varying vec2 vUv;
 void main() {
-  vec4 s = texture2D(uSource, vUv) * 0.2270270270;
-  s += texture2D(uSource, vUv + uStep * 1.3846153846) * 0.3162162162;
-  s += texture2D(uSource, vUv - uStep * 1.3846153846) * 0.3162162162;
-  s += texture2D(uSource, vUv + uStep * 3.2307692308) * 0.0702702703;
-  s += texture2D(uSource, vUv - uStep * 3.2307692308) * 0.0702702703;
-  gl_FragColor = s;
+vec4 s = texture2D(uSource, vUv) * 0.2270270270;
+s += texture2D(uSource, vUv + uStep * 1.3846153846) * 0.3162162162;
+s += texture2D(uSource, vUv - uStep * 1.3846153846) * 0.3162162162;
+s += texture2D(uSource, vUv + uStep * 3.2307692308) * 0.0702702703;
+s += texture2D(uSource, vUv - uStep * 3.2307692308) * 0.0702702703;
+gl_FragColor = s;
 }
 `;
 

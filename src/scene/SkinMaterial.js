@@ -29,16 +29,15 @@ uniform vec3 uGround;
 uniform vec3 uRimDir;
 uniform vec3 uRimColor;
 uniform float uDim;
-
 vec3 skinShade(vec3 N, vec3 V, float sheen) {
-  float ndl = dot(N, uKeyDir);
-  float wrap = max((ndl + 0.35) / 1.35, 0.0);
-  float ndv = clamp(dot(N, V), 0.0, 1.0);
-  vec3 col = uTone * (mix(uGround, uSky, N.y * 0.5 + 0.5) + uKeyColor * wrap);
-  col += uGlow * ((wrap - max(ndl, 0.0)) * 0.9 + pow(1.0 - ndv, 3.0) * 0.55);
-  col += uRimColor * pow(1.0 - ndv, 2.0) * max(dot(N, uRimDir), 0.0);
-  col += uKeyColor * pow(max(dot(N, normalize(uKeyDir + V)), 0.0), 28.0) * 0.07 * sheen;
-  return col * uDim;
+float ndl = dot(N, uKeyDir);
+float wrap = max((ndl + 0.35) / 1.35, 0.0);
+float ndv = clamp(dot(N, V), 0.0, 1.0);
+vec3 col = uTone * (mix(uGround, uSky, N.y * 0.5 + 0.5) + uKeyColor * wrap);
+col += uGlow * ((wrap - max(ndl, 0.0)) * 0.9 + pow(1.0 - ndv, 3.0) * 0.55);
+col += uRimColor * pow(1.0 - ndv, 2.0) * max(dot(N, uRimDir), 0.0);
+col += uKeyColor * pow(max(dot(N, normalize(uKeyDir + V)), 0.0), 28.0) * 0.07 * sheen;
+return col * uDim;
 }
 `;
 
@@ -47,14 +46,14 @@ const skinVertexHead = /* glsl */ `
 #include <skinning_pars_vertex>
 `;
 const skinVertexBody = /* glsl */ `
-  #include <skinbase_vertex>
-  #include <begin_vertex>
-  #include <beginnormal_vertex>
-  #include <skinnormal_vertex>
-  #include <skinning_vertex>
-  vec4 wp = modelMatrix * vec4(transformed, 1.0);
-  vec3 nW = normalize(mat3(modelMatrix) * objectNormal);
-  gl_Position = projectionMatrix * viewMatrix * wp;
+#include <skinbase_vertex>
+#include <begin_vertex>
+#include <beginnormal_vertex>
+#include <skinnormal_vertex>
+#include <skinning_vertex>
+vec4 wp = modelMatrix * vec4(transformed, 1.0);
+vec3 nW = normalize(mat3(modelMatrix) * objectNormal);
+gl_Position = projectionMatrix * viewMatrix * wp;
 `;
 
 const fullVertex = /* glsl */ `
@@ -62,9 +61,9 @@ ${skinVertexHead}
 varying vec3 vN;
 varying vec3 vP;
 void main() {
-  ${skinVertexBody}
-  vN = nW;
-  vP = wp.xyz;
+${skinVertexBody}
+vN = nW;
+vP = wp.xyz;
 }
 `;
 const fullFragment = /* glsl */ `
@@ -72,9 +71,9 @@ ${lightingChunk}
 varying vec3 vN;
 varying vec3 vP;
 void main() {
-  gl_FragColor = vec4(skinShade(normalize(vN), normalize(cameraPosition - vP), 1.0), 1.0);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
+gl_FragColor = vec4(skinShade(normalize(vN), normalize(cameraPosition - vP), 1.0), 1.0);
+#include <tonemapping_fragment>
+#include <colorspace_fragment>
 }
 `;
 
@@ -84,12 +83,12 @@ ${skinVertexHead}
 ${lightingChunk}
 varying vec3 vC;
 void main() {
-  ${skinVertexBody}
-  const mat3 IN = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
-  const mat3 OUT = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
-  vec3 v = IN * (skinShade(nW, normalize(cameraPosition - wp.xyz), 0.0) * 2.0);
-  v = (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
-  vC = pow(clamp(OUT * v, 0.0, 1.0), vec3(1.0 / 2.2));
+${skinVertexBody}
+const mat3 IN = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
+const mat3 OUT = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
+vec3 v = IN * (skinShade(nW, normalize(cameraPosition - wp.xyz), 0.0) * 2.0);
+v = (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
+vC = pow(clamp(OUT * v, 0.0, 1.0), vec3(1.0 / 2.2));
 }
 `;
 const liteFragment = /* glsl */ `

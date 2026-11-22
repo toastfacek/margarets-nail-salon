@@ -41,17 +41,17 @@ const EXPOSURE = 1.2;
 // for the passes that bake display-referred colour.
 const acesChunk = /* glsl */ `
 vec3 bakeRRT(vec3 v) {
-  vec3 a = v * (v + 0.0245786) - 0.000090537;
-  vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
-  return a / b;
+vec3 a = v * (v + 0.0245786) - 0.000090537;
+vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+return a / b;
 }
 vec3 bakeDisplay(vec3 color) {
-  const mat3 IN = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
-  const mat3 OUT = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
-  color *= ${EXPOSURE.toFixed(3)} / 0.6;
-  color = OUT * bakeRRT(IN * color);
-  color = clamp(color, 0.0, 1.0);
-  return sRGBTransferOETF(vec4(color, 1.0)).rgb;
+const mat3 IN = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
+const mat3 OUT = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
+color *= ${EXPOSURE.toFixed(3)} / 0.6;
+color = OUT * bakeRRT(IN * color);
+color = clamp(color, 0.0, 1.0);
+return sRGBTransferOETF(vec4(color, 1.0)).rgb;
 }
 `;
 
@@ -59,70 +59,60 @@ vec3 bakeDisplay(vec3 color) {
 const roomChunk = /* glsl */ `
 uniform float uTime;
 uniform float uBokehCount;
-uniform vec3 uBokeh[${MAX_BOKEH}];      // azimuth, elevation, radius (rad)
+uniform vec3 uBokeh[${MAX_BOKEH}];
 uniform vec3 uBokehCol[${MAX_BOKEH}];
-
 const float PI = 3.14159265;
-
 float bhash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
-
 float rbox(vec2 p, vec2 b, float r) {
-  vec2 q = abs(p) - b + r;
-  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+vec2 q = abs(p) - b + r;
+return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
-
 vec3 roomColor(vec3 d, float animate) {
-  d = normalize(d);
-  float e = d.y;
-  float az = atan(d.z, d.x);
-
-  vec3 fogCol = vec3(${FOG.map((v) => v.toFixed(3)).join(', ')});
-  vec3 lowWall = vec3(0.62, 0.40, 0.46);
-  vec3 highWall = vec3(0.74, 0.58, 0.54);
-  vec3 col = mix(lowWall, highWall, smoothstep(0.05, 0.8, e));
-  col = mix(col, fogCol, smoothstep(0.2, -0.03, e));
-  // warm window glow far to one side
-  col += vec3(0.22, 0.13, 0.05) * pow(max(dot(d, normalize(vec3(0.5, 0.35, -1.0))), 0.0), 5.0);
-
-  // shelf: a blurred darker band with soft bottle silhouettes standing on it
-  float shelfE = 0.17;
-  if (e > shelfE - 0.06 && e < shelfE + 0.26) {
-    float band = smoothstep(0.035, 0.0, abs(e - shelfE));
-    col = mix(col, vec3(0.42, 0.24, 0.31), band * 0.6);
-    float seg = PI / 9.0;                       // 18 bottles around the room
-    float idx = floor(az / seg);
-    float lx = (az - (idx + 0.5) * seg) * cos(shelfE);
-    float h1 = bhash(idx + 3.0);
-    float h2 = bhash(idx + 11.0);
-    float bw = 0.018 + 0.016 * h1;
-    float bh = 0.045 + 0.06 * h2;
-    vec2 bp = vec2(lx - (h1 - 0.5) * 0.04, e - (shelfE + 0.012 + bh));
-    float bottle = 1.0 - smoothstep(-0.012, 0.016, rbox(bp, vec2(bw, bh), bw * 0.8));
-    vec3 bc = 0.5 + 0.45 * cos(6.2831 * (h2 * 0.8 + vec3(0.0, 0.33, 0.67)));
-    bc = mix(bc, vec3(1.0, 0.45, 0.65), 0.35);
-    float cap = 1.0 - smoothstep(-0.008, 0.014, rbox(bp - vec2(0.0, bh + 0.018), vec2(bw * 0.45, 0.016), 0.006));
-    col = mix(col, bc * 0.75, bottle * 0.8);
-    col = mix(col, vec3(0.85, 0.62, 0.35), cap * 0.7);
-    col += bottle * 0.16 * smoothstep(0.01, 0.0, abs(bp.x + bw * 0.4));
-  }
-
-  // bokeh: soft discs with a slightly brighter rim
-  if (e > 0.05) {
-    for (int i = 0; i < ${MAX_BOKEH}; i++) {
-      if (float(i) >= uBokehCount) break;
-      vec3 b = uBokeh[i];
-      float drift = animate * uTime;
-      vec2 c = vec2(b.x + 0.05 * sin(drift * 0.11 + float(i) * 1.7), b.y + 0.02 * sin(drift * 0.07 + float(i) * 2.3));
-      float da = az - c.x;
-      da = da - 2.0 * PI * floor((da + PI) / (2.0 * PI));
-      vec2 q = vec2(da * cos(e), e - c.y);
-      float r = length(q) / b.z;
-      float disc = 1.0 - smoothstep(0.82, 1.0, r);
-      float rim = smoothstep(0.55, 0.95, r) * disc;
-      col += uBokehCol[i] * (disc * 0.6 + rim * 0.4);
-    }
-  }
-  return col;
+d = normalize(d);
+float e = d.y;
+float az = atan(d.z, d.x);
+vec3 fogCol = vec3(${FOG.map((v) => v.toFixed(3)).join(', ')});
+vec3 lowWall = vec3(0.62, 0.40, 0.46);
+vec3 highWall = vec3(0.74, 0.58, 0.54);
+vec3 col = mix(lowWall, highWall, smoothstep(0.05, 0.8, e));
+col = mix(col, fogCol, smoothstep(0.2, -0.03, e));
+col += vec3(0.22, 0.13, 0.05) * pow(max(dot(d, normalize(vec3(0.5, 0.35, -1.0))), 0.0), 5.0);
+float shelfE = 0.17;
+if (e > shelfE - 0.06 && e < shelfE + 0.26) {
+float band = smoothstep(0.035, 0.0, abs(e - shelfE));
+col = mix(col, vec3(0.42, 0.24, 0.31), band * 0.6);
+float seg = PI / 9.0;
+float idx = floor(az / seg);
+float lx = (az - (idx + 0.5) * seg) * cos(shelfE);
+float h1 = bhash(idx + 3.0);
+float h2 = bhash(idx + 11.0);
+float bw = 0.018 + 0.016 * h1;
+float bh = 0.045 + 0.06 * h2;
+vec2 bp = vec2(lx - (h1 - 0.5) * 0.04, e - (shelfE + 0.012 + bh));
+float bottle = 1.0 - smoothstep(-0.012, 0.016, rbox(bp, vec2(bw, bh), bw * 0.8));
+vec3 bc = 0.5 + 0.45 * cos(6.2831 * (h2 * 0.8 + vec3(0.0, 0.33, 0.67)));
+bc = mix(bc, vec3(1.0, 0.45, 0.65), 0.35);
+float cap = 1.0 - smoothstep(-0.008, 0.014, rbox(bp - vec2(0.0, bh + 0.018), vec2(bw * 0.45, 0.016), 0.006));
+col = mix(col, bc * 0.75, bottle * 0.8);
+col = mix(col, vec3(0.85, 0.62, 0.35), cap * 0.7);
+col += bottle * 0.16 * smoothstep(0.01, 0.0, abs(bp.x + bw * 0.4));
+}
+if (e > 0.05) {
+for (int i = 0; i < ${MAX_BOKEH}; i++) {
+if (float(i) >= uBokehCount) break;
+vec3 b = uBokeh[i];
+float drift = animate * uTime;
+vec2 c = vec2(b.x + 0.05 * sin(drift * 0.11 + float(i) * 1.7), b.y + 0.02 * sin(drift * 0.07 + float(i) * 2.3));
+float da = az - c.x;
+da = da - 2.0 * PI * floor((da + PI) / (2.0 * PI));
+vec2 q = vec2(da * cos(e), e - c.y);
+float r = length(q) / b.z;
+float disc = 1.0 - smoothstep(0.82, 1.0, r);
+float rim = smoothstep(0.55, 0.95, r) * disc;
+col += uBokehCol[i] * (disc * 0.6 + rim * 0.4);
+}
+}
+return col;
 }
 `;
 
@@ -130,9 +120,9 @@ const domeVertex = /* glsl */ `
 varying vec3 vDir;
 varying vec2 vUv;
 void main() {
-  vDir = position;     // the dome is centred on the camera
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+vDir = position;
+vUv = uv;
+gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
 
@@ -144,8 +134,8 @@ ${roomChunk}
 ${acesChunk}
 float dither(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
-  vec3 col = bakeDisplay(roomColor(vDir, 1.0)) * uDim;
-  gl_FragColor = vec4(col + (dither(gl_FragCoord.xy) - 0.5) / 255.0, 1.0);
+vec3 col = bakeDisplay(roomColor(vDir, 1.0)) * uDim;
+gl_FragColor = vec4(col + (dither(gl_FragCoord.xy) - 0.5) / 255.0, 1.0);
 }
 `;
 
@@ -155,7 +145,7 @@ uniform float uDim;
 varying vec3 vDir;
 varying vec2 vUv;
 void main() {
-  gl_FragColor = vec4(texture2D(uRoom, vUv).rgb * uDim, 1.0);
+gl_FragColor = vec4(texture2D(uRoom, vUv).rgb * uDim, 1.0);
 }
 `;
 
@@ -170,10 +160,10 @@ varying vec2 vUv;
 ${roomChunk}
 ${acesChunk}
 void main() {
-  float phi = vUv.x * 6.2831853;
-  float theta = (1.0 - vUv.y) * ${DOME_THETA.toFixed(5)};
-  vec3 d = vec3(-cos(phi) * sin(theta), cos(theta), sin(phi) * sin(theta));
-  gl_FragColor = vec4(bakeDisplay(roomColor(d, 0.0)), 1.0);
+float phi = vUv.x * 6.2831853;
+float theta = (1.0 - vUv.y) * ${DOME_THETA.toFixed(5)};
+vec3 d = vec3(-cos(phi) * sin(theta), cos(theta), sin(phi) * sin(theta));
+gl_FragColor = vec4(bakeDisplay(roomColor(d, 0.0)), 1.0);
 }
 `;
 
@@ -186,101 +176,80 @@ uniform vec2 uShadowAz;
 uniform float uHasShadow;
 uniform vec2 uRegionMin;
 uniform vec2 uRegionSize;
-uniform vec2 uCentre;          // hand centre (xz)
-uniform vec4 uTowelRect;       // centre xz, half size xz
+uniform vec2 uCentre;
+uniform vec4 uTowelRect;
 uniform vec3 uTowelColor;
-uniform vec3 uLightXZ;         // xz direction the shadow falls toward, offset scale
-uniform vec4 uRoll;            // rolled towel: centre xz, axis xz (unit)
-uniform vec2 uRollSize;        // half length, radius (0 = none)
+uniform vec3 uLightXZ;
+uniform vec4 uRoll;
+uniform vec2 uRollSize;
 varying vec2 vUv;
 ${acesChunk}
-
 float h21(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
+vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+p3 += dot(p3, p3.yzx + 33.33);
+return fract((p3.x + p3.y) * p3.z);
 }
 float vnoise(vec2 p) {
-  vec2 i = floor(p), f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(h21(i), h21(i + vec2(1, 0)), u.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), u.x), u.y);
+vec2 i = floor(p), f = fract(p);
+vec2 u = f * f * (3.0 - 2.0 * f);
+return mix(mix(h21(i), h21(i + vec2(1, 0)), u.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), u.x), u.y);
 }
 float fbm(vec2 p) {
-  float s = 0.0, a = 0.5;
-  for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
-  return s;
+float s = 0.0, a = 0.5;
+for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
+return s;
 }
-
 void main() {
-  vec2 p = uRegionMin + vUv * uRegionSize;
-
-  // ---- towel
-  vec2 tq = abs(p - uTowelRect.xy) - uTowelRect.zw;
-  float towelSd = max(tq.x, tq.y) - 0.04 * (vnoise(p * 3.0) - 0.5);   // soft, slightly wavy hem
-  float onTowel = 1.0 - smoothstep(-0.01, 0.01, towelSd);
-  // terry: soft loops (cellular-ish noise), a gentle weave, slow mottling and folds
-  float loops = vnoise(p * 34.0) * 0.6 + vnoise(p * 71.0 + 3.0) * 0.4;
-  float weave = 0.5 + 0.5 * sin(p.x * 120.0 + vnoise(p * 9.0) * 3.0) * sin(p.y * 120.0 + vnoise(p * 7.0 + 5.0) * 3.0);
-  float folds = fbm(p * 0.9 + 4.0);
-  vec3 towel = uTowelColor * (0.86 + 0.16 * loops + 0.04 * weave) * (0.9 + 0.2 * folds);
-  // satin stripe bands across both ends, a little shinier
-  float along = (p.x - uTowelRect.x) / uTowelRect.z;
-  float a = abs(along);
-  float stripe = smoothstep(0.72, 0.735, a) * (1.0 - smoothstep(0.80, 0.815, a))
-               + smoothstep(0.85, 0.86, a) * (1.0 - smoothstep(0.875, 0.885, a));
-  vec3 satin = mix(uTowelColor, vec3(1.0, 0.97, 0.94), 0.55) * (1.02 + 0.06 * sin(p.y * 260.0));
-  towel = mix(towel, satin, stripe * 0.85);
-  // the towel's raised, rounded edge
-  towel *= 1.0 - 0.22 * smoothstep(-0.10, 0.0, towelSd);
-
-  // ---- white marble with blush veins
-  float t = fbm(p * 0.7);
-  float vein = abs(sin((p.x * 0.8 + p.y * 0.5) * 3.0 + t * 7.0));
-  float v1 = pow(1.0 - vein, 12.0);
-  float v2 = pow(1.0 - abs(sin((p.x * 0.3 - p.y * 1.1) * 5.0 + fbm(p * 1.7 + 9.0) * 6.0)), 30.0);
-  vec3 marble = vec3(0.86, 0.80, 0.79) * (0.95 + 0.06 * t) - vec3(0.10, 0.20, 0.16) * v1 - vec3(0.05, 0.10, 0.08) * v2;
-  // the towel sits on the marble: a soft shadow around it
-  marble *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.22, towelSd));
-
-  vec3 col = mix(marble, towel, onTowel);
-
-  // ---- light pool from the ring light / softbox, centred on the hand
-  float r = length(p - uCentre);
-  col *= 0.70 + 0.42 * exp(-r * r * 0.30);
-
-  // ---- contact shadow (plum, not grey), nudged away from the key light
-  if (uHasShadow > 0.5) {
-    vec2 q = p - uLightXZ.xy * uLightXZ.z;
-    vec2 suv = uShadowO + q.x * uShadowAx + q.y * uShadowAz;
-    float inside = step(0.0, suv.x) * step(suv.x, 1.0) * step(0.0, suv.y) * step(suv.y, 1.0);
-    float sh = texture2D(uShadow, suv).r * inside;
-    // a second, wider and fainter look for ambient occlusion
-    vec2 suv2 = uShadowO + p.x * uShadowAx + p.y * uShadowAz;
-    float ao = 0.0;
-    ao += texture2D(uShadow, suv2 + vec2(0.012, 0.0)).r;
-    ao += texture2D(uShadow, suv2 - vec2(0.012, 0.0)).r;
-    ao += texture2D(uShadow, suv2 + vec2(0.0, 0.012)).r;
-    ao += texture2D(uShadow, suv2 - vec2(0.0, 0.012)).r;
-    sh = max(sh, ao * 0.15 * step(0.0, suv2.x) * step(suv2.x, 1.0) * step(0.0, suv2.y) * step(suv2.y, 1.0));
-    col *= mix(vec3(1.0), vec3(0.50, 0.33, 0.46), clamp(sh, 0.0, 1.0));
-  }
-
-  // ---- the rolled towel under the wrist: a soft shadow along it
-  if (uRollSize.y > 0.0) {
-    vec2 rq = p - uRoll.xy - uLightXZ.xy * uRollSize.y * 0.6;
-    float along2 = dot(rq, uRoll.zw);
-    float across = abs(dot(rq, vec2(-uRoll.w, uRoll.z)));
-    float cap = max(abs(along2) - uRollSize.x, 0.0);
-    float d = length(vec2(cap, max(across - uRollSize.y * 0.55, 0.0)));
-    col *= mix(vec3(1.0), vec3(0.55, 0.40, 0.52), (1.0 - smoothstep(0.0, uRollSize.y * 1.1, d)) * 0.5);
-  }
-
-  // ---- fade into the room toward the edge of the baked region
-  vec2 e = min(vUv, 1.0 - vUv);
-  float fade = 1.0 - smoothstep(0.0, 0.22, min(e.x * uRegionSize.x, e.y * uRegionSize.y) / max(uRegionSize.x, uRegionSize.y) * 2.0);
-  col = mix(col, vec3(${FOG.map((v) => v.toFixed(3)).join(', ')}), fade);
-
-  gl_FragColor = vec4(bakeDisplay(col), 1.0);
+vec2 p = uRegionMin + vUv * uRegionSize;
+vec2 tq = abs(p - uTowelRect.xy) - uTowelRect.zw;
+float towelSd = max(tq.x, tq.y) - 0.04 * (vnoise(p * 3.0) - 0.5);
+float onTowel = 1.0 - smoothstep(-0.01, 0.01, towelSd);
+float loops = vnoise(p * 34.0) * 0.6 + vnoise(p * 71.0 + 3.0) * 0.4;
+float weave = 0.5 + 0.5 * sin(p.x * 120.0 + vnoise(p * 9.0) * 3.0) * sin(p.y * 120.0 + vnoise(p * 7.0 + 5.0) * 3.0);
+float folds = fbm(p * 0.9 + 4.0);
+vec3 towel = uTowelColor * (0.86 + 0.16 * loops + 0.04 * weave) * (0.9 + 0.2 * folds);
+float along = (p.x - uTowelRect.x) / uTowelRect.z;
+float a = abs(along);
+float stripe = smoothstep(0.72, 0.735, a) * (1.0 - smoothstep(0.80, 0.815, a))
++ smoothstep(0.85, 0.86, a) * (1.0 - smoothstep(0.875, 0.885, a));
+vec3 satin = mix(uTowelColor, vec3(1.0, 0.97, 0.94), 0.55) * (1.02 + 0.06 * sin(p.y * 260.0));
+towel = mix(towel, satin, stripe * 0.85);
+towel *= 1.0 - 0.22 * smoothstep(-0.10, 0.0, towelSd);
+float t = fbm(p * 0.7);
+float vein = abs(sin((p.x * 0.8 + p.y * 0.5) * 3.0 + t * 7.0));
+float v1 = pow(1.0 - vein, 12.0);
+float v2 = pow(1.0 - abs(sin((p.x * 0.3 - p.y * 1.1) * 5.0 + fbm(p * 1.7 + 9.0) * 6.0)), 30.0);
+vec3 marble = vec3(0.86, 0.80, 0.79) * (0.95 + 0.06 * t) - vec3(0.10, 0.20, 0.16) * v1 - vec3(0.05, 0.10, 0.08) * v2;
+marble *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.22, towelSd));
+vec3 col = mix(marble, towel, onTowel);
+float r = length(p - uCentre);
+col *= 0.70 + 0.42 * exp(-r * r * 0.30);
+if (uHasShadow > 0.5) {
+vec2 q = p - uLightXZ.xy * uLightXZ.z;
+vec2 suv = uShadowO + q.x * uShadowAx + q.y * uShadowAz;
+float inside = step(0.0, suv.x) * step(suv.x, 1.0) * step(0.0, suv.y) * step(suv.y, 1.0);
+float sh = texture2D(uShadow, suv).r * inside;
+vec2 suv2 = uShadowO + p.x * uShadowAx + p.y * uShadowAz;
+float ao = 0.0;
+ao += texture2D(uShadow, suv2 + vec2(0.012, 0.0)).r;
+ao += texture2D(uShadow, suv2 - vec2(0.012, 0.0)).r;
+ao += texture2D(uShadow, suv2 + vec2(0.0, 0.012)).r;
+ao += texture2D(uShadow, suv2 - vec2(0.0, 0.012)).r;
+sh = max(sh, ao * 0.15 * step(0.0, suv2.x) * step(suv2.x, 1.0) * step(0.0, suv2.y) * step(suv2.y, 1.0));
+col *= mix(vec3(1.0), vec3(0.50, 0.33, 0.46), clamp(sh, 0.0, 1.0));
+}
+if (uRollSize.y > 0.0) {
+vec2 rq = p - uRoll.xy - uLightXZ.xy * uRollSize.y * 0.6;
+float along2 = dot(rq, uRoll.zw);
+float across = abs(dot(rq, vec2(-uRoll.w, uRoll.z)));
+float cap = max(abs(along2) - uRollSize.x, 0.0);
+float d = length(vec2(cap, max(across - uRollSize.y * 0.55, 0.0)));
+col *= mix(vec3(1.0), vec3(0.55, 0.40, 0.52), (1.0 - smoothstep(0.0, uRollSize.y * 1.1, d)) * 0.5);
+}
+vec2 e = min(vUv, 1.0 - vUv);
+float fade = 1.0 - smoothstep(0.0, 0.22, min(e.x * uRegionSize.x, e.y * uRegionSize.y) / max(uRegionSize.x, uRegionSize.y) * 2.0);
+col = mix(col, vec3(${FOG.map((v) => v.toFixed(3)).join(', ')}), fade);
+gl_FragColor = vec4(bakeDisplay(col), 1.0);
 }
 `;
 
@@ -289,9 +258,9 @@ uniform vec2 uRegionMin;
 uniform vec2 uRegionSize;
 varying vec2 vUv;
 void main() {
-  vec4 wp = modelMatrix * vec4(position, 1.0);
-  vUv = (wp.xz - uRegionMin) / uRegionSize;
-  gl_Position = projectionMatrix * viewMatrix * wp;
+vec4 wp = modelMatrix * vec4(position, 1.0);
+vUv = (wp.xz - uRegionMin) / uRegionSize;
+gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
 
@@ -301,7 +270,7 @@ uniform sampler2D uDesk;
 uniform float uDim;
 varying vec2 vUv;
 void main() {
-  gl_FragColor = vec4(texture2D(uDesk, vUv).rgb * uDim, 1.0);
+gl_FragColor = vec4(texture2D(uDesk, vUv).rgb * uDim, 1.0);
 }
 `;
 
@@ -487,8 +456,13 @@ export class Backdrop {
   _placeRoll(deskY, r) {
     const roll = this.roll;
     // A capsule: soft rounded ends, like a real rolled towel.
+    // A sphere with an odd number of rings, its halves pushed apart.
     roll.geometry.dispose();
-    roll.geometry = new THREE.CapsuleGeometry(r.radius, r.halfLength * 2 - r.radius * 2, 8, 28);
+    const g = new THREE.SphereGeometry(r.radius, 28, 15);
+    const pos = g.attributes.position;
+    const h = Math.max(0, r.halfLength - r.radius);
+    for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + Math.sign(pos.getY(i)) * h);
+    roll.geometry = g;
     roll.position.set(r.x, deskY + r.radius * 0.85, r.z);
     // cylinder axis (local y) along (dirX, 0, dirZ)
     roll.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(r.dirX, 0, r.dirZ));
@@ -512,8 +486,8 @@ export class Backdrop {
     this.deskUniforms.uRegionMin.value.set(minX, minZ);
     this.deskUniforms.uRegionSize.value.set(sizeX, sizeZ);
 
-    // Texel density: high 300/unit, else 200/unit, capped at 2048 x 1536.
-    const density = this.settings.tier === 'high' ? 300 : 200;
+    // Texel density: high 240/unit, else 190/unit, capped at 2048 x 1536.
+    const density = this.settings.tier === 'high' ? 240 : 190;
     const w = Math.min(2048, Math.round(sizeX * density / 64) * 64);
     const h = Math.min(1536, Math.round(sizeZ * density / 64) * 64);
     if (!this._deskTarget || this._deskTarget.width !== w || this._deskTarget.height !== h) {
@@ -582,6 +556,15 @@ export class Backdrop {
 
     this.desk.position.set(layout.centreX, layout.deskY, layout.centreZ);
     this.desk.updateMatrixWorld(true);
+  }
+
+  /** Re-render the baked textures (after a WebGL context loss). */
+  rebake() {
+    if (this._roomTarget) {
+      this._roomTarget.dispose();
+      this._roomTarget = null;
+      this._ensureRoomBaked();
+    }
   }
 
   get animated() {

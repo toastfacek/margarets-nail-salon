@@ -28,7 +28,6 @@ const DEFAULT_SETTINGS = Object.freeze({
 const HEMI_INTENSITY = 0.85;
 const KEY_INTENSITY = 1.2;
 const RIM_INTENSITY = 0.55;
-const ENV_INTENSITY = 0.5;
 const MEDIUM_BACKDROP_HZ = 20;
 
 export class NailScene {
@@ -134,6 +133,8 @@ export class NailScene {
             this.contextLost = false;
             // three.js rebuilds its GL state on restore; put our clear colour back.
             this.renderer.setClearColor(this.clearColor, 1);
+            // Baked render targets lost their pixels with the context: re-bake.
+            try { this._rebakeSalon(); } catch (err) { /* the salon stays plain; never crash */ }
             if (this.onContextRestored) this.onContextRestored();
             this.invalidate();
         });
@@ -188,10 +189,6 @@ export class NailScene {
         L.uHasEnv.value = this.environment.texture ? 1 : 0;
         L.uEnvScale.value = this.environment.envScale;
         L.uEnvMaxLod.value = Math.log2(s.envCubeRes || 128);
-        if (this.environment.pmrem) {
-            this.scene.environment = this.environment.pmrem.texture;
-            this.scene.environmentIntensity = ENV_INTENSITY;
-        }
 
         this.backdrop = new Backdrop(this.renderer, s);
         this.scene.add(this.backdrop.mesh);
@@ -200,6 +197,17 @@ export class NailScene {
         // Until a hand is attached, bake the desk where the hands are.
         this.backdrop.bakeDesk({ deskY: 0.76, centreX: -1.8, centreZ: 0.05, towelHalfX: 1.7, towelHalfZ: 1.0 }, null, RIG.keyDir);
         this.renderer.setRenderTarget(null);
+    }
+
+    _rebakeSalon() {
+        if (!this.environment) return;
+        this.environment.dispose();
+        this.environment = new SalonEnvironment(this.renderer, this.settings);
+        this.nailLighting.uEnvMap.value = this.environment.texture;
+        this.nailLighting.uHasEnv.value = this.environment.texture ? 1 : 0;
+        this.nailLighting.uEnvScale.value = this.environment.envScale;
+        this.backdrop.rebake();
+        this._bakeHand();
     }
 
     /**
@@ -395,7 +403,6 @@ export class NailScene {
         this.hemiLight.intensity = HEMI_INTENSITY * k;
         this.keyLight.intensity = KEY_INTENSITY * k;
         this._applyRim();
-        if (this.scene.environment) this.scene.environmentIntensity = ENV_INTENSITY * k;
         if (this.backdrop) this.backdrop.setDim(0.3 + 0.7 * d);
         this.invalidate();
     }
@@ -464,13 +471,7 @@ export class NailScene {
 
     render() {
         if (this.contextLost) return;
-        // The desk and the room dome cover every pixel once the salon exists
-        // (the camera never goes under the desk): skip the full-screen colour
-        // clear for the main pass only.
-        const r = this.renderer;
-        r.autoClearColor = !this.backdrop;
-        r.render(this.scene, this.camera);
-        r.autoClearColor = true;
+        this.renderer.render(this.scene, this.camera);
     }
 
     /**

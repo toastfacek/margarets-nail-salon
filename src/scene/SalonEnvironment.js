@@ -6,15 +6,16 @@
  *   - a gradient dome: warm cream top, rose middle, deep plum floor
  *   - a big overhead softbox
  *   - a tall warm window strip on one side, a pink neon bar on the other
- *   - the signature ring light (only in the PMREM copy: the nail shader draws
- *     the ring analytically, crisper than any cube texel could)
+ *   (the signature ring light is not in the cube: the nail shader draws it
+ *   analytically, crisper than any cube texel could)
  *
  * Outputs
  *   envCube  WebGLCubeRenderTarget (mipmapped). The nail shader samples it with
  *            textureLod(uEnvMap, R, lod): roughness -> lod. Not physically exact
  *            prefiltering, visually right for polish, one fetch.
- *   pmrem    (high / medium only) a PMREM of the same room with the ring, set
- *            as scene.environment so skin, gems and the brush cap see the room.
+ *   No PMREM is generated (it cost ~1 s of load on the software-GPU harness
+ *   and nothing in WP3 needs it: the skin has its own shader). A material
+ *   that wants the room can use `envCube.texture` as its envMap.
  *
  * Everything is rendered once; nothing here runs per frame.
  */
@@ -29,7 +30,6 @@ export const RIG = Object.freeze({
   rimDir: Object.freeze(new THREE.Vector3(0.55, 0.35, 1.0).normalize()),
   ringInner: 0.16,   // radians (angular radius of the ring's inner edge)
   ringOuter: 0.27,   // radians
-  ringIntensity: 7.0,
   // Room colours (linear, before intensity).
   domeTop: '#fff1e2',
   domeMid: '#f7bfcf',
@@ -98,7 +98,6 @@ export class SalonEnvironment {
   constructor(renderer, settings) {
     this.renderer = renderer;
     this.envCube = null;
-    this.pmrem = null;
     this.envScale = 1;
     this.dim = 1;
     this._build(settings);
@@ -129,7 +128,7 @@ export class SalonEnvironment {
     scene.add(win);
 
     // Pink neon bar, screen-bottom side (+z), reads on the near nail edge.
-    const neon = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.22, 0.22), emissive(RIG.neon, 3.5));
+    const neon = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 0.22), emissive(RIG.neon, 3.5));
     placeFacing(neon, new THREE.Vector3(-0.3, 0.32, 1.0), ENV_DISTANCE);
     scene.add(neon);
 
@@ -147,20 +146,7 @@ export class SalonEnvironment {
       scene.add(b);
     }
 
-    // The ring light (only rendered into the PMREM copy).
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(
-        Math.tan(RIG.ringInner) * ENV_DISTANCE,
-        Math.tan(RIG.ringOuter) * ENV_DISTANCE,
-        64, 1,
-      ),
-      emissive('#fff6ee', RIG.ringIntensity),
-    );
-    placeFacing(ring, RIG.keyDir, ENV_DISTANCE);
-    ring.visible = false;
-    scene.add(ring);
-
-    return { scene, ring };
+    return scene;
   }
 
   _build(settings) {
@@ -170,7 +156,7 @@ export class SalonEnvironment {
     const type = halfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType;
     this.envScale = halfFloat ? 1 : ENV_RANGE_LDR;
 
-    const { scene, ring } = this._buildScene();
+    const scene = this._buildScene();
 
     // LDR targets: scale the whole room down so it fits in 0..1.
     if (!halfFloat) {
@@ -211,33 +197,6 @@ export class SalonEnvironment {
     renderer.autoClear = prevAutoClear;
     this.envCube = cubeTarget;
 
-    // PMREM for the standard materials (high / medium).
-    if (settings.tier !== 'low') {
-      if (!halfFloat) {
-        // keep the PMREM in HDR even if the cube was LDR
-        scene.traverse((o) => {
-          if (!o.isMesh) return;
-          if (o.material.vertexColors) {
-            const col = o.geometry.attributes.color;
-            for (let i = 0; i < col.array.length; i++) col.array[i] *= ENV_RANGE_LDR;
-          } else {
-            o.material.color.multiplyScalar(ENV_RANGE_LDR);
-          }
-        });
-      }
-      ring.visible = true;
-      let gen = null;
-      try {
-        gen = new THREE.PMREMGenerator(renderer);
-        this.pmrem = gen.fromScene(scene, 0.04);
-        this.pmrem.texture.name = 'SalonPMREM';
-      } catch (err) {
-        this.pmrem = null;
-      }
-      if (gen) gen.dispose();
-      renderer.setRenderTarget(prevTarget);
-    }
-
     // The env scene is throwaway: free its geometry and materials.
     scene.traverse((o) => {
       if (!o.isMesh) return;
@@ -259,17 +218,11 @@ export class SalonEnvironment {
       const bpp = this.envCube.texture.type === THREE.HalfFloatType ? 8 : 4;
       b += Math.round(r * r * 6 * bpp * 4 / 3);
     }
-    if (this.pmrem) {
-      const t = this.pmrem;
-      b += t.width * t.height * 8;
-    }
     return b;
   }
 
   dispose() {
     if (this.envCube) this.envCube.dispose();
-    if (this.pmrem) this.pmrem.dispose();
     this.envCube = null;
-    this.pmrem = null;
   }
 }
