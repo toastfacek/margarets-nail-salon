@@ -40,7 +40,7 @@ const backOut = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2;
 export class RoundManager {
   /**
    * @param {object} app the NailArtistApp
-   * @param {object} ui { onArrive(req), onPaint(), onDone(stars), onLeave(), onAdvance(finger), celebrate(stars) -> Promise }
+   * @param {object} ui { onArrive(req), onPaint(), onDone(stars), onLeave(), onAdvance(finger) }
    */
   constructor(app, ui) {
     this.app = app;
@@ -185,8 +185,6 @@ export class RoundManager {
         ev.emit(EVENTS.REVEAL_REQUEST, { stars, hand: this.hand, fingers: req.fingers.slice() });
       });
       app.quality.release();
-    } else {
-      await this.ui.celebrate(stars);
     }
 
     // Poki: gameplayStop + commercialBreak hook (see header).
@@ -271,19 +269,9 @@ export class RoundManager {
     }
   }
 
-  /** Client skin tone (uniform only). Uses WP3's setSkinTone when present. */
+  /** Client skin tone (a shared uniform, WP3). */
   setSkin(hex) {
-    const hm = this.app.nail;
-    if (typeof hm.setSkinTone === 'function') {
-      hm.setSkinTone(hex);
-    } else {
-      for (const h of ['left', 'right']) {
-        for (const s of (hm.hands && hm.hands[h] && hm.hands[h].skins) || []) {
-          if (s.standard && s.standard.color) s.standard.color.set(hex);
-          if (s.lambert) s.lambert.color.set(hex);
-        }
-      }
-    }
+    this.app.nail.setSkinTone(hex);
     this.app.invalidate();
   }
 }

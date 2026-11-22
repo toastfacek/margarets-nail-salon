@@ -30,14 +30,7 @@ export class StarMeter {
     }
   }
 
-  /** Celebrate `n` won stars (fallback when no reveal is installed). */
-  win(n) {
-    this.stars.forEach((s, i) => s.classList.toggle('won', i < n));
-    this.el.classList.toggle('win', n > 0);
-  }
-
   reset() {
-    this.win(0);
     this.last = -1;
     this.set(0);
   }

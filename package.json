@@ -10,8 +10,7 @@
   },
   "dependencies": {
     "@fontsource-variable/fredoka": "^5.3.0",
-    "three": "^0.170.0",
-    "three-mesh-bvh": "^0.9.5"
+    "three": "^0.170.0"
   },
   "devDependencies": {
     "vite": "^6.0.0"

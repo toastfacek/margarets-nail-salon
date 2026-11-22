@@ -48,7 +48,6 @@ export class BrushInputHandler {
     this.domElement = domElement;
 
     this.raycaster = new THREE.Raycaster();
-    this.raycaster.firstHitOnly = true; // three-mesh-bvh: stop at the first hit
     this.mouse = new THREE.Vector2();
 
     this.isPointerDown = false;
@@ -216,7 +215,8 @@ export class BrushInputHandler {
     if (this.isTouch) {
       // Lift from the projected nail box, then make sure a finger that is on
       // the nail still paints the nail: the box top can sit above the real
-      // silhouette, so fall back to half the lift, then none (BVH rays, cheap).
+      // silhouette, so fall back to half the lift, then none (a few
+      // thousand triangles per nail: cheap).
       const span = this._span;
       const full = this.nailScreenSpan(nailMesh, span) ? touchLiftPx(this._clientY, span.top, span.bottom) : 0;
       let lift = full;
