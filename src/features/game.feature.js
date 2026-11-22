@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import '../../styles/game.css';
 import { EVENTS } from '../core/GameEvents.js';
 import { PALETTE } from '../game/ClientRequests.js';
-import { RoundManager } from '../game/RoundManager.js';
+import { RoundManager, DONE_AT } from '../game/RoundManager.js';
 import { GhostFinger } from '../ui/GhostFinger.js';
 import { RequestBubble } from '../ui/RequestBubble.js';
 import { StarMeter } from '../ui/StarMeter.js';
@@ -114,7 +114,7 @@ export function install(app) {
       sessionRound++;
     },
     onAdvance(finger) {
-      bubble.setPip(finger, rounds.coverage(finger) >= 0.9, true);
+      bubble.setPip(finger, rounds.coverage(finger) >= DONE_AT, true);
       ghost.hide();
     },
     celebrate(n) {
@@ -271,7 +271,7 @@ export function install(app) {
     if (!rounds.request || p.hand !== rounds.hand || !rounds.wants(p.finger)) return;
     if (rounds.state !== 'paint' && rounds.state !== 'arrive') return;
     stars.set(rounds.average());
-    bubble.setPip(p.finger, p.coverage >= 0.9, false);
+    bubble.setPip(p.finger, p.coverage >= DONE_AT, false);
     if (!rounds.ready && kidPainted && p.coverage >= 0.3 && rounds.state === 'paint') {
       rounds.ready = true;
       heart.classList.add('on');
@@ -285,7 +285,7 @@ export function install(app) {
     }
   });
 
-  ev.on('mode:change', ({ mode }) => {
+  ev.on(EVENTS.MODE_CHANGE, ({ mode }) => {
     ghost.hide();
     door.classList.toggle('on', mode === 'free');
     if (mode === 'round' && rounds.state === 'paint') {
@@ -322,6 +322,8 @@ export function install(app) {
     ev.emit(EVENTS.UI_DONE);
   });
   door.addEventListener('click', () => {
+    // only while painting: never during the celebration or a client change
+    if (rounds.state !== 'paint') return;
     sm.uiTap(2);
     app.setMode(app.mode === 'round' ? 'free' : 'round');
   });
@@ -370,8 +372,8 @@ export function install(app) {
       }
     }
 
-    // gentle idle sway (high/medium; never while painting or moving)
-    if (!perf && round && app.quality.tier !== 'low' && !down && !scene.isAnimating) {
+    // gentle idle sway (high only: medium renders on demand)
+    if (!perf && round && app.quality.tier === 'high' && !down && !scene.isAnimating) {
       swayT += dt;
       const a = SWAY * Math.sin(swayT * 0.45);
       const t = scene.controls.target;

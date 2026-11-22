@@ -340,10 +340,12 @@ body.revealing .g-ui * { pointer-events: none !important; }
 @keyframes g-holddot { 0%, 26% { opacity: 0; transform: scale(0.4); } 30% { opacity: 1; } 80% { opacity: 1; transform: scale(1.8); } 86%, 100% { opacity: 0; transform: scale(1.8); } }
 
 /* ------------------------------------------------------------- layouts -- */
+/* portrait: bubble top-left with the stars beside it; the tray wraps to two
+   rows at the bottom, the Done heart and the dryer stack above it */
 @media (orientation: portrait) {
-  .g-bubble { left: calc(50% - 62px); transform-origin: 50% 100%; }
-  .g-stars { top: auto; left: 50%; bottom: 100px; margin-left: -64px; }
   .g-tray { flex-wrap: wrap; justify-content: center; width: min(92vw, 300px); }
+  .g-done { bottom: 186px; }
+  body.mode-round .juice-dryer { bottom: 296px; }
 }
 @media (max-height: 420px) and (orientation: landscape) {
   .g-bubble { top: 8px; left: 8px; padding: 6px 8px 5px; }

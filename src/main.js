@@ -307,7 +307,7 @@ class NailArtistApp {
   /**
    * Round mode hides the sandbox chrome (styles/game.css) and scripts the
    * camera; free mode is the sandbox. The chrome stays in the DOM (the perf
-   * harness clicks [data-tool="polish"]). Emits 'mode:change' { mode }.
+   * harness clicks [data-tool="polish"]). Emits mode:change { mode }.
    * @param {'round'|'free'} mode
    */
   setMode(mode) {
@@ -317,7 +317,7 @@ class NailArtistApp {
     document.body.classList.toggle('mode-free', !round);
     this.scene.controls.enabled = !round && !this.scene.isCameraLockedState();
     if (round) this.selectTool('polish');
-    this.events.emit('mode:change', { mode: this.mode });
+    this.events.emit(EVENTS.MODE_CHANGE, { mode: this.mode });
     this.invalidate();
   }
 

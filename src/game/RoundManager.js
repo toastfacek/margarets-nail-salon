@@ -30,6 +30,8 @@ const FINGER_LIST = ['thumb', 'index', 'middle', 'ring', 'pinky'];
 const SLIDE_IN = 0.6;
 const SLIDE_OUT = 0.45;
 const ADVANCE_DELAY = 0.5;
+const IDLE_ADVANCE = 3;      // s still, nail at >= 0.5: move on anyway
+export const DONE_AT = 0.75; // a nail counts as painted (pip fills, advance)
 const REVEAL_TIMEOUT = 8000;
 const NPAL = PALETTE.length + 1; // palette colours + "other"
 
@@ -53,6 +55,7 @@ export class RoundManager {
     this.counts = new Float32Array(FINGER_LIST.length * NPAL);
     this._col = NPAL - 1;
     this._advanceT = -1;
+    this._idleT = 0;
     this.noAdvance = false; // ?perf=1
     this._slide = 0;       // seconds left in the slide, 0 = none
     this._slideDir = 0;    // 1 = in, -1 = out
@@ -70,8 +73,9 @@ export class RoundManager {
       const fi = FINGER_LIST.indexOf(app.nail.getActiveNail());
       if (fi >= 0) this.counts[fi * NPAL + this._col] += 1;
     });
-    ev.on(EVENTS.NAIL_COVERED, (p) => {
-      if (this.state === 'paint' && this.wants(p.finger) && p.finger === app.nail.getActiveNail()) this._advanceT = ADVANCE_DELAY;
+    // Coverage plateaus around 0.9 on curved nails, so 'painted' is 0.75.
+    ev.on(EVENTS.NAIL_COVERAGE, (p) => {
+      if (this.state === 'paint' && p.coverage >= DONE_AT && this.wants(p.finger) && p.finger === app.nail.getActiveNail()) this._advanceT = ADVANCE_DELAY;
     });
     ev.on(EVENTS.UI_DONE, () => {
       if (app.mode === 'round' && this.state === 'paint' && this.ready) this.done();
@@ -104,7 +108,7 @@ export class RoundManager {
     const k = f.indexOf(from);
     for (let i = 1; i <= f.length; i++) {
       const g = f[(k + i) % f.length];
-      if (this.coverage(g) < 0.9) return g;
+      if (this.coverage(g) < DONE_AT) return g;
     }
     return null;
   }
@@ -126,7 +130,9 @@ export class RoundManager {
     this._placeHand(0);
     if (this.index > 0) this.clearHand();
     this.setSkin(req.skinTone);
-    if (this.index === 0) app.polishBrush3D.setColor(req.color);
+    // the requested colour is pre-loaded for the first three clients (toddlers
+    // who never touch a bottle still get every star)
+    if (this.index < 3) app.polishBrush3D.setColor(req.color);
     app.selectNail(req.fingers[0]);
     app.polishBrush3D.setFinish(req.finish);
     app.zoomToFinger(req.fingers[0]);
@@ -217,12 +223,15 @@ export class RoundManager {
       }
       return true;
     }
-    if (this._advanceT >= 0 && !pointerDown && !this.noAdvance) {
-      this._advanceT -= dt;
-      if (this._advanceT < 0) {
-        const next = this.nextFinger(this.app.nail.getActiveNail());
-        if (next) this.goTo(next);
-      }
+    if (this.state !== 'paint' || this.noAdvance) return false;
+    const active = this.app.nail.getActiveNail();
+    this._idleT = pointerDown || this.coverage(active) < 0.5 ? 0 : this._idleT + dt;
+    if (!pointerDown && this._advanceT >= 0) this._advanceT -= dt;
+    if (this._advanceT < 0 && this._advanceT > -1 || this._idleT > IDLE_ADVANCE) {
+      this._advanceT = -1;
+      this._idleT = 0;
+      const next = this.nextFinger(active);
+      if (next && next !== active) this.goTo(next);
     }
     return false;
   }

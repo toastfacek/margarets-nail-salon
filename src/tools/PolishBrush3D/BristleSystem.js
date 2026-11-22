@@ -203,13 +203,17 @@ export class BristleSystem {
   }
 
   createBrushHandle() {
-    const handleGeometry = new THREE.CylinderGeometry(0.003, 0.004, 0.04, 12);
+    // A cute polish-bottle cap: tapered (narrow at the bristles), tray purple,
+    // slightly self-lit so it never reads as a black stick. One cheap mesh.
+    const handleGeometry = new THREE.CylinderGeometry(0.0035, 0.0065, 0.04, 16);
     handleGeometry.rotateX(Math.PI / 2);
     handleGeometry.translate(0, 0, -0.022);
     const handleMaterial = new THREE.MeshPhongMaterial({
-      color: 0x1a1a1a,
-      specular: 0x555555,
-      shininess: 90,
+      color: 0x5a2a82,
+      emissive: 0x5a2a82,
+      emissiveIntensity: 0.25,
+      specular: 0xffffff,
+      shininess: 80,
     });
     this.handle = new THREE.Mesh(handleGeometry, handleMaterial);
     this.handle.name = 'BrushHandle';
