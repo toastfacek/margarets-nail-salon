@@ -5,7 +5,8 @@
  * plays the 4.5 s show (src/reveal/RevealDirector.js), which ends with
  * `reveal:done`. Sounds come from WP5's wiring of reveal:start / reveal:flash
  * / reveal:done; the director adds one soft shimmer per nail glint.
- * The polaroid wall takes over `ui:gallery`.
+ * The polaroid wall takes over `ui:gallery`. In free mode the old Done
+ * button (a text celebration) plays the reveal instead, three stars.
  *
  * Exposes app.reveal (the director) and app.polaroids (the wall).
  */
@@ -30,6 +31,14 @@ export function install(app) {
 
   app.events.on(EVENTS.REVEAL_REQUEST, (p) => reveal.play(p));
   app.events.on(EVENTS.UI_GALLERY, () => wall.open());
+  // free mode's Done: the show for every painted nail (capture runs before main.js's listener)
+  document.getElementById('btn-done')?.addEventListener('click', (e) => {
+    if (app.mode !== 'free' || reveal.running) return;
+    e.stopImmediatePropagation();
+    const hand = app.nail.getCurrentHand();
+    const fingers = ['thumb', 'index', 'middle', 'ring', 'pinky'].filter((f) => app.polishBrush3D.getCoverage(hand, f) > 0.05);
+    reveal.play({ stars: 3, hand, fingers: fingers.length ? fingers : null });
+  }, true);
   // read the stored photos when the game is idle, not during load
   setTimeout(() => wall.load(), 1500);
 
