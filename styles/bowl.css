@@ -37,8 +37,7 @@ body.revealing .bowl-btn { display: none; }
 /* While the bowl is open everything else steps aside (kept in the DOM). */
 body.bowl-open #ui-overlay,
 body.bowl-open .g-ui,
-body.bowl-open .juice-dryer,
-body.bowl-open .floating-decorations {
+body.bowl-open .juice-dryer {
   visibility: hidden !important;
   pointer-events: none !important;
 }
