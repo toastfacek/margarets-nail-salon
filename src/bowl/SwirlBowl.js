@@ -13,13 +13,17 @@
  * - Drops use the exact ink-drop warp (BowlMaterial.js): successive drops
  *   nest as clean concentric rings: one warp pass per drop, the spread
  *   (a third of a second) eased open at display time.
- * - Swirls are velocity splats into a second FluidSimulator whose velocity
- *   decays like water (0.93 per 30 Hz step instead of polish's 0.74). It
- *   exists only while the bowl is open, steps at a fixed 30 Hz and stops
- *   1.6 s after a swirl; the brush sim is asleep (brush deactivated).
+ * - Swirls are velocity splats (speed capped, inner water only) into a
+ *   second FluidSimulator whose velocity decays like water (0.93 per 30 Hz
+ *   step instead of polish's 0.74). It exists only while the bowl is open,
+ *   steps at a fixed 30 Hz, and each drop buys 2 s of swirl (6 s at most),
+ *   with a re-crisp pass every 10 steps: the film stays bright and central.
+ *   The brush sim is asleep meanwhile (brush deactivated).
+ * - A CPU replica of the drop and hole warps aims each dip where film is,
+ *   and the dip button only wakes when there is enough of it.
  * - The print: white base coat through the brush's own fillNail (coverage,
- *   wetness, nail:covered), then the film blitted "over" it into the nail's
- *   baked paint target. The lifted film leaves a clear hole in the water.
+ *   wetness, nail:covered), then the film, re-crisped, composited "over" it
+ *   into the nail's baked paint target. The lifted film leaves a clear hole.
  * - Programs are compiled at idle (warm-up), never while open. Nothing
  *   allocates per frame. Pointer input is captured on window while open, so
  *   the canvas's own listeners (orbit, nail pick, double-click) stay out.
@@ -108,12 +112,12 @@ export function installBowl(app) {
   // Scratch (never reallocated)
   const v1 = new THREE.Vector3();
   const box = new THREE.Box3();
-  const uvT = new THREE.Vector4();
   const ndc = new THREE.Vector2();
   const ray = new THREE.Raycaster();
   const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const rgb = { r: 0, g: 0, b: 0 };
   const tmpCol = new THREE.Color();
+  const tgtB = new THREE.Vector3(); // where the bowl view looks
   const handBase = new THREE.Vector3();
   const dunkOff = new THREE.Vector3();
   const pivot = new THREE.Vector3();
@@ -122,8 +126,15 @@ export function installBowl(app) {
   const quat0 = new THREE.Quaternion();
   const q = new Float32Array(56); // 8 queued drops: r g b a u v area
   const cur = new Float32Array(7);
+  const fe = new Float32Array(128); // film model: 32 warps, newest last: u v area film
   const dropPayload = { color: COLORS[0] };
   const dunkPayload = { hand: 'left', finger: 'index' };
+  const X0 = wu.uX.value.clone(); // identity uv transform
+  const v4 = new THREE.Vector4();
+
+  // Prints and re-crisp passes composite premultiplied "over" when blending is on.
+  warp.blendSrc = warp.blendSrcAlpha = THREE.OneFactor;
+  warp.blendDst = warp.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
 
   let sim = null;
   let open = false;
@@ -133,8 +144,10 @@ export function installBowl(app) {
   let t = 0;
   let dunkT = -1;
   let printed = false;
-  let awake = 0;   // seconds of swirl left to simulate
+  let awake = 0;  // seconds of coast left after a swirl
+  let stir = 0;   // seconds of swirl the film can still take (drops refill it)
   let acc = 0;
+  let steps = 0;
   let dragging = false;
   let u = 0.5;
   let v = 0.5;
@@ -144,12 +157,10 @@ export function installBowl(app) {
   let hasMove = false;
   let dipU = 0.5;
   let dipV = 0.5;
-  let sumU = 0;
-  let sumV = 0;
-  let sumN = 0;
-  let dunks = 0;
-  let sx = 0.2;
-  let sy = 0.2;
+  let ready = false;
+  let feN = 0;
+  let sx = 0.4;
+  let sy = 0.3;
   let rect = null;
   let brushWas = false;
   let ctrlWas = true;
@@ -161,30 +172,33 @@ export function installBowl(app) {
     m.flowScale = 0.5;
     // Water, not polish: this instance's velocity decay (step() writes it to
     // the advect uniform; dye passes write 1) is remapped from 0.74 to 0.93
-    // per 30 Hz step, so a swirl coasts on for a second or so.
+    // per 30 Hz step, so a swirl coasts on for a moment.
     let d = 1;
     Object.defineProperty(m.materials.advect.uniforms.uDissipation, 'value', { get: () => d, set: (x) => { d = x < 1 ? x ** 0.24 : x; } });
-    // The print composites the film "over" the nail's base coat.
-    const c = m.materials.copy;
-    c.blendSrc = c.blendSrcAlpha = THREE.OneFactor;
-    c.blendDst = c.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
     return m;
   }
 
-  function warpPass(cu, cv, area, r, g, b, a) {
+  /**
+   * One warp-shader pass: a drop (area > 0, colour rgba), a re-crisp of the
+   * film (sharpen), or with `target` and `xf` a print onto a nail ("over").
+   */
+  function pass(cu, cv, area, r, g, b, a, sharpen, target, xf) {
     wu.uS.value = sim.dye.read.texture;
     wu.uC.value.set(cu, cv);
     wu.uA.value = area;
     wu.uK.value.set(r * a, g * a, b * a, a);
     wu.uT.value = 1 / sim.opts.dyeRes;
-    sim.renderPass(warp, sim.dye.write);
-    sim.dye.swap();
+    wu.uH.value = sharpen;
+    wu.uX.value.copy(xf || X0);
+    warp.blending = target ? THREE.CustomBlending : THREE.NormalBlending;
+    sim.renderPass(warp, target || sim.dye.write);
+    if (!target) sim.dye.swap();
     wu.uS.value = null;
   }
 
   const ripple = (ru, rv, amp) => wat.uR.value.set(ru, rv, 0.01, amp);
 
-  /** Queue a drop: sRGB colour (a = 0: clear water), water uv, spread area (uv^2). */
+  /** Queue a drop: sRGB colour (a = 0: clear water), water uv, spread area (r^2, uv). */
   function addDrop(r, g, b, a, du, dv, area) {
     if (!open || qCount >= 8) return;
     const i = ((qHead + qCount++) % 8) * 7;
@@ -194,11 +208,72 @@ export function installBowl(app) {
   const dropAt = (du, dv) => {
     tmpCol.set(dropPayload.color).getRGB(rgb, THREE.SRGBColorSpace);
     addDrop(rgb.r, rgb.g, rgb.b, 1, du, dv, 0.016);
-    // The film's centre is where the drops landed: the nail dips there.
-    sumU += du;
-    sumV += dv;
-    sumN++;
   };
+
+  // ---------------------------------------------------------- film model --
+  // A CPU replica of every drop and hole warp (swirls aside), so the dip can
+  // aim where film really is and the dip button only wakes when there is some.
+  function filmAt(pu, pv) {
+    for (let i = feN * 4 - 4; i >= 0; i -= 4) {
+      const dx = pu - fe[i];
+      const dy = pv - fe[i + 1];
+      const r2 = dx * dx + dy * dy;
+      if (r2 < fe[i + 2]) return fe[i + 3];
+      const k = Math.sqrt((r2 - fe[i + 2]) / r2);
+      pu = fe[i] + dx * k;
+      pv = fe[i + 1] + dy * k;
+    }
+    return 0;
+  }
+
+  /** Film fraction under the nail's footprint centred at (cu, cv). */
+  function cover(cu, cv) {
+    let n = 0;
+    let f = 0;
+    for (let i = -2; i <= 2; i++) {
+      for (let j = -2; j <= 2; j++) {
+        if (i * i + j * j > 5) continue;
+        n++;
+        f += filmAt(cu + i * sx * 0.2, cv + j * sy * 0.2);
+      }
+    }
+    return f / n;
+  }
+
+  // The active nail's footprint in the water (uv), measured at rest.
+  function measureFoot() {
+    const hand = hm.getCurrentHand();
+    const finger = hm.getActiveNail();
+    const geo = hm.getNail(hand, finger).mesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    box.copy(geo.boundingBox).applyMatrix4(hm.getNail(hand, finger).mesh.matrixWorld);
+    const a = hm.getUVAspect(hand, finger);
+    const k = (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) * ZOOM) / (2 * WR);
+    sx = a >= 1 ? k : k * a;
+    sy = a >= 1 ? k / a : k;
+  }
+
+  // Best dip: most film under the footprint, nearer the centre wins ties.
+  function aim() {
+    measureFoot();
+    let best = -1;
+    let bestCov = 0;
+    for (let r = 0; r <= 0.25; r += 0.025) {
+      for (let k = 0; k < (r ? 12 : 1); k++) {
+        const cu = 0.5 + r * Math.cos(k * 0.5236);
+        const cv = 0.5 + r * Math.sin(k * 0.5236);
+        const c = cover(cu, cv);
+        if (c - r > best) {
+          best = c - r;
+          bestCov = c;
+          dipU = cu;
+          dipV = cv;
+        }
+      }
+    }
+    ready = bestCov > 0.3;
+    dunkBtn.classList.toggle('ready', ready);
+  }
 
   // Bowl on the desk just past the active fingertip (hand centre -> nail).
   function place() {
@@ -212,18 +287,33 @@ export function installBowl(app) {
     v1.sub(nail).setY(0).setLength(-(RIM + 0.05));
     C.set(nail.x + v1.x, minY - 0.1, nail.z + v1.z);
     plane.constant = -(C.y + WY);
-    // Fly with NailScene's own camera animation (ease-out; the controls follow).
-    const cam = S.camera;
-    const tgt = S.targetTarget.copy(nail).sub(C).multiplyScalar(0.22).add(C);
-    tgt.y = C.y + WY;
-    const dist = (RIM * 1.3) / (Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)) * Math.min(1, cam.aspect));
-    S.targetCameraPos.copy(VIEW).multiplyScalar(dist).add(tgt);
-    S.startCameraPos.copy(cam.position);
-    S.startTarget.copy(S.controls.target);
-    S.controls.maxDistance = 9;
-    S.animationProgress = 0;
-    S.isAnimating = true;
+    tgtB.copy(nail).sub(C).multiplyScalar(0.22).add(C);
+    tgtB.y = C.y + WY;
+    frame(true);
   }
+
+  // Fit the bowl to the screen (again on resize / rotate). Flies with
+  // NailScene's own camera animation (ease-out; the controls follow).
+  function frame(fly) {
+    const cam = S.camera;
+    const aspect = cam.aspect;
+    const dist = (RIM * (aspect < 1 ? 1.5 : 1.3)) / (Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)) * Math.min(1, aspect));
+    S.targetCameraPos.copy(VIEW).multiplyScalar(dist).add(tgtB);
+    S.targetTarget.copy(tgtB);
+    if (fly) {
+      S.startCameraPos.copy(cam.position);
+      S.startTarget.copy(S.controls.target);
+      S.controls.maxDistance = 9;
+      S.animationProgress = 0;
+      S.isAnimating = true;
+    } else if (!S.isAnimating) {
+      cam.position.copy(S.targetCameraPos);
+      S.controls.target.copy(tgtB);
+      cam.lookAt(tgtB);
+      app.invalidate();
+    }
+  }
+  const onResize = () => frame(false);
 
   // The dunk: white base coat, then the film under the nail's footprint.
   function print() {
@@ -231,13 +321,11 @@ export function installBowl(app) {
     const finger = hm.getActiveNail();
     brush.fillNail('#ffffff');
     const target = hm.getPaintTarget(hand, finger, true);
-    const copy = sim.materials.copy;
-    copy.blending = THREE.CustomBlending;
-    sim.blit(sim.getTexture(), target, uvT.set(sx, sy, dipU - sx / 2, dipV - sy / 2));
-    copy.blending = THREE.NoBlending;
+    // Re-crisped on the way (sharpened edges, unmixed colour stays full strength).
+    pass(0, 0, 0, 0, 0, 0, 0, 1, target, v4.set(sx, sy, dipU - sx / 2, dipV - sy / 2));
     hm.setPaintTexture(hand, finger, target.texture);
     // The nail lifts the film away: clear water closes in and pushes the rest aside.
-    addDrop(0, 0, 0, 0, dipU, dipV, (0.45 * Math.max(sx, sy)) ** 2);
+    addDrop(0, 0, 0, 0, dipU, dipV, sx * sy * 0.25);
     ripple(dipU, dipV, 0.7);
     lastDunk = dunkPayload.finger = finger;
     dunkPayload.hand = hand;
@@ -268,15 +356,23 @@ export function installBowl(app) {
         phase = 2;
         ripple(cur[4], cur[5], 0.5);
         sm.plip(0.9);
-        dunkBtn.classList.add('ready');
+        stir = Math.min(6, stir + 2);
         ev.emit(EVENTS.BOWL_DROP, dropPayload);
       }
       changed = true;
     }
     // Spread: the whole warp in one pass; the water shader eases it open.
     if (phase === 2) {
-      warpPass(cur[4], cur[5], cur[6], cur[0], cur[1], cur[2], cur[3]);
+      pass(cur[4], cur[5], cur[6], cur[0], cur[1], cur[2], cur[3], 0);
       wat.uP.value.set(cur[4], cur[5], cur[6]);
+      if (feN === 32) fe.copyWithin(0, 4);
+      else feN++;
+      const i = feN * 4 - 4;
+      fe[i + 3] = cur[3] > 0 ? 1 : 0;
+      fe[i] = cur[4];
+      fe[i + 1] = cur[5];
+      fe[i + 2] = cur[6];
+      if (dunkT < 0) aim();
       phase = 3;
       t = 0;
     }
@@ -288,22 +384,33 @@ export function installBowl(app) {
       changed = true;
     }
 
-    // Toothpick: velocity only, one segment per frame.
-    if (dragging && hasMove && dt > 0) {
+    // Toothpick: velocity only, one segment per frame, speed capped, and only
+    // while the film can take it (each drop buys 2 s of swirl, at most 6 s):
+    // every sim step resamples the film, and too many turn it to pastel.
+    if (dragging && hasMove && dt > 0 && stir > 0) {
       hasMove = false;
-      sim.splatVelocity(lu, lv, u, v, 0.02, (u - lu) / dt, (v - lv) / dt, 1);
+      let du = (u - lu) / dt;
+      let dv = (v - lv) / dt;
+      const sp = Math.hypot(du, dv);
+      if (sp > 1) {
+        du /= sp;
+        dv /= sp;
+      }
+      if ((u - 0.5) ** 2 + (v - 0.5) ** 2 < 0.16) sim.splatVelocity(lu, lv, u, v, 0.02, du, dv, 1);
       lu = u;
       lv = v;
-      awake = 1.6;
+      awake = 1.2;
     }
-    // Fixed 30 Hz steps: every step resamples (blurs) the film, so a fast
-    // screen must not blur it twice as fast. Stops 1.6 s after the last swirl.
+    // Fixed 30 Hz steps (a fast screen must not blur the film twice as fast);
+    // every 10 steps, and when the swirl settles, a re-crisp pass.
     sim.tick();
-    if (awake > 0) {
+    if (awake > 0 && stir > 0) {
       awake -= dt;
       if ((acc += dt) >= 1 / 30) {
         sim.step(acc);
+        stir -= acc;
         acc = 0;
+        if (++steps % 10 === 0 || awake <= 0 || stir <= 0) pass(0.5, 0.5, 0, 0, 0, 0, 0, 1);
       }
       changed = true;
     }
@@ -342,6 +449,7 @@ export function installBowl(app) {
         // dunk, dunk, dunk: each dip moves on to the next finger.
         const next = FINGERS[(FINGERS.indexOf(hm.getActiveNail()) + 1) % 5];
         if (hm.getNail(hm.getCurrentHand(), next)) toFinger(next);
+        aim();
       }
       changed = true;
     }
@@ -392,25 +500,26 @@ export function installBowl(app) {
     ['pointercancel', up],
     ['click', mine],
     ['dblclick', mine],
+    ['wheel', mine],
   ];
 
   // ---------------------------------------------------------------- UI --
-  const btn = (cls, html, parent, title, onClick) => {
+  const btn = (cls, html, parent, label, onClick) => {
     const b = parent.appendChild(document.createElement('button'));
     b.type = 'button';
     b.className = cls;
     b.innerHTML = html;
-    if (title) b.title = title;
+    b.setAttribute('aria-label', label);
     if (onClick) b.addEventListener('click', onClick);
     return b;
   };
-  const svg = (s) => `<svg viewBox="0 0 64 64">${s}</svg>`;
+  const svg = (s) => `<svg viewBox="0 0 64 64" aria-hidden="true">${s}</svg>`;
   const ui = body.appendChild(document.createElement('div'));
   ui.className = 'bowl-ui';
   const row = ui.appendChild(document.createElement('div'));
   row.className = 'bowl-row';
   const bottles = COLORS.map((c, i) => {
-    const b = btn('bowl-bottle', '<i></i>', row, 0, () => {
+    const b = btn('bowl-bottle', '<i></i>', row, c, () => {
       pick(i);
       dropAt(0.5, 0.5);
     });
@@ -426,7 +535,6 @@ export function installBowl(app) {
     app.selectNail(f);
     app.updateFingerSelectorUI?.();
   };
-
   const setScale = (pr) => {
     if (S.renderer.getPixelRatio() === pr) return;
     S.renderer.setPixelRatio(pr);
@@ -434,7 +542,7 @@ export function installBowl(app) {
   };
 
   function openBowl() {
-    if (open || body.classList.contains('revealing')) return;
+    if (open || app.mode !== 'free' || body.classList.contains('revealing')) return;
     brushWas = brush.isActive;
     brush.deactivate();
     ctrlWas = S.controls.enabled;
@@ -447,20 +555,23 @@ export function installBowl(app) {
     if (low) setScale(s.pixelRatio * 0.85);
     sim = makeSim(low ? 96 : 128, low ? 320 : 384, Math.max(4, s.pressureIterations));
     wat.uE.value = low ? 0 : sim.opts.dyeRes;
-    sumU = sumV = sumN = dunks = awake = 0;
+    feN = stir = awake = 0;
     lastDunk = null;
     place();
     group.visible = open = true;
-    dunkBtn.classList.remove('ready', 'busy');
+    aim();
+    dunkBtn.classList.remove('busy');
     body.classList.add('bowl-open');
     for (const [n, f] of LISTENERS) window.addEventListener(n, f, true);
+    window.addEventListener('resize', onResize);
     app.loop.add(update, 6);
     sm.bottlePop();
     ev.emit(EVENTS.BOWL_OPEN);
     app.invalidate();
   }
 
-  function close() {
+  /** Close; `quiet` (a reveal is starting) leaves the camera to it: no flight, no sound. */
+  function close(quiet) {
     if (!open) return;
     if (dunkT >= 0) {
       hm.group.position.copy(handBase);
@@ -472,53 +583,45 @@ export function installBowl(app) {
     wat.uR.value.w = wat.uP.value.z = qCount = phase = 0;
     group.visible = drop.visible = open = dragging = false;
     for (const [n, f] of LISTENERS) window.removeEventListener(n, f, true);
+    window.removeEventListener('resize', onResize);
     app.loop.remove(update);
     body.classList.remove('bowl-open');
     S.holdCamera(false);
     S.controls.enabled = ctrlWas;
     setScale(app.quality.settings.pixelRatio);
     if (lastDunk && lastDunk !== hm.getActiveNail()) toFinger(lastDunk);
-    app.zoomToFinger(hm.getActiveNail());
+    if (quiet !== true) {
+      app.zoomToFinger(hm.getActiveNail());
+      sm.swish(0.5);
+    }
     if (brushWas) brush.activate();
-    sm.swish(0.5);
     ev.emit(EVENTS.BOWL_CLOSE);
     app.invalidate();
   }
 
-  btn('bowl-btn', svg(ICON.bowl), body, 'Marble bowl', openBowl);
-  btn('bowl-back', svg(ICON.back), ui, 'Back', close);
-  const dunkBtn = btn('bowl-dunk', svg(ICON.dunk), ui, 'Dip', () => {
-    if (!open || dunkT >= 0) return;
-    // Dip at the film's centre, turned a golden angle per dunk: each nail gets its own crop.
-    const n = Math.max(sumN, 1);
-    dipU = (sumN ? sumU / n : 0.5) + 0.06 * Math.cos(dunks * 2.4);
-    dipV = (sumN ? sumV / n : 0.5) + 0.06 * Math.sin(dunks++ * 2.4);
-    const finger = hm.getActiveNail();
-    const rec = hm.getNail(hm.getCurrentHand(), finger);
-    // Footprint in the water (measured at rest, before the hand pitches).
-    const geo = rec.mesh.geometry;
-    if (!geo.boundingBox) geo.computeBoundingBox();
-    box.copy(geo.boundingBox).applyMatrix4(rec.mesh.matrixWorld);
-    const a = hm.getUVAspect(hm.getCurrentHand(), finger);
-    const k = (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) * ZOOM) / (2 * WR);
-    sx = a >= 1 ? k : k * a;
-    sy = a >= 1 ? k / a : k;
-    const nail = hm.getNailWorldPosition(finger, pivot);
+  btn('bowl-btn', svg(ICON.bowl), body, 'marble bowl', openBowl);
+  btn('bowl-back', svg(ICON.back), ui, 'back', close);
+  const dunkBtn = btn('bowl-dunk', svg(ICON.dunk), ui, 'dip', () => {
+    if (!open || dunkT >= 0 || !ready) return;
+    const nail = hm.getNailWorldPosition(hm.getActiveNail(), pivot);
     dunkOff.set(C.x + (dipU - 0.5) * 2 * WR - nail.x, C.y + WY - nail.y - 0.004, C.z - (dipV - 0.5) * 2 * WR - nail.z);
     // Pitch axis: up x (horizontal dip direction), so the fingertip goes down.
     axis.set(dunkOff.z, 0, -dunkOff.x).normalize();
     handBase.copy(hm.group.position);
     quat0.copy(hm.group.quaternion);
     dunkT = 0;
-    printed = false;
+    printed = ready = false;
+    dunkBtn.classList.remove('ready');
     dunkBtn.classList.add('busy');
     app.quality.hold(1500);
     sm.swish(0.7);
   });
 
   ev.on(EVENTS.MODE_CHANGE, (p) => p.mode !== 'free' && close());
-  ev.on(EVENTS.REVEAL_START, close);
-  canvas.addEventListener('webglcontextlost', close);
+  // Subscribed before the reveal (feature order 72 < 75): it snapshots the
+  // camera, controls and brush after the bowl has put them back.
+  ev.on(EVENTS.REVEAL_REQUEST, () => close(true));
+  canvas.addEventListener('webglcontextlost', () => close(true));
 
   // Compile the bowl program (to screen) and the warp (to a target) at idle.
   whenIdle(() => {
@@ -526,7 +629,7 @@ export function installBowl(app) {
     warmRender(S.renderer, group, S.camera);
     drop.visible = group.visible = false;
     sim = makeSim(4, 4, 1);
-    warpPass(0.5, 0.5, 0, 0, 0, 0, 0);
+    pass(0.5, 0.5, 0, 0, 0, 0, 0, 1);
     sim.dispose();
     sim = null;
   }, 2500);

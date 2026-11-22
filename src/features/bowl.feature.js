@@ -6,4 +6,5 @@
 import '../../styles/bowl.css';
 
 export { installBowl as install } from '../bowl/SwirlBowl.js';
-export const order = 80;
+// Before the reveal (75), so the bowl hands the camera back before it snapshots.
+export const order = 72;

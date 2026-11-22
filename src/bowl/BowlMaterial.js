@@ -41,9 +41,12 @@ c=mix(c,vec3(1.),ring(R,b)*.55);
 if(uK==1)c=(c+vec3(.2,.19,.18)*smoothstep(.8,.92,r)*(1.-smoothstep(.92,1.,r)))*(1.-smoothstep(.93,1.,r)*.3);
 gl_FragColor=vec4(c,1.);}`;
 
-const WARP = `precision highp float;uniform sampler2D uS;uniform vec2 uC;uniform float uA;uniform vec4 uK;uniform float uT;varying vec2 vUv;
-void main(){vec2 d=vUv-uC;float r2=dot(d,d);vec4 s=texture2D(uS,uC+d*sqrt(max(r2-uA,0.)/max(r2,1e-9)));
-gl_FragColor=mix(uK,s,smoothstep(sqrt(uA)-uT*1.5,sqrt(uA)+uT*.5,sqrt(r2)));}`;
+// uX: uv transform of the lookup (a print crops the nail's footprint);
+// uH: re-crisp (sharpen the film's alpha edges, colour back to full strength).
+const WARP = `precision highp float;uniform sampler2D uS;uniform vec2 uC;uniform float uA;uniform vec4 uK;uniform float uT;uniform vec4 uX;uniform float uH;varying vec2 vUv;
+void main(){vec2 d=vUv*uX.xy+uX.zw-uC;float r2=dot(d,d);vec4 s=texture2D(uS,uC+d*sqrt(max(r2-uA,0.)/max(r2,1e-9)));
+if(uH>0.){float a=smoothstep(.1,.45,s.a);s=vec4(s.rgb/max(s.a,.02)*a,a);}
+gl_FragColor=uA>0.?mix(uK,s,smoothstep(sqrt(uA)-uT*1.5,sqrt(uA)+uT*.5,sqrt(r2))):s;}`;
 
 /**
  * @param {0|1|2} kind ceramic, water, drop
@@ -70,7 +73,8 @@ export function makeBowlMaterial(kind, L) {
   });
 }
 
-// Warp uniforms: uS source, uC centre, uA area, uK drop colour (premultiplied), uT texel.
+// Warp uniforms: uS source, uC centre, uA area, uK drop colour (premultiplied), uT texel,
+// uX lookup uv transform, uH re-crisp.
 export function makeWarpMaterial() {
   return new THREE.ShaderMaterial({
     vertexShader: 'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.,1.);}',
@@ -84,6 +88,8 @@ export function makeWarpMaterial() {
       uA: { value: 0 },
       uK: { value: new THREE.Vector4() },
       uT: { value: 0 },
+      uX: { value: new THREE.Vector4(1, 1, 0, 0) },
+      uH: { value: 0 },
     },
   });
 }
