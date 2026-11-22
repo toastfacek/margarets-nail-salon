@@ -12,14 +12,31 @@ import * as THREE from 'three';
 
 const _scissor = new THREE.Vector4();
 
-/** Run `fn` once the page is idle, no sooner than `delayMs` from now. */
+let readyCheck = () => true;
+
+/**
+ * Gate every deferred warm-up on the app being ready (salon.feature.js sets
+ * this to `() => app.__ready`), so none of it ever lands in the load.
+ */
+export function setReadyCheck(fn) {
+  readyCheck = fn;
+}
+
+/** Run `fn` once the app is ready and the page idle, `delayMs` after ready at the earliest. */
 export function whenIdle(fn, delayMs = 0) {
   const run = () => {
     if (typeof requestIdleCallback === 'function') requestIdleCallback(() => fn(), { timeout: 1000 });
     else setTimeout(fn, 0);
   };
-  if (delayMs > 0) setTimeout(run, delayMs);
-  else run();
+  const wait = () => {
+    if (!readyCheck()) {
+      setTimeout(wait, 250);
+      return;
+    }
+    if (delayMs > 0) setTimeout(run, delayMs);
+    else run();
+  };
+  wait();
 }
 
 /** Draw the scene into one pixel of the default framebuffer. */

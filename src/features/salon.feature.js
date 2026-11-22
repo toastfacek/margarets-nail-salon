@@ -4,11 +4,15 @@
  * and pre-compiles the scene-level variants of the next tier down.
  * The salon itself (environment, lights, backdrop, desk) lives in NailScene.
  */
+import { setReadyCheck } from '../scene/Warmup.js';
+
 export const order = 10;
 
 export function install(app) {
   const scene = app.scene;
   if (!scene || !app.nail) return;
+  // Deferred shader warm-ups start only once the app is ready.
+  setReadyCheck(() => app.__ready === true);
   scene.attachHand(app.nail);
   scene.precompileVariants();
   app.invalidate();
