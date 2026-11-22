@@ -210,19 +210,39 @@ export class BrushInputHandler {
     const out = this.result;
     const cam = this.camera;
     out.isTouch = this.isTouch;
+    const hits = this._hits;
+    hits.length = 0;
+    let cast = false; // already raycast at the final pointer position
     if (this.isTouch) {
+      // Lift from the projected nail box, then make sure a finger that is on
+      // the nail still paints the nail: the box top can sit above the real
+      // silhouette, so fall back to half the lift, then none (BVH rays, cheap).
       const span = this._span;
-      this.touchLift = this.nailScreenSpan(nailMesh, span) ? touchLiftPx(this._clientY, span.top, span.bottom) : 0;
-      this._setMouse(this._clientX, this._clientY - this.touchLift);
+      const full = this.nailScreenSpan(nailMesh, span) ? touchLiftPx(this._clientY, span.top, span.bottom) : 0;
+      let lift = full;
+      for (let k = 0; k < 3; k++) {
+        lift = k === 0 ? full : k === 1 ? full * 0.5 : 0;
+        this._setMouse(this._clientX, this._clientY - lift);
+        this.raycaster.setFromCamera(this.mouse, cam);
+        if (!nailMesh || !this.hasPointer || full <= 0) break;
+        this.raycaster.intersectObject(nailMesh, false, hits);
+        cast = true;
+        if (hits.length > 0) break;
+        if (k === 2) {
+          // finger off the nail: keep the full lift for the hovering brush
+          lift = full;
+          this._setMouse(this._clientX, this._clientY - lift);
+          this.raycaster.setFromCamera(this.mouse, cam);
+        }
+      }
+      this.touchLift = lift;
     } else {
       this.touchLift = 0;
+      this.raycaster.setFromCamera(this.mouse, cam);
     }
-    this.raycaster.setFromCamera(this.mouse, cam);
 
     if (nailMesh && this.hasPointer) {
-      const hits = this._hits;
-      hits.length = 0;
-      this.raycaster.intersectObject(nailMesh, false, hits);
+      if (!cast) this.raycaster.intersectObject(nailMesh, false, hits);
       if (hits.length > 0) {
         const hit = hits[0];
         const height = this.isPointerDown
