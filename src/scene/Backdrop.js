@@ -196,7 +196,7 @@ return mix(mix(h21(i), h21(i + vec2(1, 0)), u.x), mix(h21(i + vec2(0, 1)), h21(i
 }
 float fbm(vec2 p) {
 float s = 0.0, a = 0.5;
-for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
+for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
 return s;
 }
 void main() {
@@ -204,23 +204,27 @@ vec2 p = uRegionMin + vUv * uRegionSize;
 vec2 tq = abs(p - uTowelRect.xy) - uTowelRect.zw;
 float towelSd = max(tq.x, tq.y) - 0.04 * (vnoise(p * 3.0) - 0.5);
 float onTowel = 1.0 - smoothstep(-0.01, 0.01, towelSd);
+vec3 towel = vec3(0.0);
+vec3 marble = vec3(0.0);
+if (towelSd < 0.02) {
 float loops = vnoise(p * 34.0) * 0.6 + vnoise(p * 71.0 + 3.0) * 0.4;
-float weave = 0.5 + 0.5 * sin(p.x * 120.0 + vnoise(p * 9.0) * 3.0) * sin(p.y * 120.0 + vnoise(p * 7.0 + 5.0) * 3.0);
-float folds = fbm(p * 0.9 + 4.0);
-vec3 towel = uTowelColor * (0.86 + 0.16 * loops + 0.04 * weave) * (0.9 + 0.2 * folds);
-float along = (p.x - uTowelRect.x) / uTowelRect.z;
-float a = abs(along);
+float weave = 0.5 + 0.5 * sin(p.x * 120.0 + loops * 2.0) * sin(p.y * 120.0 + loops * 3.0);
+float folds = vnoise(p * 0.9 + 4.0) * 0.65 + vnoise(p * 2.1 + 9.0) * 0.35;
+towel = uTowelColor * (0.86 + 0.16 * loops + 0.04 * weave) * (0.9 + 0.2 * folds);
+float a = abs((p.x - uTowelRect.x) / uTowelRect.z);
 float stripe = smoothstep(0.72, 0.735, a) * (1.0 - smoothstep(0.80, 0.815, a))
 + smoothstep(0.85, 0.86, a) * (1.0 - smoothstep(0.875, 0.885, a));
 vec3 satin = mix(uTowelColor, vec3(1.0, 0.97, 0.94), 0.55) * (1.02 + 0.06 * sin(p.y * 260.0));
 towel = mix(towel, satin, stripe * 0.85);
 towel *= 1.0 - 0.22 * smoothstep(-0.10, 0.0, towelSd);
+}
+if (towelSd > -0.02) {
 float t = fbm(p * 0.7);
-float vein = abs(sin((p.x * 0.8 + p.y * 0.5) * 3.0 + t * 7.0));
-float v1 = pow(1.0 - vein, 12.0);
-float v2 = pow(1.0 - abs(sin((p.x * 0.3 - p.y * 1.1) * 5.0 + fbm(p * 1.7 + 9.0) * 6.0)), 30.0);
-vec3 marble = vec3(0.86, 0.80, 0.79) * (0.95 + 0.06 * t) - vec3(0.10, 0.20, 0.16) * v1 - vec3(0.05, 0.10, 0.08) * v2;
+float v1 = pow(1.0 - abs(sin((p.x * 0.8 + p.y * 0.5) * 3.0 + t * 7.0)), 12.0);
+float v2 = pow(1.0 - abs(sin((p.x * 0.3 - p.y * 1.1) * 5.0 + vnoise(p * 1.7 + 9.0) * 4.0 + t * 3.0)), 30.0);
+marble = vec3(0.86, 0.80, 0.79) * (0.95 + 0.06 * t) - vec3(0.10, 0.20, 0.16) * v1 - vec3(0.05, 0.10, 0.08) * v2;
 marble *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.22, towelSd));
+}
 vec3 col = mix(marble, towel, onTowel);
 float r = length(p - uCentre);
 col *= 0.70 + 0.42 * exp(-r * r * 0.30);
@@ -432,6 +436,7 @@ export class Backdrop {
     desk.name = 'Desk';
     desk.rotation.x = -Math.PI / 2;
     desk.renderOrder = 500; // after the hand: pixels under the hand fail the depth test
+    desk.visible = false;   // until the first bake
     this.desk = desk;
     this._deskTarget = null;
     this._deskBakeMaterial = null;
@@ -486,8 +491,8 @@ export class Backdrop {
     this.deskUniforms.uRegionMin.value.set(minX, minZ);
     this.deskUniforms.uRegionSize.value.set(sizeX, sizeZ);
 
-    // Texel density: high 240/unit, else 190/unit, capped at 2048 x 1536.
-    const density = this.settings.tier === 'high' ? 240 : 190;
+    // Texel density per world unit (the desk is out of focus anyway), capped.
+    const density = this.settings.tier === 'high' ? 240 : this.settings.tier === 'medium' ? 190 : 150;
     const w = Math.min(2048, Math.round(sizeX * density / 64) * 64);
     const h = Math.min(1536, Math.round(sizeZ * density / 64) * 64);
     if (!this._deskTarget || this._deskTarget.width !== w || this._deskTarget.height !== h) {
@@ -556,6 +561,7 @@ export class Backdrop {
 
     this.desk.position.set(layout.centreX, layout.deskY, layout.centreZ);
     this.desk.updateMatrixWorld(true);
+    this.desk.visible = true;
   }
 
   /** Re-render the baked textures (after a WebGL context loss). */

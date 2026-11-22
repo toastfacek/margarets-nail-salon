@@ -90,7 +90,7 @@ export class NailScene {
         // The backdrop is a far-plane triangle (Backdrop.js); the clear colour
         // only shows for a frame before the salon exists.
         this.scene.background = null;
-        this.clearColor = new THREE.Color(0xE9C9CF);
+        this.clearColor = new THREE.Color(0xDCD0E4);
 
         this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 1.5, 0.3);
@@ -194,8 +194,7 @@ export class NailScene {
         this.scene.add(this.backdrop.mesh);
         this.scene.add(this.backdrop.desk);
         this.scene.add(this.backdrop.roll);
-        // Until a hand is attached, bake the desk where the hands are.
-        this.backdrop.bakeDesk({ deskY: 0.76, centreX: -1.8, centreZ: 0.05, towelHalfX: 1.7, towelHalfZ: 1.0 }, null, RIG.keyDir);
+        // The desk is baked (and shown) once a hand is attached.
         this.renderer.setRenderTarget(null);
     }
 
