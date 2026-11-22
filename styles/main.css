@@ -349,6 +349,8 @@ body:not(.muted) .snd-off { display: none; }
     height: 64px;
   }
   .mute-btn { top: calc(var(--st) + 8px); right: calc(var(--sr) + 56px); width: 40px; height: 40px; padding: 8px; }
+  /* the bubble keeps its full-size box while its picture is scaled down */
+  body .g-stars { left: 126px; }
 }
 /* phones in landscape (taller than 640x360): back up to 48 px targets */
 @media (max-height: 420px) and (min-height: 371px) and (orientation: landscape) {
