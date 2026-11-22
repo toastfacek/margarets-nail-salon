@@ -116,20 +116,7 @@ export function install(app) {
     onAdvance(finger) {
       bubble.setPip(finger, rounds.coverage(finger) >= DONE_AT, true);
       ghost.hide();
-    },
-    celebrate(n) {
-      // Fallback when no reveal is installed (WP7 replaces this).
-      app.quality.hold(2000);
-      stars.win(n);
-      for (let i = 0; i < n; i++) sm.play('starDing', i, 0.25 * i);
-      sm.clientYay();
-      const p = new THREE.Vector3();
-      for (const f of rounds.request.fingers) {
-        if (hm.getNailWorldPosition(f, p)) app.sparkles?.burst(p, 24, rounds.request.color);
-      }
-      app.invalidate();
-      return new Promise((r) => setTimeout(r, 1800));
-    },
+    }
   });
   rounds.noAdvance = perf;
 
