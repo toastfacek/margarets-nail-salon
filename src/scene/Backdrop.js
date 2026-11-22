@@ -13,17 +13,20 @@
  *   time the desk is a plane with a one-fetch shader. Re-baked only when the
  *   shown hand changes.
  *
+ * Desk, low tier
+ *   No per-pixel work at all: a grid (about 0.04 units per cell) whose vertex
+ *   shader fetches the baked desk (baked at grid resolution, so it is already
+ *   filtered) and the fragment shader writes the interpolated colour. The
+ *   towel loses its terry detail up close; colour, stripes, light pool and
+ *   contact shadow stay.
+ *
  * Room (backdrop)
  *   A sphere cap around the camera (it follows the camera, so it has rotation
  *   parallax only, like a sky) covering the directions from just below the
- *   horizon upward. Looking down at the hand it rasterises nothing at all; it
- *   only costs pixels where the room is actually visible. Its colour is a
- *   function of direction: warm wall gradient, a blurred shelf of bottle
- *   silhouettes, drifting bokeh discs.
- *     high    animated, 12 bokeh
- *     medium  animated, 8 bokeh (NailScene throttles invalidation to 20 Hz)
- *     low     the same function baked ONCE into a 512x256 texture on the
- *             sphere's own UVs: one fetch per pixel
+ *   horizon upward. Looking down at the hand it is hidden (NailScene), so it
+ *   costs nothing in the zoomed views. Its colour (warm wall gradient, a
+ *   blurred shelf of bottle silhouettes, bokeh discs) is baked once, at idle,
+ *   into a 256x128 texture on the sphere's own UVs: one fetch per pixel.
  *   The room and the desk meet at the horizon in the same colour (FOG), so
  *   there is no horizon line.
  */
@@ -57,8 +60,6 @@ return sRGBTransferOETF(vec4(color, 1.0)).rgb;
 
 // Shared GLSL: the room as a function of a world direction (linear colour).
 const roomChunk = /* glsl */ `
-uniform float uTime;
-uniform float uBokehCount;
 uniform vec3 uBokeh[${MAX_BOKEH}];
 uniform vec3 uBokehCol[${MAX_BOKEH}];
 const float PI = 3.14159265;
@@ -67,7 +68,7 @@ float rbox(vec2 p, vec2 b, float r) {
 vec2 q = abs(p) - b + r;
 return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
-vec3 roomColor(vec3 d, float animate) {
+vec3 roomColor(vec3 d) {
 d = normalize(d);
 float e = d.y;
 float az = atan(d.z, d.x);
@@ -99,10 +100,8 @@ col += bottle * 0.16 * smoothstep(0.01, 0.0, abs(bp.x + bw * 0.4));
 }
 if (e > 0.05) {
 for (int i = 0; i < ${MAX_BOKEH}; i++) {
-if (float(i) >= uBokehCount) break;
 vec3 b = uBokeh[i];
-float drift = animate * uTime;
-vec2 c = vec2(b.x + 0.05 * sin(drift * 0.11 + float(i) * 1.7), b.y + 0.02 * sin(drift * 0.07 + float(i) * 2.3));
+vec2 c = b.xy;
 float da = az - c.x;
 da = da - 2.0 * PI * floor((da + PI) / (2.0 * PI));
 vec2 q = vec2(da * cos(e), e - c.y);
@@ -123,19 +122,6 @@ void main() {
 vDir = position;
 vUv = uv;
 gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
-
-const domeFragmentAnimated = /* glsl */ `
-uniform float uDim;
-varying vec3 vDir;
-varying vec2 vUv;
-${roomChunk}
-${acesChunk}
-float dither(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-void main() {
-vec3 col = bakeDisplay(roomColor(vDir, 1.0)) * uDim;
-gl_FragColor = vec4(col + (dither(gl_FragCoord.xy) - 0.5) / 255.0, 1.0);
 }
 `;
 
@@ -163,7 +149,7 @@ void main() {
 float phi = vUv.x * 6.2831853;
 float theta = (1.0 - vUv.y) * ${DOME_THETA.toFixed(5)};
 vec3 d = vec3(-cos(phi) * sin(theta), cos(theta), sin(phi) * sin(theta));
-gl_FragColor = vec4(bakeDisplay(roomColor(d, 0.0)), 1.0);
+gl_FragColor = vec4(bakeDisplay(roomColor(d)), 1.0);
 }
 `;
 
@@ -278,40 +264,65 @@ gl_FragColor = vec4(texture2D(uDesk, vUv).rgb * uDim, 1.0);
 }
 `;
 
-/** Small tiling terry texture for the towel roll (soft loops, sRGB). */
-function makeTerryTexture() {
-  const N = 128;
-  const c = document.createElement('canvas');
-  c.width = N;
-  c.height = N;
-  const ctx = c.getContext('2d');
-  const img = ctx.createImageData(N, N);
-  let seed = 5;
-  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-  const g = new Float32Array(32 * 32);
-  for (let i = 0; i < g.length; i++) g[i] = rnd();
-  const at = (i, j) => g[(j & 31) * 32 + (i & 31)];
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      const fx = x / 4, fy = y / 4;
-      const xi = Math.floor(fx), yi = Math.floor(fy);
-      const tx = fx - xi, ty = fy - yi;
-      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
-      const a = at(xi, yi), b = at(xi + 1, yi), cc = at(xi, yi + 1), d = at(xi + 1, yi + 1);
-      const n = a + (b - a) * sx + (cc - a) * sy + (a - b - cc + d) * sx * sy;
-      const v = Math.round(255 * (0.9 + 0.1 * n));
-      const i = (y * N + x) * 4;
-      img.data[i] = v; img.data[i + 1] = v; img.data[i + 2] = v; img.data[i + 3] = 255;
+// Low tier: the colour is fetched per vertex; the fragment shader only writes it.
+const deskLiteVertex = /* glsl */ `
+uniform sampler2D uDesk;
+uniform vec2 uRegionMin;
+uniform vec2 uRegionSize;
+uniform float uDim;
+varying vec3 vC;
+void main() {
+vec4 wp = modelMatrix * vec4(position, 1.0);
+vC = textureLod(uDesk, clamp((wp.xz - uRegionMin) / uRegionSize, 0.0, 1.0), 0.0).rgb * uDim;
+gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+const deskLiteFragment = /* glsl */ `
+varying vec3 vC;
+void main() { gl_FragColor = vec4(vC, 1.0); }
+`;
+
+/**
+ * Grid over the baked region (cells of about `cell` units) with one ring of
+ * skirt vertices far out, in the desk's local frame (centred, y = 0).
+ */
+function deskGrid(sizeX, sizeZ, cell) {
+  const axis = (size) => {
+    const n = Math.max(2, Math.round(size / cell));
+    const a = [-40];
+    for (let i = 0; i <= n; i++) a.push(-size / 2 + (size * i) / n);
+    a.push(40);
+    return a;
+  };
+  const xs = axis(sizeX);
+  const zs = axis(sizeZ);
+  const nx = xs.length;
+  const nz = zs.length;
+  const pos = new Float32Array(nx * nz * 3);
+  for (let j = 0; j < nz; j++) {
+    for (let i = 0; i < nx; i++) {
+      const k = (j * nx + i) * 3;
+      pos[k] = xs[i];
+      pos[k + 2] = zs[j];
     }
   }
-  ctx.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(c);
-  tex.name = 'TowelTerry';
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(10, 3);
-  return tex;
+  const idx = new Uint32Array((nx - 1) * (nz - 1) * 6);
+  let t = 0;
+  for (let j = 0; j < nz - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = j * nx + i;
+      const b = a + 1;
+      const c = a + nx;
+      const d = c + 1;
+      idx[t++] = a; idx[t++] = c; idx[t++] = b;
+      idx[t++] = b; idx[t++] = c; idx[t++] = d;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeBoundingSphere();
+  return g;
 }
 
 function fullscreenTriangle() {
@@ -361,11 +372,10 @@ export class Backdrop {
   constructor(renderer, settings) {
     this.renderer = renderer;
     this.settings = settings;
-    this.time = 0;
     this.dim = 1;
     this.towelColor = new THREE.Color('#d9c4ec');
 
-    // Bokeh layout (fixed directions; the drift is animated in the shader).
+    // Bokeh layout (fixed directions).
     const bokeh = [];
     const bokehCol = [];
     const palette = ['#fff1d6', '#ffd1e0', '#ffe2b0', '#ffc2d6', '#fff8ee', '#f8c8ff'];
@@ -375,50 +385,43 @@ export class Backdrop {
       return s / 2147483647;
     };
     for (let i = 0; i < MAX_BOKEH; i++) {
-      const az = (i / MAX_BOKEH) * Math.PI * 2 + rnd() * 0.4;
-      const el = 0.36 + rnd() * 0.5;
-      const r = 0.05 + rnd() * 0.07;
-      bokeh.push(new THREE.Vector3(az, el, r));
+      bokeh.push(new THREE.Vector3((i / MAX_BOKEH) * Math.PI * 2 + rnd() * 0.4, 0.36 + rnd() * 0.5, 0.05 + rnd() * 0.07));
       bokehCol.push(new THREE.Color(palette[i % palette.length]).multiplyScalar(0.22 + rnd() * 0.18));
     }
-
     this.roomUniforms = {
-      uTime: { value: 0 },
-      uBokehCount: { value: MAX_BOKEH },
       uBokeh: { value: bokeh },
       uBokehCol: { value: bokehCol },
       uDim: { value: 1 },
     };
 
-    const common = { depthTest: true, depthWrite: false, side: THREE.BackSide, toneMapped: false };
-    this.animatedMaterial = new THREE.ShaderMaterial(Object.assign({
-      name: 'RoomAnimated',
-      vertexShader: domeVertex,
-      fragmentShader: domeFragmentAnimated,
-      uniforms: this.roomUniforms,
-    }, common));
-    this.bakedMaterial = new THREE.ShaderMaterial(Object.assign({
+    this.bakedMaterial = new THREE.ShaderMaterial({
       name: 'RoomBaked',
       vertexShader: domeVertex,
       fragmentShader: domeFragmentBaked,
       uniforms: { uRoom: { value: null }, uDim: this.roomUniforms.uDim },
-    }, common));
+      depthTest: true,
+      depthWrite: false,
+      side: THREE.BackSide,
+      toneMapped: false,
+    });
     this._roomTarget = null;
+    this.roomReady = false;
 
     const dome = new THREE.Mesh(
       new THREE.SphereGeometry(DOME_RADIUS, 48, 14, 0, Math.PI * 2, 0, DOME_THETA),
-      this.animatedMaterial,
+      this.bakedMaterial,
     );
     dome.name = 'SalonRoom';
     dome.frustumCulled = false;
     dome.renderOrder = 1000; // last among opaques
+    dome.visible = false;    // NailScene shows it when the room is in view
     dome.onBeforeRender = (r, sc, camera) => {
       dome.position.copy(camera.position);
       dome.updateMatrixWorld();
     };
     this.mesh = dome;
 
-    // ---- desk
+    // ---- desk: a group holding the full (per-pixel fetch) and lite (per-vertex) variants
     this.deskUniforms = {
       uDesk: { value: null },
       uRegionMin: { value: new THREE.Vector2(-5, -4) },
@@ -432,36 +435,58 @@ export class Backdrop {
       uniforms: this.deskUniforms,
       toneMapped: false,
     });
-    const desk = new THREE.Mesh(new THREE.PlaneGeometry(80, 80, 1, 1), this.deskMaterial);
-    desk.name = 'Desk';
-    desk.rotation.x = -Math.PI / 2;
-    desk.renderOrder = 500; // after the hand: pixels under the hand fail the depth test
+    this.deskLiteMaterial = new THREE.ShaderMaterial({
+      name: 'DeskLite',
+      vertexShader: deskLiteVertex,
+      fragmentShader: deskLiteFragment,
+      uniforms: this.deskUniforms,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const full = new THREE.Mesh(new THREE.PlaneGeometry(80, 80, 1, 1), this.deskMaterial);
+    full.name = 'Desk';
+    full.rotation.x = -Math.PI / 2;
+    full.renderOrder = 500; // after the hand: pixels under the hand fail the depth test
+    const lite = new THREE.Mesh(new THREE.BufferGeometry(), this.deskLiteMaterial);
+    lite.name = 'DeskLite';
+    lite.renderOrder = 500;
+    lite.frustumCulled = false;
+    this.deskFull = full;
+    this.deskLite = lite;
+    const desk = new THREE.Group();
+    desk.name = 'DeskGroup';
+    desk.add(full, lite);
     desk.visible = false;   // until the first bake
     this.desk = desk;
     this._deskTarget = null;
     this._deskBakeMaterial = null;
     this._layout = null;
+    this._shadow = null;
+    this._lightDir = null;
+    this._bakedLite = false;
 
     // ---- a rolled spa towel under the wrist (salons use one as a hand rest)
-    this._rollTexture = makeTerryTexture();
     this.rollMaterial = new THREE.MeshLambertMaterial({
       name: 'TowelRoll',
       color: this.towelColor,
-      map: this._rollTexture,
       emissive: this.towelColor.clone().multiplyScalar(0.28),
     });
     const roll = new THREE.Mesh(new THREE.BufferGeometry(), this.rollMaterial);
     roll.name = 'TowelRoll';
     roll.visible = false;
     this.roll = roll;
+    this.rollReady = false;
 
     this.setQuality(settings);
   }
 
+  get lite() {
+    return this.settings.tier === 'low';
+  }
+
   _placeRoll(deskY, r) {
     const roll = this.roll;
-    // A capsule: soft rounded ends, like a real rolled towel.
-    // A sphere with an odd number of rings, its halves pushed apart.
+    // A sphere with an odd number of rings, its halves pushed apart: a capsule.
     roll.geometry.dispose();
     const g = new THREE.SphereGeometry(r.radius, 28, 15);
     const pos = g.attributes.position;
@@ -469,21 +494,25 @@ export class Backdrop {
     for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + Math.sign(pos.getY(i)) * h);
     roll.geometry = g;
     roll.position.set(r.x, deskY + r.radius * 0.85, r.z);
-    // cylinder axis (local y) along (dirX, 0, dirZ)
     roll.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(r.dirX, 0, r.dirZ));
     roll.updateMatrixWorld(true);
-    roll.visible = true;
+    // Shown from the idle warm-up on (its shader compiles there, not at load);
+    // NailScene shows it sooner if the camera pulls back before that.
+    roll.visible = this.rollReady;
   }
 
   /**
    * Bake the desk under a hand.
-   * @param {object} layout { deskY, centreX, centreZ, towelHalfX, towelHalfZ }
+   * @param {object} layout { deskY, centreX, centreZ, towelHalfX, towelHalfZ, roll }
    * @param {import('./ContactShadow.js').ContactShadow|null} shadow
    * @param {THREE.Vector3} lightDir key light direction (toward the light)
    */
   bakeDesk(layout, shadow, lightDir) {
     this._layout = layout;
-    const renderer = this.renderer;
+    this._shadow = shadow;
+    this._lightDir = lightDir;
+    const lite = this.lite;
+    this._bakedLite = lite;
     const sizeX = layout.towelHalfX * 2 + 2.4;
     const sizeZ = layout.towelHalfZ * 2 + 2.0;
     const minX = layout.centreX - sizeX / 2;
@@ -491,10 +520,11 @@ export class Backdrop {
     this.deskUniforms.uRegionMin.value.set(minX, minZ);
     this.deskUniforms.uRegionSize.value.set(sizeX, sizeZ);
 
-    // Texel density per world unit (the desk is out of focus anyway), capped.
-    const density = this.settings.tier === 'high' ? 240 : this.settings.tier === 'medium' ? 190 : 150;
-    const w = Math.min(2048, Math.round(sizeX * density / 64) * 64);
-    const h = Math.min(1536, Math.round(sizeZ * density / 64) * 64);
+    // Texel density per world unit (the desk is out of focus anyway). The lite
+    // desk is sampled per vertex, so it is baked at about the grid's density.
+    const density = lite ? 32 : this.settings.tier === 'high' ? 240 : 190;
+    const w = Math.min(2048, Math.max(64, Math.round(sizeX * density / 16) * 16));
+    const h = Math.min(1536, Math.max(64, Math.round(sizeZ * density / 16) * 16));
     if (!this._deskTarget || this._deskTarget.width !== w || this._deskTarget.height !== h) {
       if (this._deskTarget) this._deskTarget.dispose();
       this._deskTarget = bakeTarget(w, h, 'DeskBaked');
@@ -531,18 +561,14 @@ export class Backdrop {
     u.uTowelRect.value.set(layout.centreX, layout.centreZ, layout.towelHalfX, layout.towelHalfZ);
     u.uTowelColor.value.copy(this.towelColor);
     // shadows fall away from the light: offset by the average finger height
-    const lx = -lightDir.x / Math.max(0.2, lightDir.y);
-    const lz = -lightDir.z / Math.max(0.2, lightDir.y);
-    u.uLightXZ.value.set(lx, lz, 0.12);
-    if (shadow && shadow.texture) {
-      u.uShadow.value = shadow.texture;
+    u.uLightXZ.value.set(-lightDir.x / Math.max(0.2, lightDir.y), -lightDir.z / Math.max(0.2, lightDir.y), 0.12);
+    const hasShadow = !!(shadow && shadow.texture);
+    u.uShadow.value = hasShadow ? shadow.texture : null;
+    u.uHasShadow.value = hasShadow ? 1 : 0;
+    if (hasShadow) {
       u.uShadowO.value.copy(shadow.mapping.origin);
       u.uShadowAx.value.copy(shadow.mapping.axisX);
       u.uShadowAz.value.copy(shadow.mapping.axisZ);
-      u.uHasShadow.value = 1;
-    } else {
-      u.uShadow.value = null;
-      u.uHasShadow.value = 0;
     }
 
     const roll = layout.roll;
@@ -552,16 +578,30 @@ export class Backdrop {
       this._placeRoll(layout.deskY, roll);
     } else {
       u.uRollSize.value.set(0, 0);
+      this.roll.geometry.dispose();
+      this.roll.geometry = new THREE.BufferGeometry();
       this.roll.visible = false;
     }
 
-    bakePass(renderer, this._deskBakeMaterial, this._deskTarget);
+    bakePass(this.renderer, this._deskBakeMaterial, this._deskTarget);
     u.uShadow.value = null;
     this.deskUniforms.uDesk.value = this._deskTarget.texture;
+
+    // the lite grid, centred on the region
+    this.deskLite.geometry.dispose();
+    this.deskLite.geometry = deskGrid(sizeX, sizeZ, 0.04);
+    this.deskLite.position.set(minX + sizeX / 2 - layout.centreX, 0, minZ + sizeZ / 2 - layout.centreZ);
 
     this.desk.position.set(layout.centreX, layout.deskY, layout.centreZ);
     this.desk.updateMatrixWorld(true);
     this.desk.visible = true;
+    this._applyDeskVariant();
+  }
+
+  _applyDeskVariant() {
+    const lite = this.lite;
+    this.deskFull.visible = !lite;
+    this.deskLite.visible = lite;
   }
 
   /** Re-render the baked textures (after a WebGL context loss). */
@@ -569,29 +609,29 @@ export class Backdrop {
     if (this._roomTarget) {
       this._roomTarget.dispose();
       this._roomTarget = null;
-      this._ensureRoomBaked();
+      this.bakeRoom();
     }
-  }
-
-  get animated() {
-    return this.mesh.material === this.animatedMaterial;
+    if (this._layout) this.bakeDesk(this._layout, this._shadow, this._lightDir);
   }
 
   setQuality(settings) {
     this.settings = settings;
-    const mode = settings.backdrop || 'baked';
-    if (mode === 'baked') {
-      this._ensureRoomBaked();
-      this.mesh.material = this.bakedMaterial;
-    } else {
-      this.roomUniforms.uBokehCount.value = mode === 'animated8' ? 8 : MAX_BOKEH;
-      this.mesh.material = this.animatedMaterial;
-    }
+    // A desk baked for per-pixel use is too detailed to sample per vertex
+    // (and the reverse is too blurry): re-bake when the variant flips.
+    if (this._layout && this._bakedLite !== this.lite) this.bakeDesk(this._layout, this._shadow, this._lightDir);
+    this._applyDeskVariant();
+  }
+
+  /** Bake the room (once). Called at idle; the dome stays hidden until then. */
+  bakeRoom() {
+    this._ensureRoomBaked();
+    this.roomReady = true;
   }
 
   _ensureRoomBaked() {
     if (this._roomTarget) return;
-    this._roomTarget = bakeTarget(512, 256, 'RoomBaked');
+    // small: the room is far and soft, and the bake must stay a short idle task
+    this._roomTarget = bakeTarget(256, 128, 'RoomBaked');
     const mat = new THREE.ShaderMaterial({
       vertexShader: fullscreenVertex,
       fragmentShader: roomBakeFragment,
@@ -600,27 +640,9 @@ export class Backdrop {
       depthWrite: false,
       toneMapped: false,
     });
-    const prevCount = this.roomUniforms.uBokehCount.value;
-    this.roomUniforms.uBokehCount.value = MAX_BOKEH;
     bakePass(this.renderer, mat, this._roomTarget);
-    this.roomUniforms.uBokehCount.value = prevCount;
     mat.dispose();
     this.bakedMaterial.uniforms.uRoom.value = this._roomTarget.texture;
-  }
-
-  precompile(renderer, scene, camera) {
-    // Both room variants (the dome is often hidden at this point: show it for
-    // the compile only), so neither orbiting nor a tier change compiles.
-    const cur = this.mesh.material;
-    const vis = this.mesh.visible;
-    if (cur === this.animatedMaterial) this._ensureRoomBaked();
-    this.mesh.visible = true;
-    for (const m of [this.animatedMaterial, this.bakedMaterial]) {
-      this.mesh.material = m;
-      try { renderer.compile(scene, camera); } catch (err) { /* compile on demand */ }
-    }
-    this.mesh.material = cur;
-    this.mesh.visible = vis;
   }
 
   /** 1 = normal, 0 = dark (reveal). Uniform only. */
@@ -629,28 +651,23 @@ export class Backdrop {
     this.roomUniforms.uDim.value = x;
   }
 
-  update(dt) {
-    this.time += dt;
-    this.roomUniforms.uTime.value = this.time;
-  }
-
   /** GPU bytes held (for budgets and the hand-off). */
   get gpuBytes() {
     let b = 0;
     if (this._deskTarget) b += this._deskTarget.width * this._deskTarget.height * 4;
-    if (this._roomTarget) b += 512 * 256 * 4;
+    if (this._roomTarget) b += 256 * 128 * 4;
     return b;
   }
 
   dispose() {
     this.mesh.geometry.dispose();
-    this.animatedMaterial.dispose();
     this.bakedMaterial.dispose();
-    this.desk.geometry.dispose();
+    this.deskFull.geometry.dispose();
+    this.deskLite.geometry.dispose();
     this.deskMaterial.dispose();
+    this.deskLiteMaterial.dispose();
     this.roll.geometry.dispose();
     this.rollMaterial.dispose();
-    this._rollTexture.dispose();
     if (this._deskBakeMaterial) this._deskBakeMaterial.dispose();
     if (this._deskTarget) this._deskTarget.dispose();
     if (this._roomTarget) this._roomTarget.dispose();
