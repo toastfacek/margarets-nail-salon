@@ -70,18 +70,31 @@ function makeDome() {
     colors[i * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, toneMapped: false, depthWrite: false });
-  const mesh = new THREE.Mesh(geo, mat);
+  const mesh = new THREE.Mesh(geo, envMaterial());
   mesh.renderOrder = -1;
   return mesh;
 }
 
-function emissive(color, intensity) {
-  return new THREE.MeshBasicMaterial({
-    color: new THREE.Color(color).multiplyScalar(intensity),
-    side: THREE.DoubleSide,
-    toneMapped: false,
-  });
+// Every shape in the env scene shares ONE vertex-coloured material: one
+// shader compile at load instead of one per material kind.
+let _envMat = null;
+function envMaterial() {
+  if (!_envMat) {
+    _envMat = new THREE.MeshBasicMaterial({
+      vertexColors: true, side: THREE.DoubleSide, toneMapped: false, depthTest: false, depthWrite: false,
+    });
+  }
+  return _envMat;
+}
+
+/** A mesh of `geo` glowing in `color` x `intensity` (vertex colours). */
+function emissive(geo, color, intensity) {
+  const c = new THREE.Color(color).multiplyScalar(intensity);
+  const n = geo.attributes.position.count;
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return new THREE.Mesh(geo, envMaterial());
 }
 
 /** Place `mesh` at `dist` along `dir`, facing the origin. */
@@ -108,14 +121,14 @@ export class SalonEnvironment {
     scene.add(makeDome());
 
     // Overhead softbox: a big soft rectangle near the zenith, behind the ring.
-    const softbox = new THREE.Mesh(new THREE.PlaneGeometry(5.5, 3.2), emissive(RIG.softbox, 2.2));
+    const softbox = emissive(new THREE.PlaneGeometry(5.5, 3.2), RIG.softbox, 2.2);
     placeFacing(softbox, new THREE.Vector3(0.35, 1.0, 0.25), ENV_DISTANCE);
     scene.add(softbox);
 
     // Two long strip lights overhead: the streaks chrome is known for.
-    const stripGeo = new THREE.PlaneGeometry(0.35, 7.0);
+    const stripGeo = emissive(new THREE.PlaneGeometry(0.35, 7.0), '#fff4ea', 3.0).geometry;
     for (const sx of [-0.9, 1.0]) {
-      const strip = new THREE.Mesh(stripGeo, emissive('#fff4ea', 3.0));
+      const strip = new THREE.Mesh(stripGeo, envMaterial());
       strip.position.set(sx, ENV_DISTANCE * 0.95, -0.4);
       strip.rotation.x = Math.PI / 2;
       strip.rotation.z = 0.35;
@@ -123,25 +136,25 @@ export class SalonEnvironment {
     }
 
     // Tall warm window strip, screen-top side (-z), reads on the far nail edge.
-    const win = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 4.2), emissive(RIG.window, 3.2));
+    const win = emissive(new THREE.PlaneGeometry(1.4, 4.2), RIG.window, 3.2);
     placeFacing(win, new THREE.Vector3(0.5, 0.45, -1.0), ENV_DISTANCE);
     scene.add(win);
 
     // Pink neon bar, screen-bottom side (+z), reads on the near nail edge.
-    const neon = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 0.22), emissive(RIG.neon, 3.5));
+    const neon = emissive(new THREE.PlaneGeometry(4.0, 0.22), RIG.neon, 3.5);
     placeFacing(neon, new THREE.Vector3(-0.3, 0.32, 1.0), ENV_DISTANCE);
     scene.add(neon);
 
     // A couple of small warm bulbs low on the walls: tiny glints for chrome.
     const bulbGeo = new THREE.SphereGeometry(0.18, 12, 8);
-    const bulbMat = emissive('#ffe6c4', 6.0);
+    const bulbGeo2 = emissive(bulbGeo, '#ffe6c4', 6.0).geometry;
     const bulbDirs = [
       new THREE.Vector3(-1.0, 0.18, -0.4),
       new THREE.Vector3(1.0, 0.22, 0.35),
       new THREE.Vector3(-0.6, 0.12, 0.9),
     ];
     for (let i = 0; i < bulbDirs.length; i++) {
-      const b = new THREE.Mesh(bulbGeo, bulbMat);
+      const b = new THREE.Mesh(bulbGeo2, envMaterial());
       b.position.copy(bulbDirs[i]).normalize().multiplyScalar(ENV_DISTANCE);
       scene.add(b);
     }
@@ -160,14 +173,12 @@ export class SalonEnvironment {
 
     // LDR targets: scale the whole room down so it fits in 0..1.
     if (!halfFloat) {
+      const seen = new Set();
       scene.traverse((o) => {
-        if (!o.isMesh) return;
-        if (o.material.vertexColors) {
-          const col = o.geometry.attributes.color;
-          for (let i = 0; i < col.array.length; i++) col.array[i] /= ENV_RANGE_LDR;
-        } else {
-          o.material.color.multiplyScalar(1 / ENV_RANGE_LDR);
-        }
+        if (!o.isMesh || seen.has(o.geometry)) return;
+        seen.add(o.geometry);
+        const col = o.geometry.attributes.color;
+        for (let i = 0; i < col.array.length; i++) col.array[i] /= ENV_RANGE_LDR;
       });
     }
 
@@ -197,11 +208,10 @@ export class SalonEnvironment {
     renderer.autoClear = prevAutoClear;
     this.envCube = cubeTarget;
 
-    // The env scene is throwaway: free its geometry and materials.
+    // The env scene is throwaway: free its geometry (the one shared material
+    // stays, so a rebuild after a context loss reuses its program).
     scene.traverse((o) => {
-      if (!o.isMesh) return;
-      o.geometry.dispose();
-      o.material.dispose();
+      if (o.isMesh) o.geometry.dispose();
     });
   }
 
