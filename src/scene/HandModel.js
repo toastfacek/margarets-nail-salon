@@ -9,7 +9,9 @@
 import * as THREE from 'three';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { modelLoader } from './ModelLoader.js';
-import { createNailMaterial, createNailLighting, applyNailFinish } from './NailMaterial.js';
+import { createNailMaterial, createNailLighting, applyNailFinish, nailVariantKey } from './NailMaterial.js';
+import { createSkinMaterials, createSkinShared, setSkinTone } from './SkinMaterial.js';
+import { computeSettings } from '../core/Quality.js';
 
 // Enable BVH-accelerated raycasting globally for all meshes
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -64,6 +66,7 @@ class NailRecord {
         this.finger = finger;
         this.mesh = mesh;
         this.material = material;
+        this.variants = {};          // tier define key -> material (all share material.uniforms)
         this.finish = 'glossy';
         this.polishColor = null;
         this.paintTarget = null;
@@ -107,6 +110,12 @@ export class HandModel {
 
         // Called whenever something visible changes (wired to app.loop.invalidate).
         this.onChange = null;
+        // Called when a different hand becomes visible (NailScene re-bakes the
+        // contact shadow).
+        this.onHandShown = null;
+
+        // Skin colour and glow, shared by both hands and every tier variant.
+        this.skinShared = createSkinShared();
 
         this._clearColor = new THREE.Color();
     }
@@ -127,39 +136,40 @@ export class HandModel {
     }
 
     /**
-     * New settings apply to resources created from now on; the skin material
-     * variant switches immediately (both variants are pre-compiled).
+     * New settings apply to resources created from now on; the skin and nail
+     * material variants switch immediately (pre-compiled, see precompileVariants).
      */
     setQuality(settings) {
         this.settings = settings || this.settings;
         this._applySkinVariant();
+        this._applyNailVariant();
     }
 
     // =========================================
-    // Skin (interim tiering until WP3's SkinMaterial)
+    // Skin (SkinMaterial: per-pixel 'full', per-vertex 'lite' on low)
     // =========================================
 
     _setupSkin(hand, model) {
         const skins = this.hands[hand].skins;
+        const nails = this.hands[hand].nails;
+        const isNail = (m) => {
+            for (const f in nails) if (nails[f].mesh === m) return true;
+            return false;
+        };
         model.traverse((child) => {
             if (!child.isMesh || child.material === undefined) return;
-            if (Object.values(this.hands[hand].nails).some((n) => n.mesh === child)) return;
-            const standard = child.material;
-            if (!standard || Array.isArray(standard)) return;
-            // Low tier: Lambert + hemisphere (plan section 2, 'skin').
-            const lambert = new THREE.MeshLambertMaterial({
-                name: 'SkinLambert',
-                color: standard.color ? standard.color.clone() : new THREE.Color(0xfcd0c5),
-                map: standard.map || null,
-                side: standard.side,
-            });
-            skins.push({ mesh: child, standard, lambert });
+            if (isNail(child)) return;
+            const source = child.material;
+            if (!source || Array.isArray(source)) return;
+            const { full, lite } = createSkinMaterials(this.skinShared);
+            skins.push({ mesh: child, full, lite });
+            source.dispose();
         });
         this._applySkinVariant();
     }
 
-    _skinVariant() {
-        return this.settings.skin === 'lambert' ? 'lambert' : 'standard';
+    _skinVariant(settings = this.settings) {
+        return settings.skin === 'lambert' ? 'lite' : 'full';
     }
 
     _applySkinVariant() {
@@ -168,29 +178,92 @@ export class HandModel {
             const skins = this.hands[HAND_LIST[h]].skins;
             for (let i = 0; i < skins.length; i++) {
                 const s = skins[i];
-                s.mesh.material = variant === 'lambert' ? s.lambert : s.standard;
+                s.mesh.material = s[variant];
             }
         }
         this._invalidate();
     }
 
+    /** Skin tone for every hand (uniform/colour writes only). */
+    setSkinTone(color) {
+        setSkinTone(this.skinShared, color);
+        this._invalidate();
+    }
+
+    // =========================================
+    // Nail material variants (one per tier define set, shared uniforms)
+    // =========================================
+
+    _nailVariant(rec, settings) {
+        const key = nailVariantKey(settings);
+        let m = rec.variants[key];
+        if (!m) {
+            m = createNailMaterial(settings, this.lighting, rec.material ? rec.material.uniforms : null);
+            rec.variants[key] = m;
+        }
+        return m;
+    }
+
+    _applyNailVariant() {
+        for (let h = 0; h < HAND_LIST.length; h++) {
+            const nails = this.hands[HAND_LIST[h]].nails;
+            for (let f = 0; f < FINGER_LIST.length; f++) {
+                const rec = nails[FINGER_LIST[f]];
+                if (!rec) continue;
+                const m = this._nailVariant(rec, this.settings);
+                rec.material = m;
+                rec.mesh.material = m;
+            }
+        }
+        this._invalidate();
+    }
+
+    _nextTierDown() {
+        const t = this.settings.tier;
+        if (t === 'high') return 'medium';
+        if (t === 'medium') return 'low';
+        return null;
+    }
+
     /**
-     * Compile the skin variant that is NOT in use, so a tier change never
-     * compiles a shader. Call once after load (the current variant is compiled
-     * by the normal pre-warm).
+     * Compile the skin and nail variants of the next tier down (the current
+     * ones are compiled by the normal pre-warm), so an auto-downgrade never
+     * compiles a shader. Call once after load.
      */
     precompileVariants(renderer, scene, camera) {
-        const variant = this._skinVariant();
+        const down = this._nextTierDown();
+        if (!down) return;
+        const s = this.settings;
+        const next = computeSettings(down, 1.0, s.pixelRatio || 1, { halfFloat: true });
+        const skinNext = this._skinVariant(next);
         let swapped = false;
         for (const hand of HAND_LIST) {
-            for (const s of this.hands[hand].skins) {
-                s.mesh.material = variant === 'lambert' ? s.standard : s.lambert;
+            for (const sk of this.hands[hand].skins) {
+                sk.mesh.material = sk[skinNext];
+                swapped = true;
+            }
+            for (const f of FINGER_LIST) {
+                const rec = this.hands[hand].nails[f];
+                if (!rec) continue;
+                rec.mesh.material = this._nailVariant(rec, next);
                 swapped = true;
             }
         }
         if (swapped) {
+            // Hidden hands are skipped by compile(); show them for the compile only.
+            const vis = [];
+            for (const hand of HAND_LIST) {
+                const m = this.hands[hand].model;
+                if (m) { vis.push(m.visible); m.visible = true; }
+            }
             try { renderer.compile(scene, camera); } catch (err) { /* compile on demand instead */ }
+            let i = 0;
+            for (const hand of HAND_LIST) {
+                const m = this.hands[hand].model;
+                if (m) m.visible = vis[i++];
+            }
             this._applySkinVariant();
+            this._applyNailVariant();
         }
     }
 
@@ -229,7 +302,11 @@ export class HandModel {
             this.group.add(model);
             this.setupHandNails(hand, model);
             this._setupSkin(hand, model);
-            if (hand === this.currentHand) this.setNailHighlight(this.activeNail, true);
+            this._computeNailFrames(hand, model);
+            if (hand === this.currentHand) {
+                this.setNailHighlight(this.activeNail, true);
+                if (this.onHandShown) this.onHandShown(hand);
+            }
             this._invalidate();
         }).catch((error) => {
             this._loading[hand] = null;
@@ -317,9 +394,95 @@ export class HandModel {
         }
 
         const rec = new NailRecord(this, hand, finger, nailMesh, material);
+        rec.variants[nailVariantKey(this.settings)] = material;
         rec.uvAspect = this._computeUVAspect(geometry);
+        material.uniforms.uAspect.value = rec.uvAspect;
 
         this.hands[hand].nails[finger] = rec;
+    }
+
+    /**
+     * Natural-nail frame in the nail's object space: centre, the axis toward
+     * the cuticle, the axis across, and half extents. The UV projection is
+     * not aligned with the finger on every nail, so the cuticle direction is
+     * found from the skin: the finger continues past the cuticle, not past
+     * the free edge.
+     */
+    _computeNailFrames(hand, model) {
+        const nails = this.hands[hand].nails;
+        let skin = null;
+        model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
+        model.updateMatrixWorld(true);
+        const v = new THREE.Vector3();
+        const centreW = new THREE.Vector3();
+        const normalW = new THREE.Vector3();
+        const toBase = new THREE.Vector3();
+        const inv = new THREE.Matrix4();
+        const skinPts = [];
+        if (skin) {
+            skin.skeleton.update();
+            const pos = skin.geometry.attributes.position;
+            for (let i = 0; i < pos.count; i += 2) {
+                skin.getVertexPosition(i, v);
+                v.applyMatrix4(skin.matrixWorld);
+                skinPts.push(v.x, v.y, v.z);
+            }
+        }
+        for (const f of FINGER_LIST) {
+            const rec = nails[f];
+            if (!rec) continue;
+            const mesh = rec.mesh;
+            const geo = mesh.geometry;
+            const pos = geo.attributes.position;
+            const nrm = geo.attributes.normal;
+            mesh.updateWorldMatrix(true, false);
+            // world centre and mean normal
+            centreW.set(0, 0, 0);
+            normalW.set(0, 0, 0);
+            const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+            const n = new THREE.Vector3();
+            for (let i = 0; i < pos.count; i++) {
+                v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+                centreW.add(v);
+                if (nrm) {
+                    n.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
+                    // nails are a thin shell: count the outer side only
+                    if (n.y > 0) normalW.add(n);
+                }
+            }
+            centreW.multiplyScalar(1 / Math.max(1, pos.count));
+            if (normalW.lengthSq() < 1e-8) normalW.set(0, 1, 0);
+            normalW.normalize();
+            // skin within reach of the nail, projected onto the nail plane
+            toBase.set(0, 0, 0);
+            const R2 = 0.3 * 0.3;
+            for (let i = 0; i < skinPts.length; i += 3) {
+                const dx = skinPts[i] - centreW.x, dy = skinPts[i + 1] - centreW.y, dz = skinPts[i + 2] - centreW.z;
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > R2) continue;
+                toBase.x += dx; toBase.y += dy; toBase.z += dz;
+            }
+            toBase.addScaledVector(normalW, -toBase.dot(normalW));
+            if (toBase.lengthSq() < 1e-10) toBase.set(1, 0, 0).addScaledVector(normalW, -normalW.x);
+            toBase.normalize();
+            // into object space
+            inv.copy(mesh.matrixWorld).invert();
+            const axis = toBase.clone().transformDirection(inv);
+            const cLocal = centreW.clone().applyMatrix4(inv);
+            const nLocal = normalW.clone().transformDirection(inv);
+            const side = new THREE.Vector3().crossVectors(nLocal, axis).normalize();
+            let halfL = 0, halfW = 0;
+            for (let i = 0; i < pos.count; i++) {
+                v.fromBufferAttribute(pos, i).sub(cLocal);
+                halfL = Math.max(halfL, Math.abs(v.dot(axis)));
+                halfW = Math.max(halfW, Math.abs(v.dot(side)));
+            }
+            const u = rec.material.uniforms;
+            u.uNailCentre.value.copy(cLocal);
+            u.uNailAxis.value.copy(axis);
+            u.uNailSide.value.copy(side);
+            u.uNailHalf.value.set(halfL || 1, halfW || 1);
+        }
     }
 
     /**
@@ -477,6 +640,8 @@ export class HandModel {
         if (u.uPaintMap.value === texture) return;
         u.uPaintMap.value = texture;
         u.uHasPaint.value = texture ? 1 : 0;
+        const img = texture && texture.image;
+        if (img && img.width) u.uPaintTexel.value = 1 / img.width;
         this._invalidate();
     }
 
@@ -605,6 +770,7 @@ export class HandModel {
         if (this.hands[hand].model) this.hands[hand].model.visible = true;
         this.currentHand = hand;
         this.setNailHighlight(this.activeNail, true);
+        if (this.onHandShown) this.onHandShown(hand);
         this._invalidate();
         return true;
     }
@@ -865,7 +1031,10 @@ export class HandModel {
                 this.group.remove(model);
                 this.disposeModel(model);
             }
-            for (const sk of this.hands[h].skins) sk.lambert.dispose();
+            for (const sk of this.hands[h].skins) { sk.lite.dispose(); sk.full.dispose(); }
+            for (const nail of Object.values(this.hands[h].nails)) {
+                for (const k in nail.variants) if (nail.variants[k] !== nail.material) nail.variants[k].dispose();
+            }
             this.hands[h].model = null;
             this.hands[h].nails = {};
             this.hands[h].skins = [];
