@@ -1,9 +1,43 @@
 /**
  * GemTool.js
- * 3D gem/rhinestone placement on nail
+ * 3D gem/rhinestone placement on nail.
+ *
+ * - One InstancedMesh per gem type (shared geometry + material), so all gems
+ *   cost at most six draw calls (plus one for the hover preview), whatever
+ *   their number. At most 12 gems per nail.
+ * - Gem materials read `scene.environment` (envMapIntensity), so they pick up
+ *   the salon's reflections once WP3 provides an environment.
+ * - Placing a gem pops it in with overshoot (instance matrix animated for a
+ *   few frames), fires a sparkle burst and emits `deco:placed`.
+ * - Hover moves of the preview request a render (render-on-demand tiers).
+ * - No allocation in pointer-move handlers.
  */
 import * as THREE from 'three';
 import { soundManager } from '../audio/SoundManager.js';
+import { EVENTS } from '../core/GameEvents.js';
+
+const GEM_SIZE = 0.008;
+const PREVIEW_SIZE = 0.007;
+const MAX_PER_NAIL = 12;
+const CAPACITY = MAX_PER_NAIL * 10; // per type: every nail of both hands
+const SURFACE_OFFSET = 0.005;
+const POP_TIME = 0.32;
+
+function easeOutBack(t) {
+    const c1 = 2.2;
+    const c3 = c1 + 1;
+    const x = t - 1;
+    return 1 + c3 * x * x * x + c1 * x * x;
+}
+
+const _m = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _s = new THREE.Vector3();
+const _n = new THREE.Vector3();
+const _p = new THREE.Vector3();
+const _nm = new THREE.Matrix3();
+const _look = new THREE.Object3D();
+const ZERO_SCALE = Object.freeze(new THREE.Vector3(0, 0, 0));
 
 // Gem types with geometry and colors
 export const GEM_TYPES = [
@@ -23,13 +57,39 @@ export class GemTool {
         this.isActive = false;
 
         this.selectedGem = null;
-        this.placedGems = [];
+        this.placedGems = [];   // records: { type, slot, hand, finger, position, quaternion, born }
         this.previewGem = null;
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
+        this._hits = [];
+        this._time = 0;
+        this._popping = 0;      // gems still animating their pop
+
+        // Juice hooks (wired by the brushJuice feature)
+        this.events = null;
+        this.sparkles = null;
+        this.invalidate = null;
+        this._decoPayload = { type: 'gem', id: null };
+
+        this.group = new THREE.Group();
+        this.group.name = 'Gems';
+        this.scene.add(this.group);
+        this._types = new Map();
+        this._buildTypes();
 
         this.setupEventListeners();
+    }
+
+    /** Wire events, sparkles and redraw requests (brushJuice feature). */
+    connect({ events = null, sparkles = null, invalidate = null } = {}) {
+        this.events = events;
+        this.sparkles = sparkles;
+        this.invalidate = invalidate;
+    }
+
+    _requestRender() {
+        if (this.invalidate) this.invalidate();
     }
 
     createHeartGeometry(size) {
@@ -164,47 +224,92 @@ export class GemTool {
         return merged;
     }
 
-    createGemMesh(gemId, size = 0.008) {
-        const gemData = GEM_TYPES.find(g => g.id === gemId) || GEM_TYPES[0];
-
-        let geometry;
-        switch (gemData.shape) {
+    _createGeometry(shape, size) {
+        switch (shape) {
             case 'sphere':
-                geometry = new THREE.SphereGeometry(size, 16, 16);
-                break;
+                return new THREE.SphereGeometry(size, 16, 16);
             case 'heart':
-                geometry = this.createHeartGeometry(size);
-                break;
+                return this.createHeartGeometry(size);
             case 'star':
-                geometry = this.createStarGeometry(size);
-                break;
+                return this.createStarGeometry(size);
             case 'flower':
-                geometry = this.createFlowerGeometry(size);
-                break;
+                return this.createFlowerGeometry(size);
             case 'octahedron':
             default:
-                geometry = new THREE.OctahedronGeometry(size);
-                break;
+                return new THREE.OctahedronGeometry(size);
         }
+    }
 
-        // Gem material with refraction-like properties
-        const material = new THREE.MeshPhysicalMaterial({
-            color: gemData.color,
+    _createMaterial(color, opacity) {
+        return new THREE.MeshPhysicalMaterial({
+            color,
             metalness: 0.0,
-            roughness: 0.0,
+            roughness: 0.04,
             clearcoat: 1.0,
             clearcoatRoughness: 0.0,
             reflectivity: 1.0,
-            envMapIntensity: 1.5,
+            envMapIntensity: 1.6, // reflections come from scene.environment
             transparent: true,
-            opacity: 0.9,
-            ior: 2.4, // Diamond-like refraction
+            opacity,
+            ior: 2.4, // diamond-like
         });
+    }
 
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.castShadow = true;
-        mesh.userData = { gemId, type: 'gem' };
+    /** One shared geometry + material + InstancedMesh per gem type (built once). */
+    _buildTypes() {
+        for (const gemData of GEM_TYPES) {
+            const geometry = this._createGeometry(gemData.shape, GEM_SIZE);
+            geometry.computeBoundingSphere();
+            const material = this._createMaterial(gemData.color, 0.92);
+            const mesh = new THREE.InstancedMesh(geometry, material, CAPACITY);
+            mesh.name = `Gems_${gemData.id}`;
+            mesh.count = 0;
+            mesh.visible = false;
+            mesh.frustumCulled = false;
+            mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            this.group.add(mesh);
+            this._types.set(gemData.id, { data: gemData, geometry, material, mesh, entries: [] });
+        }
+        // Hover preview: one mesh; geometry and colour follow the selection.
+        const first = this._types.get(GEM_TYPES[0].id);
+        this._previewMaterial = this._createMaterial(GEM_TYPES[0].color, 0.5);
+        this.previewGem = new THREE.Mesh(first.geometry, this._previewMaterial);
+        this.previewGem.name = 'GemPreview';
+        this.previewGem.visible = false;
+        this.previewGem.scale.setScalar(PREVIEW_SIZE / GEM_SIZE);
+        this.group.add(this.previewGem);
+    }
 
+    /** Compile the gem programs now (all hidden at startup). */
+    prewarm(renderer, camera) {
+        if (!renderer || !camera) return;
+        const restore = [];
+        this._types.forEach((t) => {
+            restore.push(t.mesh.count, t.mesh.visible);
+            t.mesh.count = Math.max(1, t.mesh.count);
+            t.mesh.visible = true;
+        });
+        const pv = this.previewGem.visible;
+        this.previewGem.visible = true;
+        try {
+            renderer.compile(this.group, camera, this.scene);
+        } catch (err) {
+            // optimisation only
+        }
+        let i = 0;
+        this._types.forEach((t) => {
+            t.mesh.count = restore[i++];
+            t.mesh.visible = restore[i++];
+        });
+        this.previewGem.visible = pv;
+    }
+
+    /** Legacy: a standalone gem mesh (not added to the scene). */
+    createGemMesh(gemId, size = GEM_SIZE) {
+        const t = this._types.get(gemId) || this._types.get(GEM_TYPES[0].id);
+        const mesh = new THREE.Mesh(t.geometry, t.material);
+        mesh.scale.setScalar(size / GEM_SIZE);
+        mesh.userData = { gemId: t.data.id, type: 'gem' };
         return mesh;
     }
 
@@ -218,13 +323,16 @@ export class GemTool {
         canvas.addEventListener('click', (e) => this.onClick(e));
         canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
         canvas.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
+        this._canvas = canvas;
     }
 
     updateMousePosition(event) {
-        const canvas = document.querySelector('#canvas-container canvas');
+        const canvas = this._canvas || document.querySelector('#canvas-container canvas');
         if (!canvas) return;
 
-        const rect = canvas.getBoundingClientRect();
+        // Only re-read the rect when the canvas size may have changed.
+        if (!this._rect || event.type !== 'mousemove') this._rect = canvas.getBoundingClientRect();
+        const rect = this._rect;
         const clientX = event.touches ? event.touches[0].clientX : event.clientX;
         const clientY = event.touches ? event.touches[0].clientY : event.clientY;
 
@@ -232,52 +340,56 @@ export class GemTool {
         this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     }
 
+    /** The nail hit under the pointer, or null. The hit object is reused. */
     getNailIntersection() {
         this.raycaster.setFromCamera(this.mouse, this.camera);
         const nailMesh = this.nail.getNailMesh();
         if (!nailMesh) return null;
 
-        const intersects = this.raycaster.intersectObject(nailMesh, true);
-        return intersects.length > 0 ? intersects[0] : null;
+        const hits = this._hits;
+        hits.length = 0;
+        this.raycaster.intersectObject(nailMesh, false, hits);
+        const hit = hits.length > 0 ? hits[0] : null;
+        hits.length = 0;
+        return hit;
     }
 
     /**
-     * Transform a face normal from object space to world space
+     * World-space face normal of a hit, written into `target` (no allocation).
      */
-    getWorldNormal(intersection) {
+    getWorldNormal(intersection, target = new THREE.Vector3()) {
         const nailMesh = this.nail.getNailMesh();
-        if (!nailMesh) return intersection.face.normal.clone();
+        if (!intersection.face) return target.set(0, 1, 0);
+        target.copy(intersection.face.normal);
+        if (!nailMesh) return target;
+        _nm.getNormalMatrix(nailMesh.matrixWorld);
+        return target.applyMatrix3(_nm).normalize();
+    }
 
-        // Create normal matrix from the mesh's world matrix
-        const normalMatrix = new THREE.Matrix3().getNormalMatrix(nailMesh.matrixWorld);
-
-        // Transform the face normal to world space
-        return intersection.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    /** Position + outward orientation of a gem at a hit (into _p / _q). */
+    _surfaceTransform(intersection) {
+        this.getWorldNormal(intersection, _n);
+        _p.copy(intersection.point).addScaledVector(_n, SURFACE_OFFSET);
+        _look.position.copy(_p);
+        _look.lookAt(_p.x + _n.x, _p.y + _n.y, _p.z + _n.z);
+        _q.copy(_look.quaternion);
     }
 
     onMouseMove(event) {
-        if (!this.isActive || !this.selectedGem) return;
+        if (!this.isActive || !this.selectedGem || !this.previewGem) return;
 
         this.updateMousePosition(event);
 
         const intersection = this.getNailIntersection();
-        if (intersection && this.previewGem) {
-            // Get world-space normal for proper positioning
-            const worldNormal = this.getWorldNormal(intersection);
-
-            // Position gem on nail surface
-            const offset = worldNormal.clone().multiplyScalar(0.005);
-            this.previewGem.position.copy(intersection.point).add(offset);
+        if (intersection) {
+            this._surfaceTransform(intersection);
+            this.previewGem.position.copy(_p);
+            this.previewGem.quaternion.copy(_q);
             this.previewGem.visible = true;
-
-            // Rotate to face outward
-            this.previewGem.lookAt(
-                intersection.point.x + worldNormal.x,
-                intersection.point.y + worldNormal.y,
-                intersection.point.z + worldNormal.z
-            );
-        } else if (this.previewGem) {
+            this._requestRender();
+        } else if (this.previewGem.visible) {
             this.previewGem.visible = false;
+            this._requestRender();
         }
     }
 
@@ -304,52 +416,100 @@ export class GemTool {
         }
     }
 
+    _countOn(hand, finger) {
+        let n = 0;
+        for (let i = 0; i < this.placedGems.length; i++) {
+            const g = this.placedGems[i];
+            if (g.hand === hand && g.finger === finger) n++;
+        }
+        return n;
+    }
+
+    _writeMatrix(t, g) {
+        const shown = g.hand === this.nail.getCurrentHand();
+        let k = 0;
+        if (shown) {
+            const age = this._time - g.born;
+            k = age >= POP_TIME ? 1 : easeOutBack(Math.max(0, age) / POP_TIME);
+        }
+        if (k <= 0) _m.compose(g.position, g.quaternion, ZERO_SCALE);
+        else _m.compose(g.position, g.quaternion, _s.setScalar(k));
+        t.mesh.setMatrixAt(g.slot, _m);
+        t.mesh.instanceMatrix.needsUpdate = true;
+    }
+
     placeGem(intersection) {
-        // Create gem mesh
-        const gem = this.createGemMesh(this.selectedGem);
+        const hand = this.nail.getCurrentHand();
+        const finger = this.nail.getActiveNail();
+        if (this._countOn(hand, finger) >= MAX_PER_NAIL) return false;
+        const t = this._types.get(this.selectedGem);
+        if (!t || t.entries.length >= CAPACITY) return false;
 
-        // Get world-space normal for proper positioning
-        const worldNormal = this.getWorldNormal(intersection);
+        this._surfaceTransform(intersection);
+        const g = {
+            type: t.data.id,
+            slot: t.entries.length,
+            hand,
+            finger,
+            position: _p.clone(),
+            quaternion: _q.clone(),
+            born: this._time,
+        };
+        t.entries.push(g);
+        this.placedGems.push(g);
+        t.mesh.count = t.entries.length;
+        t.mesh.visible = true;
+        this._writeMatrix(t, g);
+        this._popping++;
 
-        // Position on nail
-        const offset = worldNormal.clone().multiplyScalar(0.005);
-        gem.position.copy(intersection.point).add(offset);
+        if (this.sparkles) this.sparkles.burst(intersection.point, 16, t.data.color);
+        if (this.events) {
+            this._decoPayload.id = t.data.id;
+            this.events.emit(EVENTS.DECO_PLACED, this._decoPayload);
+        }
+        // WP5 plays the sound from deco:placed; the direct call stays until it does.
+        if (!this.events || this.events.listenerCount(EVENTS.DECO_PLACED) === 0) soundManager.playGemClink();
+        this._requestRender();
+        return true;
+    }
 
-        // Rotate to face outward
-        gem.lookAt(
-            intersection.point.x + worldNormal.x,
-            intersection.point.y + worldNormal.y,
-            intersection.point.z + worldNormal.z
-        );
+    /**
+     * Advance pop animations (loop dt). Returns true while something animates.
+     */
+    update(dt) {
+        this._time += dt;
+        if (this._popping === 0) return false;
+        let still = 0;
+        for (let i = this.placedGems.length - 1; i >= 0; i--) {
+            const g = this.placedGems[i];
+            const age = this._time - g.born;
+            if (age - dt >= POP_TIME) break; // older gems finished earlier
+            this._writeMatrix(this._types.get(g.type), g);
+            if (age < POP_TIME) still++;
+        }
+        this._popping = still;
+        return true;
+    }
 
-        // Add to scene
-        this.scene.add(gem);
-        this.placedGems.push(gem);
-
-        // Play clink sound
-        soundManager.playGemClink();
-
-        console.log(`Placed gem: ${this.selectedGem}`);
+    /** Show only the gems of the current hand (call after a hand switch). */
+    refreshVisibility() {
+        this._types.forEach((t) => {
+            for (let i = 0; i < t.entries.length; i++) this._writeMatrix(t, t.entries[i]);
+        });
+        this._requestRender();
     }
 
     selectGem(gemId) {
         this.selectedGem = gemId;
-
-        // Clean up existing preview
-        if (this.previewGem) {
-            this.scene.remove(this.previewGem);
-            this.previewGem.geometry.dispose();
-            this.previewGem.material.dispose();
-            this.previewGem = null;
-        }
-
-        // Create preview only if a gem is selected
-        if (gemId) {
-            this.previewGem = this.createGemMesh(gemId, 0.007);
-            this.previewGem.material.opacity = 0.5;
-            this.previewGem.visible = false;
-            this.scene.add(this.previewGem);
+        const t = gemId ? this._types.get(gemId) : null;
+        if (t) {
+            this.previewGem.geometry = t.geometry;
+            this._previewMaterial.color.set(t.data.color);
             soundManager.playClick();
+        }
+        if (this.previewGem.visible) {
+            this.previewGem.visible = false;
+            this._requestRender();
         }
     }
 
@@ -360,35 +520,62 @@ export class GemTool {
     deactivate() {
         this.isActive = false;
 
-        if (this.previewGem) {
+        if (this.previewGem && this.previewGem.visible) {
             this.previewGem.visible = false;
+            this._requestRender();
         }
     }
 
+    _removeAt(index) {
+        const g = this.placedGems[index];
+        this.placedGems.splice(index, 1);
+        const t = this._types.get(g.type);
+        const last = t.entries.pop();
+        if (last !== g) {
+            // move the type's last instance into the freed slot
+            last.slot = g.slot;
+            t.entries[g.slot] = last;
+            this._writeMatrix(t, last);
+        }
+        t.mesh.count = t.entries.length;
+        t.mesh.visible = t.entries.length > 0;
+    }
+
     clearAll() {
-        this.placedGems.forEach(gem => {
-            this.scene.remove(gem);
-            gem.geometry.dispose();
-            gem.material.dispose();
+        this._types.forEach((t) => {
+            t.entries.length = 0;
+            t.mesh.count = 0;
+            t.mesh.visible = false;
         });
         this.placedGems = [];
+        this._popping = 0;
+        this._requestRender();
+    }
+
+    /** Remove the gems of one nail (current hand by default). */
+    clearNail(hand = this.nail.getCurrentHand(), finger = this.nail.getActiveNail()) {
+        for (let i = this.placedGems.length - 1; i >= 0; i--) {
+            const g = this.placedGems[i];
+            if (g.hand === hand && g.finger === finger) this._removeAt(i);
+        }
+        this._requestRender();
     }
 
     removeLastGem() {
         if (this.placedGems.length > 0) {
-            const lastGem = this.placedGems.pop();
-            this.scene.remove(lastGem);
-            lastGem.geometry.dispose();
-            lastGem.material.dispose();
+            this._removeAt(this.placedGems.length - 1);
+            this._requestRender();
         }
     }
 
     dispose() {
-        this.clearAll();
-        if (this.previewGem) {
-            this.scene.remove(this.previewGem);
-            this.previewGem.geometry.dispose();
-            this.previewGem.material.dispose();
-        }
+        this.scene.remove(this.group);
+        this._types.forEach((t) => {
+            t.mesh.dispose();
+            t.geometry.dispose();
+            t.material.dispose();
+        });
+        this._previewMaterial.dispose();
+        this._types.clear();
     }
 }

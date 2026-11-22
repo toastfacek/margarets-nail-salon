@@ -1,0 +1,84 @@
+/* WP4 brush juice: the dryer (UV lamp) button. Icon only, no text. */
+
+.juice-dryer {
+  position: fixed;
+  right: calc(16px + min(260px, 30vw) + 20px);
+  bottom: 112px;
+  width: 84px;
+  height: 84px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff 0%, #f3e8ff 55%, #e2c8ff 100%);
+  box-shadow: 0 6px 18px rgba(140, 60, 200, 0.35), inset 0 -4px 8px rgba(140, 60, 200, 0.18);
+  z-index: 20;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  /* hidden state: shrunk and see-through, takes no taps */
+  opacity: 0;
+  transform: scale(0.3);
+  pointer-events: none;
+  transition: transform 0.38s cubic-bezier(0.34, 1.7, 0.6, 1), opacity 0.2s ease;
+}
+
+.juice-dryer.is-shown {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.juice-dryer.is-holding {
+  transform: scale(0.92);
+  transition: transform 0.12s ease;
+}
+
+.juice-dryer svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+.juice-dryer .lamp-rays {
+  opacity: 0.25;
+  transition: opacity 0.15s ease;
+}
+
+.juice-dryer.is-holding .lamp-rays {
+  opacity: 1;
+}
+
+/* progress ring fills while held (runs once per press, not infinite) */
+.juice-dryer .lamp-ring {
+  stroke-dasharray: 239;
+  stroke-dashoffset: 239;
+}
+
+.juice-dryer.is-holding .lamp-ring {
+  animation: juice-dryer-fill var(--juice-dry-ms, 1200ms) linear forwards;
+}
+
+@keyframes juice-dryer-fill {
+  to { stroke-dashoffset: 0; }
+}
+
+/* a gentle "press me" bob when it first appears (3 bobs, then rests) */
+.juice-dryer.is-shown:not(.is-holding) .lamp-body {
+  animation: juice-dryer-bob 0.9s ease-in-out 3;
+  transform-origin: 50% 60%;
+}
+
+@keyframes juice-dryer-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .juice-dryer,
+  .juice-dryer .lamp-body {
+    transition: opacity 0.2s ease;
+    animation: none !important;
+  }
+}

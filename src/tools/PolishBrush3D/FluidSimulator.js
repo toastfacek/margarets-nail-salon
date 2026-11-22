@@ -13,8 +13,15 @@
  * - Every pass saves and restores the renderer's target, autoClear and clear
  *   colour; no pass ever leaves a target bound.
  *
- * Dye texture contract: rgb = sRGB colour blended over black with the splat
- * alpha; a = coverage with a bristle-streak profile (max-blended).
+ * Dye texture contract (also holds for every baked paint target):
+ *   PREMULTIPLIED alpha, Porter-Duff "over".
+ *   rgb = sRGB-encoded polish colour (display values, not linear) x a
+ *   a   = paint coverage 0..1, composited as a_out = a_src + a_dst * (1 - a_src)
+ *   Straight colour is rgb / a (guard a > ~1/255). Empty paper is (0, 0, 0, 0).
+ *   Splats write c * a_src + rgb_dst * (1 - a_src) and the alpha above, so rgb
+ *   and a stay consistent under any number of overlapping splats; bilinear
+ *   filtering, advection and blits operate on premultiplied values, which is
+ *   the correct space for them. `fill(c, a)` writes (c * a, a).
  */
 import * as THREE from 'three';
 
@@ -316,9 +323,10 @@ export class FluidSimulator {
       blendEquation: THREE.AddEquation,
       blendSrc: THREE.SrcAlphaFactor,
       blendDst: THREE.OneMinusSrcAlphaFactor,
-      blendEquationAlpha: THREE.MaxEquation,
+      // Alpha composites "over" too, so rgb / a is always the straight colour.
+      blendEquationAlpha: THREE.AddEquation,
       blendSrcAlpha: THREE.OneFactor,
-      blendDstAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
     });
 
     const velUniforms = capsuleUniforms();
@@ -653,11 +661,11 @@ export class FluidSimulator {
     this.blit(this.dye.read.texture, target);
   }
 
-  /** Fill the whole dye with one colour (sRGB 0..1) and alpha. */
+  /** Fill the whole dye with one colour (sRGB 0..1) and alpha (written premultiplied). */
   fill(color, alpha = 1) {
     const m = this.materials.fill;
-    if (color.isVector3) m.uniforms.uValue.value.set(color.x, color.y, color.z, alpha);
-    else m.uniforms.uValue.value.set(color.r, color.g, color.b, alpha);
+    if (color.isVector3) m.uniforms.uValue.value.set(color.x * alpha, color.y * alpha, color.z * alpha, alpha);
+    else m.uniforms.uValue.value.set(color.r * alpha, color.g * alpha, color.b * alpha, alpha);
     this.renderPass(m, this.dye.read);
     this._resetFlow();
   }

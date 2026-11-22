@@ -2,6 +2,11 @@
  * BrushTool.js
  * Pen-like drawing tool with different materials and effects
  * Feels like a real art pen with smooth strokes and various finishes
+ *
+ * Pointer events only (mouse, pen and touch). Strokes draw into the active
+ * nail's decoration canvas; the texture upload is deferred to `flush()`, which
+ * the brushJuice feature calls once per frame from the loop, so a fast stroke
+ * uploads the canvas at most once per frame. Nothing is emitted per move.
  */
 import * as THREE from 'three';
 import { soundManager } from '../audio/SoundManager.js';
@@ -113,9 +118,47 @@ export class BrushTool {
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
+        this._hits = [];
+        this._rect = null;
+        // Reused stroke points (no allocation per move)
+        this._from = { x: 0, y: 0 };
+        this._to = { x: 0, y: 0 };
+        this._hasLast = false;
         this.lastDrawPos = null;
+        this._pointCount = 0;
+
+        // Deferred texture upload (see flush()); off until a loop calls flush.
+        this._deferUpload = false;
+        this._dirty = false;
+        this.invalidate = null;
 
         this.setupEventListeners();
+    }
+
+    /**
+     * Defer texture uploads to flush() (called once per frame by the loop).
+     * @param {{ invalidate?: () => void }} [opts]
+     */
+    connect({ invalidate = null } = {}) {
+        this.invalidate = invalidate;
+        this._deferUpload = true;
+    }
+
+    /** Upload the decoration canvas if a stroke drew into it. At most once per frame. */
+    flush() {
+        if (!this._dirty) return false;
+        this._dirty = false;
+        this.nail.updateDrawingTexture();
+        return true;
+    }
+
+    _markDirty() {
+        if (!this._deferUpload) {
+            this.nail.updateDrawingTexture();
+            return;
+        }
+        this._dirty = true;
+        if (this.invalidate) this.invalidate();
     }
 
     setupEventListeners() {
@@ -124,29 +167,24 @@ export class BrushTool {
             setTimeout(() => this.setupEventListeners(), 100);
             return;
         }
+        this._canvas = canvas;
 
-        // Mouse events
-        canvas.addEventListener('mousedown', (e) => this.onPointerDown(e));
-        canvas.addEventListener('mousemove', (e) => this.onPointerMove(e));
-        canvas.addEventListener('mouseup', () => this.onPointerUp());
-        canvas.addEventListener('mouseleave', () => this.onPointerUp());
-
-        // Touch events
-        canvas.addEventListener('touchstart', (e) => this.onPointerDown(e), { passive: false });
-        canvas.addEventListener('touchmove', (e) => this.onPointerMove(e), { passive: false });
-        canvas.addEventListener('touchend', () => this.onPointerUp());
+        // Pointer events cover mouse, pen and touch.
+        canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+        canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
+        canvas.addEventListener('pointerup', () => this.onPointerUp());
+        canvas.addEventListener('pointerleave', () => this.onPointerUp());
+        canvas.addEventListener('pointercancel', () => this.onPointerUp());
     }
 
     updateMousePosition(event) {
-        const canvas = document.querySelector('#canvas-container canvas');
+        const canvas = this._canvas;
         if (!canvas) return;
-
-        const rect = canvas.getBoundingClientRect();
-        const clientX = event.touches ? event.touches[0].clientX : event.clientX;
-        const clientY = event.touches ? event.touches[0].clientY : event.clientY;
-
-        this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-        this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        // getBoundingClientRect allocates: read it on pointerdown only.
+        if (!this._rect || event.type === 'pointerdown') this._rect = canvas.getBoundingClientRect();
+        const rect = this._rect;
+        this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     }
 
     getUVIntersection() {
@@ -154,77 +192,85 @@ export class BrushTool {
         const nailMesh = this.nail.getNailMesh();
         if (!nailMesh) return null;
 
-        const intersects = this.raycaster.intersectObject(nailMesh, true);
-        if (intersects.length > 0 && intersects[0].uv) {
-            return intersects[0].uv;
-        }
-        return null;
+        const hits = this._hits;
+        hits.length = 0;
+        this.raycaster.intersectObject(nailMesh, false, hits);
+        const uv = hits.length > 0 && hits[0].uv ? hits[0].uv : null;
+        hits.length = 0;
+        return uv;
     }
 
     onPointerDown(event) {
         if (!this.isActive) return;
-        event.preventDefault?.();
+        if (event.button !== undefined && event.button > 0) return;
+        if (event.cancelable) event.preventDefault();
 
         this.isDrawing = true;
-        this.points = []; // Reset points for new stroke
-        this.lastTime = performance.now();
+        this._pointCount = 0;
+        this.lastTime = event.timeStamp || performance.now();
         this.updateMousePosition(event);
 
         const uv = this.getUVIntersection();
         if (uv) {
-            const pos = { x: uv.x * this.dim, y: uv.y * this.dim };
-            this.points.push(pos);
-            this.lastDrawPos = pos;
-            this.drawStrokeStart(pos.x, pos.y);
+            this._from.x = uv.x * this.dim;
+            this._from.y = uv.y * this.dim;
+            this._hasLast = true;
+            this.lastDrawPos = this._from;
+            this._pointCount = 1;
+            this.drawStrokeStart(this._from.x, this._from.y);
             soundManager.init();
         }
     }
 
     onPointerMove(event) {
         if (!this.isActive || !this.isDrawing) return;
-        event.preventDefault?.();
 
         this.updateMousePosition(event);
 
         // Calculate velocity for pressure simulation
-        const now = performance.now();
+        const now = event.timeStamp || performance.now();
         const deltaTime = now - this.lastTime;
         this.lastTime = now;
 
         const uv = this.getUVIntersection();
         if (uv) {
-            const currentPos = { x: uv.x * this.dim, y: uv.y * this.dim };
+            const to = this._to;
+            to.x = uv.x * this.dim;
+            to.y = uv.y * this.dim;
 
-            if (this.lastDrawPos) {
+            if (this._hasLast) {
                 // Calculate velocity-based size variation
-                const dx = currentPos.x - this.lastDrawPos.x;
-                const dy = currentPos.y - this.lastDrawPos.y;
+                const dx = to.x - this._from.x;
+                const dy = to.y - this._from.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
                 this.velocity = deltaTime > 0 ? distance / deltaTime : 0;
-
-                // Add point for smooth curve
-                this.points.push(currentPos);
+                this._pointCount++;
 
                 // Draw the stroke segment
-                this.drawStrokeSegment(this.lastDrawPos, currentPos);
+                this.drawStrokeSegment(this._from, to);
             }
 
-            this.lastDrawPos = currentPos;
+            this._from.x = to.x;
+            this._from.y = to.y;
+            this._hasLast = true;
+            this.lastDrawPos = this._from;
         } else {
             // Lifted off nail surface
+            this._hasLast = false;
             this.lastDrawPos = null;
-            this.points = [];
+            this._pointCount = 0;
         }
     }
 
     onPointerUp() {
-        if (this.isDrawing && this.points.length > 0) {
+        if (this.isDrawing && this._pointCount > 0) {
             // Final stroke completion
             this.finalizeStroke();
         }
         this.isDrawing = false;
+        this._hasLast = false;
         this.lastDrawPos = null;
-        this.points = [];
+        this._pointCount = 0;
         this.velocity = 0;
     }
 
@@ -268,7 +314,7 @@ export class BrushTool {
                 this.drawSolidPoint(ctx, x, y, size);
         }
 
-        this.nail.updateDrawingTexture();
+        this._markDirty();
     }
 
     /**
@@ -303,7 +349,7 @@ export class BrushTool {
         // Play material-specific sound (throttled)
         this.playDrawSound();
 
-        this.nail.updateDrawingTexture();
+        this._markDirty();
     }
 
     /**
@@ -637,7 +683,9 @@ export class BrushTool {
     deactivate() {
         this.isActive = false;
         this.isDrawing = false;
-        this.points = [];
+        this._hasLast = false;
+        this._pointCount = 0;
+        this.flush();
     }
 
     clear() {

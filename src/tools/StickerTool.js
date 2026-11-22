@@ -4,6 +4,7 @@
  */
 import * as THREE from 'three';
 import { soundManager } from '../audio/SoundManager.js';
+import { EVENTS } from '../core/GameEvents.js';
 
 // Available sticker designs
 export const STICKERS = [
@@ -34,8 +35,22 @@ export class StickerTool {
 
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
+        this._hits = [];
+
+        // Juice hooks (wired by the brushJuice feature)
+        this.events = null;
+        this.sparkles = null;
+        this.invalidate = null;
+        this._decoPayload = { type: 'sticker', id: null };
 
         this.setupEventListeners();
+    }
+
+    /** Wire events, sparkles and redraw requests (brushJuice feature). */
+    connect({ events = null, sparkles = null, invalidate = null } = {}) {
+        this.events = events;
+        this.sparkles = sparkles;
+        this.invalidate = invalidate;
     }
 
     setupEventListeners() {
@@ -61,16 +76,23 @@ export class StickerTool {
         this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     }
 
-    getUVIntersection() {
+    /** The nail hit under the pointer (with uv), or null. */
+    getIntersection() {
         this.raycaster.setFromCamera(this.mouse, this.camera);
         const nailMesh = this.nail.getNailMesh();
         if (!nailMesh) return null;
 
-        const intersects = this.raycaster.intersectObject(nailMesh, true);
-        if (intersects.length > 0 && intersects[0].uv) {
-            return intersects[0].uv;
-        }
-        return null;
+        const hits = this._hits;
+        hits.length = 0;
+        this.raycaster.intersectObject(nailMesh, false, hits);
+        const hit = hits.length > 0 && hits[0].uv ? hits[0] : null;
+        hits.length = 0;
+        return hit;
+    }
+
+    getUVIntersection() {
+        const hit = this.getIntersection();
+        return hit ? hit.uv : null;
     }
 
     onClick(event) {
@@ -78,9 +100,9 @@ export class StickerTool {
 
         this.updateMousePosition(event);
 
-        const uv = this.getUVIntersection();
-        if (uv) {
-            this.placeSticker(uv);
+        const hit = this.getIntersection();
+        if (hit) {
+            this.placeSticker(hit.uv, hit.point);
         }
     }
 
@@ -90,13 +112,18 @@ export class StickerTool {
         event.preventDefault();
         this.updateMousePosition(event);
 
-        const uv = this.getUVIntersection();
-        if (uv) {
-            this.placeSticker(uv);
+        const hit = this.getIntersection();
+        if (hit) {
+            this.placeSticker(hit.uv, hit.point);
         }
     }
 
-    placeSticker(uv) {
+    /**
+     * Draw a sticker into the decoration layer (it lands on top of the polish).
+     * @param {THREE.Vector2} uv
+     * @param {THREE.Vector3} [point] world hit point for the sparkle pop
+     */
+    placeSticker(uv, point = null) {
         const ctx = this.nail.getDrawingContext();
         if (!ctx) return;
 
@@ -115,10 +142,15 @@ export class StickerTool {
 
         this.nail.updateDrawingTexture();
 
-        // Play pop sound
-        soundManager.playStickerPop();
-
-        console.log(`Placed sticker: ${this.selectedSticker} at UV(${uv.x.toFixed(2)}, ${uv.y.toFixed(2)})`);
+        // Pop: sparkles at the hit point, and tell everyone (WP5 plays the sound
+        // from deco:placed; the direct call stays until it does).
+        if (this.sparkles && point) this.sparkles.burst(point, 14, stickerData.color);
+        if (this.events) {
+            this._decoPayload.id = stickerData.id;
+            this.events.emit(EVENTS.DECO_PLACED, this._decoPayload);
+        }
+        if (!this.events || this.events.listenerCount(EVENTS.DECO_PLACED) === 0) soundManager.playStickerPop();
+        if (this.invalidate) this.invalidate();
     }
 
     selectSticker(stickerId) {
