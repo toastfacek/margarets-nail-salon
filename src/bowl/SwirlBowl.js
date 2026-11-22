@@ -427,6 +427,12 @@ export function installBowl(app) {
     app.updateFingerSelectorUI?.();
   };
 
+  const setScale = (pr) => {
+    if (S.renderer.getPixelRatio() === pr) return;
+    S.renderer.setPixelRatio(pr);
+    S.renderer.setSize(S.width, S.height);
+  };
+
   function openBowl() {
     if (open || body.classList.contains('revealing')) return;
     brushWas = brush.isActive;
@@ -436,8 +442,11 @@ export function installBowl(app) {
     S.holdCamera(true);
     app.quality.hold(1500);
     const s = app.quality.settings;
-    sim = makeSim(128, 384, Math.max(4, s.pressureIterations));
-    wat.uE.value = s.tier === 'low' ? 0 : sim.opts.dyeRes;
+    // Low tier pays for the bowl's projection passes with one render-scale rung.
+    const low = s.tier === 'low';
+    if (low) setScale(s.pixelRatio * 0.85);
+    sim = makeSim(low ? 96 : 128, low ? 320 : 384, Math.max(4, s.pressureIterations));
+    wat.uE.value = low ? 0 : sim.opts.dyeRes;
     sumU = sumV = sumN = dunks = awake = 0;
     lastDunk = null;
     place();
@@ -467,6 +476,7 @@ export function installBowl(app) {
     body.classList.remove('bowl-open');
     S.holdCamera(false);
     S.controls.enabled = ctrlWas;
+    setScale(app.quality.settings.pixelRatio);
     if (lastDunk && lastDunk !== hm.getActiveNail()) toFinger(lastDunk);
     app.zoomToFinger(hm.getActiveNail());
     if (brushWas) brush.activate();
