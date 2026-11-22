@@ -119,53 +119,65 @@ export class PolaroidWall {
     return this.wall.classList.contains('on');
   }
 
-  /** The reveal's polaroid: pops up white, develops once setPhoto() lands. */
+  /**
+   * The reveal's polaroid. It pops up only once its photo lands (setPhoto),
+   * then develops; drop() flies it onto the stack. A photo that lands after
+   * the drop is pinned straight away.
+   */
   present(stars) {
     this.dropNow();
-    const host = document.createElement('div');
-    host.className = 'pw-fly';
-    host.innerHTML = card({ t: 0, stars, img: '' });
-    document.body.appendChild(host);
-    void host.offsetWidth; // start the transitions from the hidden state
-    host.classList.add('in');
-    this.fly = host;
-    this.flyImg = '';
-    this.flyStars = stars;
+    this.fly = { stars, img: '', el: null, dropped: false };
   }
 
-  /** The presented polaroid's photo (a data URL; '' if it failed). It may land after the drop. */
+  /** The presented polaroid's photo (a data URL; '' if it failed). */
   setPhoto(img) {
-    if (this.fly && img) {
-      this.flyImg = img;
-      this.fly.querySelector('img').src = img;
-    } else if (this._late && img) {
-      this.add(img, this._late);
+    const f = this.fly;
+    if (!f) return;
+    if (!img) {
+      this.fly = null;
+      return;
     }
-    this._late = 0;
+    f.img = img;
+    if (f.dropped) {
+      this.dropNow();
+      return;
+    }
+    const el = (f.el = document.createElement('div'));
+    el.className = 'pw-fly';
+    el.innerHTML = card({ t: 0, stars: f.stars, img });
+    document.body.appendChild(el);
+    void el.offsetWidth; // start the transitions from the hidden state
+    el.classList.add('in');
   }
 
   /** Fly the presented polaroid onto the stack, then pin it. */
   drop() {
     const f = this.fly;
     if (!f) return;
-    const a = f.firstChild.getBoundingClientRect();
+    f.dropped = true;
+    if (!f.el) return; // pinned when the photo lands
+    const a = f.el.firstChild.getBoundingClientRect();
     const b = this.stack.getBoundingClientRect();
-    f.style.setProperty('--dx', `${b.left + b.width / 2 - (a.left + a.width / 2)}px`);
-    f.style.setProperty('--dy', `${b.top + b.height / 2 - (a.top + a.height / 2)}px`);
-    f.style.setProperty('--s', (b.width / Math.max(1, a.width)).toFixed(3));
-    f.classList.add('out');
+    f.el.style.setProperty('--dx', `${b.left + b.width / 2 - (a.left + a.width / 2)}px`);
+    f.el.style.setProperty('--dy', `${b.top + b.height / 2 - (a.top + a.height / 2)}px`);
+    f.el.style.setProperty('--s', (b.width / Math.max(1, a.width)).toFixed(3));
+    f.el.classList.add('out');
     this._dropT = setTimeout(() => this.dropNow(), 520);
   }
 
-  /** Finish any flight at once (skip, or a new reveal). */
+  /** Finish the flight at once and pin the photo (or wait for it to land). */
   dropNow() {
     const f = this.fly;
     if (!f) return;
     clearTimeout(this._dropT);
+    if (f.el) f.el.remove();
+    f.el = null;
+    if (!f.img) {
+      f.dropped = true;
+      return;
+    }
     this.fly = null;
-    f.remove();
-    if (this.flyImg) this.add(this.flyImg, this.flyStars);
-    else this._late = this.flyStars;
+    this.add(f.img, f.stars);
     this.stack.classList.remove('bump');
     void this.stack.offsetWidth;
     this.stack.classList.add('bump');

@@ -43,12 +43,21 @@ body.revealing .pw-stack:not(.show) {
 .rv-stars.on { opacity: 1; }
 .rv-stars.off { opacity: 0; }
 .rv-stars span {
-  width: 88px;
-  height: 88px;
+  width: 120px;
+  height: 120px;
   transform: scale(0);
-  filter: drop-shadow(0 4px 10px rgba(255, 190, 0, 0.7));
+  filter: drop-shadow(0 4px 12px rgba(255, 190, 0, 0.75));
 }
-.rv-stars span.on { animation: rv-star 0.55s cubic-bezier(0.34, 1.7, 0.6, 1) both; }
+/* one star per jingle ding (1.07 / 1.29 / 1.51 s after the flash, RevealDirector DING) */
+.rv-stars.on span { animation: rv-star 0.55s cubic-bezier(0.34, 1.7, 0.6, 1) 1.07s both; }
+.rv-stars.on span:nth-child(2) { animation-delay: 1.29s; }
+.rv-stars.on span:nth-child(3) { animation-delay: 1.51s; }
+/* and the photo punches in on each ding (compositor-only transform) */
+body[data-ding] #canvas-container canvas { animation: rv-punch 0.22s ease-out 1.07s; }
+body[data-ding='2'] #canvas-container canvas { animation: rv-punch 0.22s ease-out 1.07s, rv-punch2 0.22s ease-out 1.29s; }
+body[data-ding='3'] #canvas-container canvas { animation: rv-punch 0.22s ease-out 1.07s, rv-punch2 0.22s ease-out 1.29s, rv-punch 0.22s ease-out 1.51s; }
+@keyframes rv-punch { 35% { transform: scale(1.045); } }
+@keyframes rv-punch2 { 35% { transform: scale(1.045); } }
 .rv-stars[data-n='1'] span:nth-child(n + 2),
 .rv-stars[data-n='2'] span:nth-child(3) { display: none; }
 .rv-stars svg { width: 100%; height: 100%; display: block; }
@@ -90,8 +99,8 @@ body.revealing .pw-stack:not(.show) {
 }
 
 .pw-fly {
-  left: 77%;
-  top: 55%;
+  left: 86%;
+  top: 56%;
   z-index: 46;
   transform: translate(-50%, -50%) translateY(70vh) rotate(-14deg);
   transition: transform 0.6s cubic-bezier(0.34, 1.4, 0.6, 1);
@@ -186,14 +195,14 @@ body.mode-free .pw-stack { display: none; } /* free mode has its gallery button 
 @keyframes pw-in { from { opacity: 0; transform: scale(0.6) rotate(var(--r, 0deg)); } }
 
 @media (orientation: portrait) {
-  .pw-fly { left: 50%; top: 72%; }
-  .pw-fly .pw-p { --w: 50vw; }
-  .rv-stars span { width: 60px; height: 60px; }
+  .pw-fly { left: 78%; top: 80%; }
+  .pw-fly .pw-p { --w: 34vw; }
+  .rv-stars span { width: 84px; height: 84px; }
   .pw-wall .pw-p { --w: 128px; }
 }
 @media (max-height: 420px) and (orientation: landscape) {
   .pw-stack { top: 54px; right: 6px; width: 44px; height: 50px; }
-  .rv-stars span { width: 52px; height: 52px; }
+  .rv-stars span { width: 64px; height: 64px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pw-fly, .pw-fly.out { transition-duration: 0.01s; }

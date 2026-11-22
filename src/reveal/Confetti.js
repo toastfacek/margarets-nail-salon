@@ -20,7 +20,7 @@ const COLORS = [0xff2a6d, 0xffd21f, 0x22c3ff, 0x5ef0a0, 0xb15cff, 0xff8a1f, 0xff
 const vertexShader = /* glsl */ `
 uniform float uT;
 uniform float uAspect;
-uniform float uOn;
+uniform float uScale;
 attribute vec4 aSeed;
 attribute vec3 aColor;
 varying vec3 vC;
@@ -38,7 +38,7 @@ void main() {
   vec2 c = vec2(side * (uAspect + 0.02), -1.06);
   c.x += v.x * e + 0.07 * sin(t * (4.0 + 3.0 * aSeed.z) + aSeed.y * 6.28) * smoothstep(0.3, 0.9, t);
   c.y += (v.y + g / k) * e - g / k * t;
-  float w = 0.03 * (0.75 + 0.6 * aSeed.z);
+  float w = 0.03 * uScale * (0.75 + 0.6 * aSeed.z);
   float h = w * (0.4 + 0.35 * aSeed.y);
   float flip = cos(t * (6.0 + 8.0 * aSeed.y) + aSeed.z * 6.28);
   float r = aSeed.y * 6.28 + t * (3.0 + 5.0 * aSeed.z) * side;
@@ -48,7 +48,7 @@ void main() {
   gl_Position = vec4(c.x / uAspect, c.y, 0.0, 1.0);
   float f = abs(flip);
   vC = aColor * (0.62 + 0.38 * f) + 0.3 * pow(f, 12.0);
-  vA = uOn - smoothstep(${(LIFE - 0.6).toFixed(2)}, ${LIFE.toFixed(2)}, t);
+  vA = 1.0 - smoothstep(${(LIFE - 0.6).toFixed(2)}, ${LIFE.toFixed(2)}, t);
 }`;
 
 const fragmentShader = /* glsl */ `
@@ -85,7 +85,7 @@ export class Confetti {
       name: 'Confetti',
       vertexShader,
       fragmentShader,
-      uniforms: { uT: { value: 0 }, uAspect: { value: 1 }, uOn: { value: 1 } },
+      uniforms: { uT: { value: 0 }, uAspect: { value: 1 }, uScale: { value: 1 } },
       transparent: true,
       depthTest: false,
       depthWrite: false,
@@ -106,20 +106,19 @@ export class Confetti {
     this.mesh.visible = this.active;
   }
 
-  /** Draw once fully transparent (first-use cost of the draw on software GL). */
-  warm() {
-    this.material.uniforms.uT.value = 1;
-    this.material.uniforms.uOn.value = 0;
-    this.mesh.visible = true;
-  }
-
-  /** Fire `count` pieces (capped at 160) for a screen of the given aspect. */
+  /**
+   * Fire `count` pieces (capped at 160) for a screen of the given aspect.
+   * Fewer pieces are drawn bigger (sqrt(160 / count)) so 40 still read.
+   * Calling it again refires the same pieces.
+   */
   burst(count, aspect) {
-    this.mesh.geometry.instanceCount = Math.max(1, Math.min(MAX, count | 0));
-    this.material.uniforms.uAspect.value = aspect || 1;
+    const n = Math.max(1, Math.min(MAX, count | 0));
+    const u = this.material.uniforms;
+    this.mesh.geometry.instanceCount = n;
+    u.uAspect.value = aspect || 1;
+    u.uScale.value = Math.sqrt(MAX / n);
     this.t = 0;
-    this.material.uniforms.uT.value = 0;
-    this.material.uniforms.uOn.value = 1;
+    u.uT.value = 0;
     this.active = true;
     this.mesh.visible = true;
   }
