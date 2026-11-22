@@ -148,6 +148,8 @@ export function installBowl(app) {
   let sumV = 0;
   let sumN = 0;
   let dunks = 0;
+  let sx = 0.2;
+  let sy = 0.2;
   let rect = null;
   let brushWas = false;
   let ctrlWas = true;
@@ -170,17 +172,17 @@ export function installBowl(app) {
   }
 
   function warpPass(cu, cv, area, r, g, b, a) {
-    wu.uSrc.value = sim.dye.read.texture;
+    wu.uS.value = sim.dye.read.texture;
     wu.uC.value.set(cu, cv);
     wu.uA.value = area;
-    wu.uCol.value.set(r * a, g * a, b * a, a);
-    wu.uTex.value = 1 / sim.opts.dyeRes;
+    wu.uK.value.set(r * a, g * a, b * a, a);
+    wu.uT.value = 1 / sim.opts.dyeRes;
     sim.renderPass(warp, sim.dye.write);
     sim.dye.swap();
-    wu.uSrc.value = null;
+    wu.uS.value = null;
   }
 
-  const ripple = (ru, rv, amp) => wat.uRip.value.set(ru, rv, 0.01, amp);
+  const ripple = (ru, rv, amp) => wat.uR.value.set(ru, rv, 0.01, amp);
 
   /** Queue a drop: sRGB colour (a = 0: clear water), water uv, spread area (uv^2). */
   function addDrop(r, g, b, a, du, dv, area) {
@@ -227,16 +229,8 @@ export function installBowl(app) {
   function print() {
     const hand = hm.getCurrentHand();
     const finger = hm.getActiveNail();
-    const rec = hm.getNail(hand, finger);
     brush.fillNail('#ffffff');
     const target = hm.getPaintTarget(hand, finger, true);
-    const geo = rec.mesh.geometry;
-    if (!geo.boundingBox) geo.computeBoundingBox();
-    box.copy(geo.boundingBox).applyMatrix4(rec.mesh.matrixWorld);
-    const a = hm.getUVAspect(hand, finger);
-    const k = (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) * ZOOM) / (2 * WR);
-    const sx = a >= 1 ? k : k * a;
-    const sy = a >= 1 ? k / a : k;
     const copy = sim.materials.copy;
     copy.blending = THREE.CustomBlending;
     sim.blit(sim.getTexture(), target, uvT.set(sx, sy, dipU - sx / 2, dipV - sy / 2));
@@ -263,7 +257,7 @@ export function installBowl(app) {
       qCount--;
       t = 0;
       phase = cur[3] > 0 ? 1 : 2;
-      if (phase === 1) dropMat.uniforms.uCol.value.setRGB(cur[0], cur[1], cur[2]);
+      if (phase === 1) dropMat.uniforms.uC.value.setRGB(cur[0], cur[1], cur[2]);
     }
     if (phase === 1) {
       t += dt;
@@ -282,14 +276,14 @@ export function installBowl(app) {
     // Spread: the whole warp in one pass; the water shader eases it open.
     if (phase === 2) {
       warpPass(cur[4], cur[5], cur[6], cur[0], cur[1], cur[2], cur[3]);
-      wat.uSpread.value.set(cur[4], cur[5], cur[6]);
+      wat.uP.value.set(cur[4], cur[5], cur[6]);
       phase = 3;
       t = 0;
     }
     if (phase === 3) {
       t += dt;
       const k = Math.min(1, t / 0.34);
-      wat.uSpread.value.z = cur[6] * (1 - k) ** 3;
+      wat.uP.value.z = cur[6] * (1 - k) ** 3;
       if (k >= 1) phase = 0;
       changed = true;
     }
@@ -313,9 +307,9 @@ export function installBowl(app) {
       }
       changed = true;
     }
-    wat.uDye.value = sim.getTexture();
+    wat.uD.value = sim.getTexture();
 
-    const rip = wat.uRip.value;
+    const rip = wat.uR.value;
     if (rip.w > 0.003) {
       rip.z += dt * 0.32;
       rip.w *= Math.exp(-dt * 2.4);
@@ -443,7 +437,7 @@ export function installBowl(app) {
     app.quality.hold(1500);
     const s = app.quality.settings;
     sim = makeSim(128, 384, Math.max(4, s.pressureIterations));
-    wat.uRelief.value = s.tier === 'low' ? 0 : sim.opts.dyeRes;
+    wat.uE.value = s.tier === 'low' ? 0 : sim.opts.dyeRes;
     sumU = sumV = sumN = dunks = awake = 0;
     lastDunk = null;
     place();
@@ -465,8 +459,8 @@ export function installBowl(app) {
     }
     dunkT = -1;
     sim.dispose();
-    sim = wat.uDye.value = null;
-    wat.uRip.value.w = wat.uSpread.value.z = qCount = phase = 0;
+    sim = wat.uD.value = null;
+    wat.uR.value.w = wat.uP.value.z = qCount = phase = 0;
     group.visible = drop.visible = open = dragging = false;
     for (const [n, f] of LISTENERS) window.removeEventListener(n, f, true);
     app.loop.remove(update);
@@ -489,7 +483,17 @@ export function installBowl(app) {
     const n = Math.max(sumN, 1);
     dipU = (sumN ? sumU / n : 0.5) + 0.06 * Math.cos(dunks * 2.4);
     dipV = (sumN ? sumV / n : 0.5) + 0.06 * Math.sin(dunks++ * 2.4);
-    const nail = hm.getNailWorldPosition(hm.getActiveNail(), pivot);
+    const finger = hm.getActiveNail();
+    const rec = hm.getNail(hm.getCurrentHand(), finger);
+    // Footprint in the water (measured at rest, before the hand pitches).
+    const geo = rec.mesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    box.copy(geo.boundingBox).applyMatrix4(rec.mesh.matrixWorld);
+    const a = hm.getUVAspect(hm.getCurrentHand(), finger);
+    const k = (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) * ZOOM) / (2 * WR);
+    sx = a >= 1 ? k : k * a;
+    sy = a >= 1 ? k / a : k;
+    const nail = hm.getNailWorldPosition(finger, pivot);
     dunkOff.set(C.x + (dipU - 0.5) * 2 * WR - nail.x, C.y + WY - nail.y - 0.004, C.z - (dipV - 0.5) * 2 * WR - nail.z);
     // Pitch axis: up x (horizontal dip direction), so the fingertip goes down.
     axis.set(dunkOff.z, 0, -dunkOff.x).normalize();
