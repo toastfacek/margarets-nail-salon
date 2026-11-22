@@ -264,6 +264,7 @@ body.revealing #ui-overlay * { pointer-events: none !important; }
 
 .item.emoji { padding: 0; font-size: calc(var(--tap) * 0.52); line-height: var(--tap); text-align: center; }
 #ui-overlay .opt-draw .opt-btn { background: #efe3fa; }
+.pen svg { filter: drop-shadow(0 0 0.6px var(--ink)) drop-shadow(0 0 0.6px var(--ink)); }
 .size i { display: block; width: var(--s); height: var(--s); margin: auto; border-radius: 50%; background: var(--pc); box-shadow: 0 0 0 1.5px var(--ink); }
 
 /* ----------------------------------------------------------------- mute -- */
