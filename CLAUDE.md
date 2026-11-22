@@ -1,80 +1,106 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
-## Project Overview
+## Project
 
-NAIL ICON is a browser-based nail salon game for kids (ages 2-11) built with Three.js. Players can shape nails, apply polish, add decorations (stickers, gems), and draw freehand designs on a 3D hand model.
-
-## Commands
+Margaret's Nail Salon: a Three.js nail salon game for kids aged 2 to 11,
+built for the Poki web portal. One huge glossy nail under a ring light, a fat
+wet brush, clients who ask for a look in pictures, and a reveal that ends in a
+polaroid on the wall. **No text for the player anywhere** (numerals only):
+icons, colour, motion and sound. No network requests: every asset is made in
+code (inline SVG, CSS, Web Audio, procedural textures) except the hand GLBs.
 
 ```bash
-npm run dev      # Start Vite dev server with HMR
-npm run build    # Production build to dist/
-npm run preview  # Preview production build locally
+npm run dev      # Vite dev server
+npm run build    # production build to dist/ (base './', relative URLs)
+npm run preview  # serve dist/
 ```
 
 ## Architecture
 
-### Core Application Flow
+### Spine (`src/core`, created in `src/main.js`)
 
-`src/main.js` contains `NailArtistApp`, the main controller that:
-- Initializes the 3D scene and hand model
-- Manages tool state and switching between tools
-- Renders tool-specific option panels dynamically
-- Handles finger selection with click-to-zoom camera animations
-- Handles UI events (toolbar, action buttons, gallery modal)
+`window.app` is the `NailArtistApp` in `src/main.js`. Services every module
+uses (stable contract, see `docs/upgrade/build-plan.md` section 0.4):
 
-### Scene Layer (`src/scene/`)
+| Service | What |
+|---|---|
+| `app.scene` | `NailScene` (scene, camera, renderer, OrbitControls, focus animation) |
+| `app.nail` | `HandModel` (two hands, five nails each, per-nail paint targets, finishes, skin tone) |
+| `app.polishBrush3D` | the polish brush: bristle physics + GPU fluid sim |
+| `app.events` | `GameEvents` (`on`, `off`, `once`, `emit`, `listenerCount`); event names in `EVENTS` |
+| `app.loop` | `FrameLoop`: the only `requestAnimationFrame`; `add(fn, order)`, `invalidate()` (render on demand) |
+| `app.quality` | `Quality`: tier `high/medium/low`, `settings` table, auto-downgrade |
+| `app.storage` | `Storage`: the only `localStorage` access (try/catch, in-memory fallback) |
+| `app.sound` | `soundManager` (Web Audio only, master gain, `setMuted(m, 'user'|'ad')`) |
+| `app.mode` | `'round'` (the game, default) or `'free'` (the sandbox, behind the door icon) |
 
-- **HandModel.js**: Primary 3D model adapter that loads GLB hand models with 5 independent nails per hand. Supports dual-hand (left/right) switching, nail shape morphing, polish materials (glossy, matte, shimmer, chrome), and per-nail canvas overlay textures for drawing. Exports `FINGERS` and `NAIL_SHAPES` constants.
-- **NailScene.js**: Three.js scene setup with gradient background, studio lighting (key, fill, rim, bounce lights), OrbitControls with constrained rotation/zoom, camera focus animations for nail zoom, and raycaster helper for click detection.
-- **ModelLoader.js**: GLTF/GLB model loader utility with Draco compression support and caching. Singleton `modelLoader` instance. Place model files in `public/models/`.
-- **FingerConfig.js**: Shared constants for finger order and defaults.
+Features: `src/main.js` ends `init()` by installing every
+`src/features/*.feature.js` (sorted by `export const order`). New behaviour
+goes in a new feature file that imports its own CSS; it talks to the rest
+through `app.*` services and events, not by editing `main.js`.
 
-### Tools Layer (`src/tools/`)
+| Feature | Order | Adds |
+|---|---|---|
+| `salon` | 10 | desk, contact shadow, deferred shader warm-ups |
+| `audio` | 20 | wires every sound to events |
+| `brushJuice` | 60 | sparkles, wet-to-cure, the dryer (UV lamp) button, gem/sticker pops |
+| `game` | 70 | round mode: client requests (`src/game`), bubble, stars, bottle tray, Done heart, ghost finger, door |
+| `reveal` | 75 | the Slay reveal and the polaroid wall (`src/reveal`) |
 
-Each tool follows a consistent pattern:
-- Constructor takes `(scene, camera, nail)` where `nail` is HandModel instance
-- `activate()`/`deactivate()` methods for tool switching
-- Event handlers for pointer interaction (mouse + touch)
-- Uses raycasting to detect nail surface hits and convert to UV coordinates
+Main events: `tool:change`, `nail:select`, `mode:change`, `brush:strokeStart`,
+`brush:stroke` (per frame, reused payload), `brush:strokeEnd`, `nail:coverage`,
+`nail:covered`, `nail:cured`, `deco:placed`, `ui:done`, `ui:gallery`, `ui:mute`,
+`roundStart` / `roundEnd` (the future Poki gameplayStart/Stop hooks),
+`reveal:request`, `reveal:start`, `reveal:flash`, `reveal:done`.
 
-Active tools:
-- **PolishTool.js**: Realistic nail polish painting with layer support (base coat, color coats, top coat). Tracks coverage percentage and drying state per layer.
-- **PolishBrush3D/**: 3D nail polish brush with bristle physics. Subsystem includes:
-  - `PolishBrush3D.js`: Main controller coordinating bristle system, input handling, and paint application
-  - `BristleSystem.js`: Instanced mesh bristles with CPU Verlet physics for realistic bending/splaying
-  - `BrushInputHandler.js`: Maps pointer input to 3D brush position via raycasting against nail mesh
-  - `BristlePaintApplicator.js`: Applies paint to canvas from bristle contact points
-  - `BrushEffects.js`: Particle effects and audio feedback for brush strokes
-  - `WetPaintMaterial.js`: Wet paint highlight overlay effect
-- **BrushTool.js**: Freehand drawing on a 1024x1024 canvas texture. Multiple pen types: solid, dotted, metallic, rainbow, glitter (sparkle spray), marker. Size slider and color palette.
-- **StickerTool.js**: Places emoji stickers on nail surface at tap position.
-- **GemTool.js**: Places 3D gems/rhinestones on nail surface.
+### Quality tiers
 
-### State Layer (`src/state/`)
+`src/core/Quality.js` picks `high`, `medium` or `low` (URL `?tier=`, then the
+saved tier, then GPU/CPU heuristics) and steps down at runtime when the median
+frame is slow. Every module reads `app.quality.settings` at init and on
+`quality:change` (pixel ratio, sim resolutions, bristles, shader defines,
+backdrop, particles...). Table: build plan section 2.
 
-- **NailDesignStore.js**: Manages nail designs for all 10 fingers (5 per hand). Stores shape, polish color, finish type, and canvas data URL. Persists to localStorage.
-- **PolishLayerState.js**: Manages multi-layer polish state per nail. Tracks 4 layers (base coat, color 1, color 2, top coat) with coverage maps, drying timers, and undo history. Exports `POLISH_LAYERS` and `LAYER_ORDER` constants.
+### Scene, tools, UI
 
-### Audio (`src/audio/SoundManager.js`)
+- `src/scene`: `NailScene`, `HandModel` + `NailMaterial` (custom nail shader:
+  paint map, wetness, finishes, reveal pulse), `SkinMaterial`,
+  `SalonEnvironment` (code-built env map), `Backdrop`, `ContactShadow`,
+  `ModelLoader`, `Warmup`.
+- `src/tools`: `PolishBrush3D/` (brush, bristles, input, fluid sim, wet cure),
+  `StickerTool`, `GemTool`, `BrushTool` (free-mode pen on the decoration canvas).
+- `src/ui`: round mode `RequestBubble`, `StarMeter`, `GhostFinger`; free mode
+  `panels/` (`PolishPanel`, `BlingPanel`, `DrawPanel`, `FingerMap`, `icons`),
+  built once by `main.js` into `index.html`'s chrome.
+- Styles: `styles/main.css` (base, free-mode chrome, layout system: landscape,
+  small landscape <= 420 px tall, portrait; 48 px targets, 40 px only at
+  640x360), plus each feature's own CSS (`game.css`, `juice.css`, `reveal.css`).
 
-Singleton `soundManager` uses Web Audio API oscillators for synthetic sound effects (no audio files needed). Key methods: `playClick()`, `playPolish()`, `playStickerPop()`, `playSparkle()`, `playGemClink()`, `playSuccess()`, and pen-specific sounds (`playDrawSolid()`, `playDrawMetallic()`, etc.).
+## Rules (from the build plan, section 0.3 and 4)
 
-### UI Structure
+- No text for the player; `aria-label` for accessibility only.
+- No per-frame allocations in hot paths; no `console.log` per frame.
+- No shader compiles after `app.__ready` (pre-warm); no post-processing.
+- Infinite CSS animations only on `transform`/`opacity`, at most two at once.
+- `localStorage` only through `app.storage`; game playable with it blocked.
+- No external hosts, no SDK/ads/analytics yet; caps: JS <= 900 KB raw /
+  250 KB gzip, CSS <= 45 KB.
 
-HTML overlay (`index.html`) with:
-- Top header with title
-- Finger selector bar (hand toggle + 5 finger buttons)
-- Left sidebar toolbar for tool selection
-- Right options panel (content injected dynamically per tool)
-- Bottom action bar (lock, clear, undo, done, gallery)
+## Perf harness
 
-CSS in `styles/main.css` with CSS custom properties for theme colors.
+`scripts/perf.mjs` (Playwright, headless Chrome on SwiftShader, 1280x720,
+blocks and counts requests to other hosts):
 
-## Design System
+```bash
+npm run build && npx vite preview --port 4208 --strictPort &
+cd scripts && node perf.mjs "http://localhost:4208/?perf=1" label
+```
 
-See `docs/DESIGN.md` for color palette, typography (Fredoka/Bungee fonts), and 48px minimum touch targets.
-
-Primary target: tablet in landscape orientation.
+It needs `window.app`, `app.__ready`, `app.nail.getNailMesh()`,
+`app.scene.camera`, `app.polishBrush3D.raycaster` and a `[data-tool="polish"]`
+element (kept in the DOM even when hidden). URL flags: `?perf=1` (continuous
+rendering, no ghost finger or auto-advance, short intro), `?tier=high|medium|low`
+(forced tier), `?mode=free` (start in the sandbox). Standard runs: `?perf=1`,
+`?perf=1&tier=low`, `?perf=1&tier=high`.
