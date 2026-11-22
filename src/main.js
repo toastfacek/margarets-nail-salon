@@ -33,6 +33,8 @@ class NailArtistApp {
     this.loop = new FrameLoop({ quality: this.quality, perf: this.perf });
     this.sound = soundManager;
     this.invalidate = () => this.loop.invalidate();
+    // 'round' (the game: clients, stars) or 'free' (the sandbox). WP6.
+    this.mode = this.params.get('mode') === 'free' ? 'free' : 'round';
 
     // Initialize asynchronously
     this.init().catch((err) => console.error('Failed to start', err));
@@ -64,7 +66,8 @@ class NailArtistApp {
 
     this.setupNailSelection();
 
-    // Set initial active nail (index finger) and zoom to it
+    // Initial active nail (index finger); nail:select is emitted once the
+    // listeners exist (end of init).
     this.nail.setActiveNail(FINGERS.INDEX);
     this.zoomToFinger(FINGERS.INDEX);
 
@@ -73,6 +76,7 @@ class NailArtistApp {
 
     // Start on the polish tool, for real (brush live).
     this.selectTool('polish');
+    this.setMode(this.mode);
 
     // The one frame loop: scene/camera (5), brush (10), features (50), render (90).
     this._updateScene = (dt) => this.scene.update(dt);
@@ -90,6 +94,7 @@ class NailArtistApp {
     Object.values(mods)
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100))
       .forEach((m) => m.install(this));
+    this.events.emit(EVENTS.NAIL_SELECT, { hand: this.nail.getCurrentHand(), finger: this.nail.getActiveNail() });
 
     // Pre-warm: compile every program now so nothing compiles on the first stroke.
     this.polishBrush3D.prewarm();
@@ -239,7 +244,7 @@ class NailArtistApp {
     });
 
     document.getElementById('btn-done')?.addEventListener('click', () => {
-      if (this.events.listenerCount(EVENTS.UI_DONE) > 0) this.events.emit(EVENTS.UI_DONE);
+      if (this.mode !== 'free' && this.events.listenerCount(EVENTS.UI_DONE) > 0) this.events.emit(EVENTS.UI_DONE);
       else this.showCelebration();
     });
 
@@ -299,6 +304,31 @@ class NailArtistApp {
     this.invalidate();
   }
 
+  /**
+   * Round mode hides the sandbox chrome (styles/game.css) and scripts the
+   * camera; free mode is the sandbox. The chrome stays in the DOM (the perf
+   * harness clicks [data-tool="polish"]). Emits mode:change { mode }.
+   * @param {'round'|'free'} mode
+   */
+  setMode(mode) {
+    this.mode = mode === 'free' ? 'free' : 'round';
+    const round = this.mode === 'round';
+    document.body.classList.toggle('mode-round', round);
+    document.body.classList.toggle('mode-free', !round);
+    this.scene.controls.enabled = !round && !this.scene.isCameraLockedState();
+    if (round) this.selectTool('polish');
+    this.events.emit(EVENTS.MODE_CHANGE, { mode: this.mode });
+    this.invalidate();
+  }
+
+  /** Flip the player's mute and tell everyone (the audio feature applies it). */
+  toggleMute() {
+    const muted = !this.sound.isMuted('user');
+    if (this.events.listenerCount(EVENTS.UI_MUTE) > 0) this.events.emit(EVENTS.UI_MUTE, { muted });
+    else this.sound.setMuted(muted, 'user');
+    return muted;
+  }
+
   /** Make a finger active on the current hand and tell everyone. */
   selectNail(finger) {
     this.nail.setActiveNail(finger);
@@ -311,6 +341,7 @@ class NailArtistApp {
   toggleCameraLock() {
     const isLocked = this.scene.isCameraLockedState();
     this.scene.setCameraLocked(!isLocked);
+    if (this.mode === 'round') this.scene.controls.enabled = false;
 
     // Update button UI
     const btn = document.getElementById('btn-lock');

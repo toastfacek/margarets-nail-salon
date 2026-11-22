@@ -23,6 +23,7 @@ export const EVENTS = Object.freeze({
   UI_DONE: 'ui:done',
   UI_GALLERY: 'ui:gallery',
   UI_MUTE: 'ui:mute',
+  MODE_CHANGE: 'mode:change', // { mode: 'round' | 'free' } (WP6)
   ROUND_START: 'roundStart',
   ROUND_END: 'roundEnd',
   REVEAL_REQUEST: 'reveal:request',
