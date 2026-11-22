@@ -3,106 +3,63 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="description" content="A fun nail salon game for kids - file, paint, and decorate beautiful nails!" />
-    <title>NAIL ICON - Glam Studio</title>
+    <meta name="description" content="A nail salon game for kids: paint, decorate and show off glossy nails." />
+    <title>Nail Salon</title>
     <link rel="stylesheet" href="./styles/main.css">
   </head>
   <body>
-    <!-- 3D Canvas Container -->
+    <!-- 3D canvas -->
     <div id="canvas-container"></div>
-    
-    <!-- UI Overlay -->
+
+    <!-- Free-mode chrome (round mode hides it; it stays in the DOM: the perf
+         harness clicks [data-tool="polish"]). Icons only: no text. -->
     <div id="ui-overlay">
-      <!-- Header - Magazine Masthead -->
-      <header class="header">
-        <h1 class="title">NAIL ICON</h1>
-        <span class="subtitle">Glam Studio</span>
-      </header>
+      <!-- finger map + swap hands (src/ui/panels/FingerMap.js) -->
+      <div class="finger-selector" id="finger-selector"></div>
 
-      <!-- Finger Selector -->
-      <div class="finger-selector" id="finger-selector">
-        <button class="hand-toggle" id="hand-toggle" title="Switch Hand">
-          <span class="hand-emoji">✋</span>
-          <span class="hand-label">Left</span>
+      <nav class="toolbar" id="toolbar">
+        <button class="tool-btn" data-tool="polish" aria-label="polish">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="12" y="2" width="8" height="11" rx="2.5" fill="#5a2a82"/><rect x="6.5" y="11.5" width="19" height="18" rx="6" fill="#ff2a6d"/><rect x="10" y="15" width="3.2" height="9" rx="1.6" fill="#fff" opacity=".75"/></svg>
         </button>
-        <div class="finger-buttons">
-          <button class="finger-btn" data-finger="thumb" title="Thumb">1</button>
-          <button class="finger-btn" data-finger="index" title="Index">2</button>
-          <button class="finger-btn active" data-finger="middle" title="Middle">3</button>
-          <button class="finger-btn" data-finger="ring" title="Ring">4</button>
-          <button class="finger-btn" data-finger="pinky" title="Pinky">5</button>
-        </div>
-      </div>
+        <button class="tool-btn" data-tool="bling" aria-label="bling">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 7h14l6 8-13 14L3 15z" fill="#4fd8e8"/><path d="M3 15h26M12 7l-3 8 7 14 7-14-3-8" fill="none" stroke="#fff" stroke-width="1.6" opacity=".85"/><path d="M26 2l1 2.6 2.6 1-2.6 1L26 9.2l-1-2.6-2.6-1 2.6-1z" fill="#ffd21f"/></svg>
+        </button>
+        <button class="tool-btn" data-tool="brush" aria-label="draw">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 25l2-7L22 5l5 5-13 13z" fill="#ffd21f" stroke="#5a2a82" stroke-width="1.8" stroke-linejoin="round"/><path d="M22 5l5 5 1.5-1.5a2.5 2.5 0 0 0 0-3.5L28 4.5a2.5 2.5 0 0 0-3.5 0z" fill="#ff69b4"/><path d="M7 25l2-7 5 5z" fill="#5a2a82"/><path d="M4 29c4-2 8 1 12-1" fill="none" stroke="#00b4d8" stroke-width="2.4" stroke-linecap="round"/></svg>
+        </button>
+      </nav>
 
-      <!-- Tool Sidebar -->
-      <aside class="toolbar" id="toolbar">
-        <button class="tool-btn active" data-tool="shape" title="Shape">
-          <span class="tool-icon">✂️</span>
-          <span class="tool-label">Shape</span>
+      <!-- the active tool's options (src/ui/panels/*Panel.js) -->
+      <div class="options-panel" id="options-panel"></div>
+
+      <div class="action-bar">
+        <button class="action-btn" id="btn-clear" aria-label="clear">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 9h18l-1.6 18a2 2 0 0 1-2 1.8H10.6a2 2 0 0 1-2-1.8z" fill="#c77dff"/><rect x="5" y="6" width="22" height="4" rx="2" fill="#9d4edd"/><rect x="13" y="3" width="6" height="4" rx="1.5" fill="#9d4edd"/><path d="M13 13v11M19 13v11" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".7"/></svg>
         </button>
-        <button class="tool-btn" data-tool="polish" title="Polish">
-          <span class="tool-icon">💅</span>
-          <span class="tool-label">Polish</span>
+        <button class="action-btn" id="btn-gallery" aria-label="photos">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="9" width="26" height="19" rx="4.5" fill="#c77dff"/><rect x="10" y="5" width="12" height="6" rx="2" fill="#9d4edd"/><circle cx="16" cy="18.5" r="6.2" fill="#fff"/><circle cx="16" cy="18.5" r="3.6" fill="#5a2a82"/><circle cx="24.5" cy="13" r="1.6" fill="#ffd21f"/></svg>
         </button>
-        <button class="tool-btn" data-tool="bling" title="Bling">
-          <span class="tool-icon">💎</span>
-          <span class="tool-label">Bling</span>
+        <button class="action-btn done-btn" id="btn-done" aria-label="done">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 58C14 45 5 37 5 25c0-8 6-13 13-13 6 0 11 3 14 8 3-5 8-8 14-8 7 0 13 5 13 13 0 12-9 20-27 33z" fill="#ff2a6d" stroke="#fff" stroke-width="3"/><path d="M15 24c0-4 3-7 7-7" stroke="#fff" stroke-width="4" stroke-linecap="round" fill="none" opacity=".8"/><path d="M48 4l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="#ffd21f"/></svg>
         </button>
-        <button class="tool-btn" data-tool="brush" title="Draw">
-          <span class="tool-icon">🖌️</span>
-          <span class="tool-label">Draw</span>
-        </button>
-      </aside>
-      
-      <!-- Tool Options Panel (changes based on selected tool) -->
-      <div class="options-panel" id="options-panel">
-        <!-- Dynamic content injected here -->
       </div>
-      
-      <!-- Bottom Action Bar -->
-      <footer class="action-bar">
-        <button class="action-btn" id="btn-lock">
-          <span>🔓</span>
-          <span>Lock</span>
-        </button>
-        <button class="action-btn" id="btn-clear">
-          <span>🗑️</span>
-          <span>Clear</span>
-        </button>
-        <button class="action-btn" id="btn-undo">
-          <span>↩️</span>
-          <span>Undo</span>
-        </button>
-        <button class="action-btn primary" id="btn-done">
-          <span>💅</span>
-          <span>Slay!</span>
-        </button>
-        <button class="action-btn" id="btn-gallery">
-          <span>📸</span>
-          <span>Gallery</span>
-        </button>
-      </footer>
     </div>
-    
-    <!-- Gallery Modal -->
+
+    <!-- mute: both modes (calls app.toggleMute -> ui:mute) -->
+    <button class="mute-btn" id="btn-mute" aria-label="sound">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 12h5l7-6v20l-7-6H5z" fill="#9d4edd" stroke="#9d4edd" stroke-width="2" stroke-linejoin="round"/><g class="snd-on" fill="none" stroke="#9d4edd" stroke-width="2.6" stroke-linecap="round"><path d="M21 11.5a6 6 0 0 1 0 9"/><path d="M24.5 8a11 11 0 0 1 0 16"/></g><path class="snd-off" d="M21 12l7 8m0-8l-7 8" stroke="#ff2a6d" stroke-width="3" stroke-linecap="round"/></svg>
+    </button>
+
+    <!-- fallback photo wall (the polaroid feature takes over ui:gallery) -->
     <div class="modal" id="gallery-modal">
       <div class="modal-content">
-        <button class="modal-close" id="gallery-close">✕</button>
-        <h2>MY LOOKS</h2>
-        <div class="gallery-grid" id="gallery-grid">
-          <!-- Saved designs will appear here -->
-        </div>
+        <button class="modal-close" id="gallery-close" aria-label="close">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M9 9l14 14M23 9L9 23" stroke="#5a2a82" stroke-width="4.5" stroke-linecap="round"/></svg>
+        </button>
+        <div class="gallery-grid" id="gallery-grid"><div class="gallery-empty"></div></div>
       </div>
     </div>
 
-    <!-- Floating Decorations -->
-    <div class="floating-decorations" aria-hidden="true">
-      <span class="deco deco-star">⭐</span>
-      <span class="deco deco-sparkle">✨</span>
-      <span class="deco deco-heart">💖</span>
-      <span class="deco deco-gem">💎</span>
-    </div>
-    
     <script>
       // No long-press / right-click menu over the game canvas.
       document.getElementById('canvas-container').addEventListener('contextmenu', function (e) { e.preventDefault(); });
