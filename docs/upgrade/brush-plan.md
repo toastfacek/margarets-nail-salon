@@ -305,3 +305,13 @@ Rules carried over from `docs/upgrade/build-plan.md`: no per-frame allocations i
 ## 8. Not in this plan
 
 Dragging one wet colour into another, a visible bottle to dip into, nail-shape changes, real-device testing (still the next check after this lands).
+
+## 9. B8: a real nail polish brush (shape, bend, wet look)
+
+Owner, after B7: "The brush is too flat and wide ... the physics need to be 100% lifelike." Shape numbers come from `brush-shape-research.md` (patents US20060123576A1, US4454622), as fractions of the active nail's width.
+
+- **Presets** (`src/tools/PolishBrush3D/brushPresets.js`): `classic` (default: free length 0.9, root 0.24 x 0.12, belly 0.31 x 0.16, tip region from 0.68 tapering to a near edge, round concentric-ring dome, stem 0.3) and `prowide` (root 0.36 x 0.14, rounded-square tip, 1.4x the pressed width). Each preset carries its band (`bandMin`, `bandPress`: 0.62x .. 1.6x the rest tip width; classic 0.124 + 0.198 p). Pick one with `app.polishBrush3D.setBrushType(name)` (the one place a bottle can choose later) or `?brush=prowide`.
+- **Rig** (`BristleSystem.js`): a stiff body straight from the stem plus a tip region that bends (a cubic, arc length kept), through a nylon spring (omega 60, zeta 0.55: ~10% overshoot, within 5% in ~75 ms) for both the bend and the trail; pressed, the tip region splays to the band and flattens; the flat face is held flat to the nail. Wet cohesion follows the load (lumpier section, deeper grooves, less clear coat, loose strands fly apart). The skeleton strands in `jointPositions` still give contacts, `tipCenter` and the harness.
+- **Look**: one lofted closed bundle (12 sections x 14) + up to 10 loose strand ribbons in one draw call, Phong + wet clear coat, fresnel, procedural strand grooves and a Kajiya-Kay highlight (off on low, uniform switch: no recompiles). No textures.
+- **Test**: `scripts/brush-shape.mjs` (S1 length / screen ratio, S2 thickness / width, S3 dome, S4 pressed footprint, S5 spring overshoot and settle).
+- Known: on a push stroke (free edge -> cuticle, away from the handle) the bristles run along the band axis, so the visible tip span is narrower than the band there (the band itself is unchanged).

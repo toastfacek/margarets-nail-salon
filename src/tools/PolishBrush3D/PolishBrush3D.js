@@ -10,7 +10,10 @@
  * is posed on the newest sample in the same frame.
  *
  * Per stroke, in nail-plane units (UV scaled by (aspect, 1)):
- *   band width  2*hw = nailWidth * (BAND_MIN + BAND_PRESS * pressure) * (1 - 0.25 * dry)
+ *   band width  2*hw = nailWidth * (bandMin + bandPress * pressure) * (1 - 0.25 * dry),
+ *               from the active brush preset (brushPresets.js; classic 0.124 + 0.198 p:
+ *               0.62x .. 1.6x the brush's rest tip width, the pressed footprint
+ *               the rig renders)
  *   axis        the brush's width direction: across the nail at the landing,
  *               then a critically damped spring toward across-the-motion
  *   load        1 at a dip, minus travel / (3.2 nail lengths); dry = 1 -
@@ -30,6 +33,7 @@
  */
 import * as THREE from 'three';
 import { BristleSystem } from './BristleSystem.js';
+import { brushPreset, initialBrushType } from './brushPresets.js';
 import { BrushInputHandler, SAMPLE_STRIDE } from './BrushInputHandler.js';
 import { BrushEffects } from './BrushEffects.js';
 import { PolishFilm, SEG_FLAGS } from './PolishFilm.js';
@@ -42,8 +46,8 @@ import { soundManager } from '../../audio/SoundManager.js';
 
 /** Alpha of one brush pass (sheer coat; two passes 0.86, three 0.95). */
 export const COAT_ALPHA = 0.62;
-const BAND_MIN = 0.182;           // 2*hw / nail width (UV arc) at the lightest touch
-const BAND_PRESS = 0.14;         // ... plus this at full pressure (on screen: ~36% of the nail)
+// Band width per brush: preset.bandMin (2*hw / nail width, UV arc, lightest
+// touch) + preset.bandPress at full pressure (classic: on screen ~34%).
 const HL_RATIO = 0.35;           // half contact length / half width of a band segment
 const END_HL = 1.2;              // stroke ends: a round paddle print (x hw) past the end line
 const CAP_HL = 1.0;              // taps, pools, reversals: round prints
@@ -188,6 +192,9 @@ export class PolishBrush3D {
       });
     }
     this.bristleSystem.setCamera(camera);
+    // Brush shape: the one place a bottle can pick one (setBrushType).
+    this._preset = brushPreset(initialBrushType());
+    this.bristleSystem.setPreset(this._preset);
     this.inputHandler = null;
     this.brushEffects = new BrushEffects(scene);
     if (s) this.brushEffects.setQuality(s);
@@ -542,6 +549,20 @@ export class PolishBrush3D {
     this.invalidate();
   }
 
+  /** Brush shape by name (brushPresets.js: 'classic', 'prowide'); band follows it. */
+  setBrushType(name) {
+    const p = brushPreset(name);
+    if (p === this._preset) return;
+    this._preset = p;
+    this.bristleSystem.setPreset(p);
+    this._needsPose = true;
+    this.invalidate();
+  }
+
+  get brushType() {
+    return this._preset.name;
+  }
+
   setFinish(finish) {
     this.finish = finish;
     if (this.handModel) this.handModel.setFinish(finish);
@@ -700,7 +721,8 @@ export class PolishBrush3D {
   /** Half band width now, plane units. */
   _halfWidth(pressure) {
     const g = this._g;
-    return 0.5 * g.widthV * (BAND_MIN + BAND_PRESS * pressure) * (1 - DRY_NARROW * this._dry);
+    const b = this._preset;
+    return 0.5 * g.widthV * (b.bandMin + b.bandPress * pressure) * (1 - DRY_NARROW * this._dry);
   }
 
   _setLoad(load) {
