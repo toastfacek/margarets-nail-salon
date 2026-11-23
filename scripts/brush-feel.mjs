@@ -317,6 +317,8 @@ async function install(page) {
         const lastE = list && list.length ? list[list.length - 1] : e;
         if (e.pointerId === T.ptr.id || (!T.ptr.down && e.pointerType !== 'touch')) {
           if (T.ptr.down) T.evN += n;
+          // every delivered (coalesced) position of the tracked pointer while down
+          if (T.rec && T.ptr.down) { if (list && list.length) for (const c of list) T.events.push([+c.timeStamp.toFixed(1), 'c', e.pointerId, +c.clientX.toFixed(1), +c.clientY.toFixed(1)]); else T.events.push([+e.timeStamp.toFixed(1), 'c', e.pointerId, +e.clientX.toFixed(1), +e.clientY.toFixed(1)]); }
           T.ptr.x = lastE.clientX; T.ptr.y = lastE.clientY;
         } else if (T.ptr2) { T.ptr2.x = lastE.clientX; T.ptr2.y = lastE.clientY; }
       } else return;
@@ -685,7 +687,9 @@ async function runCombo(tier, kind) {
     const pts = [[box.x1 - 0.3 * w, cy], [cx, box.y0 - 45], [box.x0 + 0.3 * w, cy]];
     const o = await run('leave-return', pts, 700);
     // walk the expected deposit path at 1 px, find on-nail runs and their paint
-    const { at, total } = polyline(pts.map((p) => [p[0], p[1] - nudge]));
+    // expected paint point: nudged, or the raw contact point when only that is on the nail
+    const { at: atRaw, total } = polyline(pts);
+    const at = (f) => { const p = atRaw(f); if (!nudge) return p; const q = [p[0], p[1] - nudge]; return maskAt(o._mask, q[0], q[1]) < 0 && maskAt(o._mask, p[0], p[1]) >= 0 ? p : q; };
     const runs = []; let cur = null;
     for (let d = 0; d <= total; d += 1) {
       const p = at(d / total); const a = maskAt(o._mask, p[0], p[1]);
@@ -716,6 +720,19 @@ async function runCombo(tier, kind) {
     o.samplePts = smp.length || null;
     o.sampleOffPathPx = smp.length ? r1(Math.max(...smp.map((q) => distToPolyline(q, truth)))) : null;
     o.sampleCornerErrPx = smp.length > 1 ? r1(Math.max(...corners.map((c) => distToPolyline(c, smp)))) : null;
+    // against what the browser actually delivered (120 Hz input cuts corners by itself)
+    const evRaw = (await page.evaluate(() => __T.events)).filter((e) => e[1] === 'c');
+    const evs = evRaw.map((e) => [e[3], e[4] - nudge]);
+    // each delivered event belongs to the first frame at or after it; in frames
+    // with no more events than the cap, every event must be a sample
+    const fr = o._frames; let k = 0; const kept = [];
+    for (const e of evRaw) { while (k < fr.length && fr[k].t < e[0]) k++; if (k < fr.length && fr[k].ev <= info.cap && maskAt(o._mask, e[3], e[4] - nudge) >= 0) kept.push([e[3], e[4] - nudge]); }
+    o.underCapEvents = kept.length;
+    o.underCapErrPx = smp.length > 1 && kept.length ? r1(Math.max(...kept.map((p) => distToPolyline(p, smp)))) : null;
+    const onNail = evs.filter((p) => maskAt(o._mask, p[0], p[1]) >= 0);
+    o.deliveredPts = evs.length;
+    o.eventCornerErrPx = evs.length > 1 ? r1(Math.max(...corners.map((c) => distToPolyline(c, evs)))) : null;
+    o.sampleVsEventsPx = smp.length > 1 && onNail.length ? r1(Math.max(...onNail.map((p) => distToPolyline(p, smp)))) : null;
     // gap columns between the first and last painted x of the zig-zag
     let gaps = 0, cols = 0;
     for (let x = Math.ceil(L + 12); x <= R - 12; x++) { let nh = 0, pa = 0; for (let y = 0; y < o._mask.H; y++) { const a = maskAt(o._mask, x, o._mask.y0 + y); if (a >= 0) nh++; if (a > 128) pa++; } if (nh) { cols++; if (!pa) gaps++; } }
@@ -959,8 +976,13 @@ function lines(res) {
     add('B1.nudge', 'touch nudge, paint above finger (px)', `${r1(lo)}..${r1(hi)}`, lo >= 11 && hi <= 13, '12 +/- 1');
   }
   if (kind === 'mouse') {
-    add('B1.curves', 'fast zig-zag samples: off path / corner err px (60, 20 fps)', `${z60.sampleOffPathPx}/${z60.sampleCornerErrPx}, ${z20.sampleOffPathPx}/${z20.sampleCornerErrPx}`,
-      !!api && z60.sampleOffPathPx <= 2 && z20.sampleOffPathPx <= 2 && z60.sampleCornerErrPx <= 4 && z20.sampleCornerErrPx <= 4, '<= 2 / <= 4');
+    // frames with more than `cap` events are subsampled by design, so the line
+    // asks that samples sit on the path and that every event of an under-cap
+    // frame is a sample; corner errors (vs the ideal path and vs the input's
+    // own polyline) are reported for B5's A4
+    add('B1.curves', 'fast zig-zag (native, 20 fps): samples off path px / under-cap events missing from samples px (n) / corner err px (input\'s own)',
+      `${z60.sampleOffPathPx}/${z60.underCapErrPx} (${z60.underCapEvents})/${z60.sampleCornerErrPx} (${z60.eventCornerErrPx}) @${z60.dtMs.med} ms; ${z20.sampleOffPathPx}/${z20.underCapErrPx} (${z20.underCapEvents})/${z20.sampleCornerErrPx} (${z20.eventCornerErrPx}) @${z20.dtMs.med} ms`,
+      !!api && z60.sampleOffPathPx <= 2 && z20.sampleOffPathPx <= 2 && z60.underCapErrPx !== null && z60.underCapErrPx <= 1 && z20.underCapErrPx !== null && z20.underCapErrPx <= 1, '<= 2 / <= 1');
   }
   add('B1.leave', 'leave+return: input strokeStart / edge samples / edge err px', `${lr.inputStarts} / ${lr.edgeSamples} / ${lr.edgeErrPx}`, lr.inputStarts === 1 && lr.edgeSamples === 2 && lr.edgeErrPx !== null && lr.edgeErrPx <= 2, '1 / 2 / <= 2');
   const os = S['off-start'];
