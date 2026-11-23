@@ -156,7 +156,7 @@ void main() {
   float bw = 2.0 * hw;
   float wob = noise2(P / bw * 1.3 + uSeed * 3.7) * 0.7 + noise2(P / bw * 4.1 - uSeed) * 0.3;
   float r = min(hl, 0.35 * hw);
-  float hx = (hw - r) * (1.0 + 0.16 * (wob - 0.5));
+  float hx = (hw - r) * (1.0 + 0.24 * (wob - 0.5));
   float hy = max(hl - r, 0.0);
 
   float m1 = abs(q.x - d.x * 0.5) - (hx + abs(d.x) * 0.5);
@@ -175,10 +175,11 @@ void main() {
   float mask = 1.0 - smoothstep(-aa, aa, sd);
   if (mask <= 0.0) discard;
 
-  float rg = ridge(s);
-  // Bristles touch unevenly: each line fades in and out along the stroke.
-  float lineAmp = smoothstep(0.15, 0.75, noise2(vec2(s * 9.0, 0.0) + P / bw * vec2(1.7, 1.7) + uSeed));
-  rg = mix(0.45, rg, 0.35 + 0.65 * lineAmp);
+  // Lines wander a little (bristles are not straight) ...
+  float rg = ridge(s + 0.05 * (noise2(P / bw * 2.3 + uSeed * 1.9) - 0.5));
+  // ... and touch unevenly: each line breaks into dashes along the stroke.
+  float lineAmp = smoothstep(0.25, 0.8, noise2(vec2(s * 11.0, 0.0) + P / bw * 3.2 + uSeed));
+  rg = mix(0.45, rg, 0.2 + 0.8 * lineAmp);
   float dry = vExtra.x;
   // Dry brush: gaps open between bristle clumps (about half coverage at dry = 1).
   float clump = noise1(s * 9.0 + uSeed * 11.0) * 0.65 + noise1(s * 23.0 - uSeed) * 0.35;
@@ -190,16 +191,18 @@ void main() {
   float h = (0.28 + 0.50 * rg + 0.30 * rim) * body + 0.5 * vExtra.y * dome;
   gl_FragColor = vec4(min(h, 1.0), 1.0, 0.0, mask * seamFade);
 #else
-  float a = mask * body * vSeam.w * (0.94 + 0.06 * rg);
+  float a = mask * body * vSeam.w * (0.98 + 0.06 * rg);
   gl_FragColor = vec4(uColor, clamp(a, 0.0, 1.0));
 #endif
 }
 `;
 
 // Levelling: ridges melt (blur), the film flattens and loses its fresh gloss.
-// The flattening rate follows the film's own age (G): slow while fresh, fast
-// after about half a second, so a stroke keeps its brush lines briefly and
-// then melts smooth within about a second (an S-curve, not an exponential).
+// Flattening is slow while the brush keeps laying paint and speeds up once it
+// has rested (uIdle = seconds since the last deposit): brush lines hold for a
+// moment after the lift, then melt smooth within about a second. The rate is
+// the same everywhere on purpose: a per-pixel age would level paint laid one
+// frame apart at different rates and show every frame's seam as a line.
 // The -0.6/255 bias guarantees 8-bit values reach 0 (rounding would stall them).
 const levelFragment = /* glsl */ `
 precision highp float;
@@ -207,6 +210,7 @@ uniform sampler2D uFilm;
 uniform vec2 uTexel;
 uniform float uBlurK;
 uniform float uDt;
+uniform float uIdle;
 uniform float uFreshDecay;
 varying vec2 vUv;
 void main() {
@@ -216,7 +220,7 @@ void main() {
     + texture2D(uFilm, vUv - vec2(uTexel.x, 0.0)).r
     + texture2D(uFilm, vUv + vec2(0.0, uTexel.y)).r
     + texture2D(uFilm, vUv - vec2(0.0, uTexel.y)).r;
-  float rate = LEVEL_SLOW + LEVEL_FAST * (1.0 - smoothstep(0.55, 0.95, c.g));
+  float rate = LEVEL_SLOW + LEVEL_FAST * smoothstep(0.25, 0.9, uIdle);
   float h = mix(c.r, b * 0.2, uBlurK) * exp(-uDt * rate) - 0.0024;
   float g = c.g * uFreshDecay - 0.0024;
   gl_FragColor = vec4(max(h, 0.0), max(g, 0.0), 0.0, 1.0);
@@ -254,8 +258,8 @@ export const SEG_FLAGS = Object.freeze({ CLIP_START: 1, CLIP_END: 2, CAP_START: 
 
 const AWAKE_SECONDS = 6;       // levelling runs this long after the last deposit
 const BLUR_TAU = 0.40;         // s: ridge melt rate (blur mix per frame = 1 - exp(-dt / tau))
-const LEVEL_SLOW = 0.15;       // 1/s: flattening while fresh (G > 0.95)
-const LEVEL_FAST = 4.0;        // 1/s: extra flattening once G < 0.55 (about 0.9 s old)
+const LEVEL_SLOW = 0.15;       // 1/s: flattening while the brush keeps painting
+const LEVEL_FAST = 4.5;        // 1/s: extra flattening 0.25 .. 0.9 s after the last deposit
 const FRESH_TAU = 1.6;         // s: local fresh gloss fades
 
 const IDENTITY_UV = Object.freeze([1, 1, 0, 0]);
@@ -380,6 +384,7 @@ export class PolishFilm {
         uTexel: { value: this._filmTexel },
         uBlurK: { value: 0 },
         uDt: { value: 0 },
+        uIdle: { value: 0 },
         uFreshDecay: { value: 1 },
       },
     }, base));
@@ -594,20 +599,18 @@ export class PolishFilm {
     this.queued = 0;
     const g = this._segGeometry;
     const a = g.attributes;
-    const v = n * 4;
-    this._mark(a.aAB, v * 4);
-    this._mark(a.aFrame, v * 4);
-    this._mark(a.aSeam, v * 4);
-    this._mark(a.aExtra, v * 2);
+    this._mark(a.aAB);
+    this._mark(a.aFrame);
+    this._mark(a.aSeam);
+    this._mark(a.aExtra);
     g.setDrawRange(0, n * 6);
     this.renderPass(this.materials.depositDye, this.dye, g);
     if (this.film) this.renderPass(this.materials.depositFilm, this.film.read, g);
     this.sinceDeposit = 0;
   }
 
-  _mark(attr, count) {
-    attr.clearUpdateRanges();
-    attr.addUpdateRange(0, count);
+  _mark(attr) {
+    // Whole small buffer (< 4 KB each); update ranges would allocate.
     attr.needsUpdate = true;
   }
 
@@ -628,6 +631,7 @@ export class PolishFilm {
     u.uFilm.value = this.film.read.texture;
     u.uBlurK.value = 1 - Math.exp(-dt / BLUR_TAU);
     u.uDt.value = dt;
+    u.uIdle.value = this.sinceDeposit;
     u.uFreshDecay.value = Math.exp(-dt / FRESH_TAU);
     this.renderPass(m, this.film.write);
     u.uFilm.value = null;
@@ -711,10 +715,10 @@ export class PolishFilm {
     this.addSegment(0.5, 0.5, 0.5, 0.5, 1, 0, 0.01, 0.01, 0, 0, 0, 0, 0, 0, 0);
     const g = this._segGeometry;
     const a = g.attributes;
-    this._mark(a.aAB, 16);
-    this._mark(a.aFrame, 16);
-    this._mark(a.aSeam, 16);
-    this._mark(a.aExtra, 8);
+    this._mark(a.aAB);
+    this._mark(a.aFrame);
+    this._mark(a.aSeam);
+    this._mark(a.aExtra);
     g.setDrawRange(0, 6);
     this.queued = 0;
     this.renderPass(m.depositDye, tinyDye, g);
@@ -954,7 +958,9 @@ export class PolishFilm {
     const film = d.film;
     const hm = app.nail;
     const st = d.strokes[0];
+    d.frames = (d.frames || 0) + 1;
     if (st) {
+      d.paintFrames = (d.paintFrames || 0) + 1;
       const fr = d.frame;
       const asp = fr.aspect;
       if (st.t < 0) {

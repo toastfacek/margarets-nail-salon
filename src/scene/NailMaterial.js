@@ -204,14 +204,14 @@ if (relief > 0.001) {
 float pd = uPaintTexel * 1.5;
 hg = vec2(paintA(vUv + vec2(pd, 0.0)) - p.a, paintA(vUv + vec2(0.0, pd)) - p.a) / pd * EDGE_H;
 if (filmK > 0.001) {
-float fd = uFilmTexel;
+float fd = uFilmTexel * 1.5;
 float rxp = filmR(vUv + vec2(fd, 0.0));
 float rxm = filmR(vUv - vec2(fd, 0.0));
 float ryp = filmR(vUv + vec2(0.0, fd));
 float rym = filmR(vUv - vec2(0.0, fd));
 hg += vec2(rxp - rxm, ryp - rym) * (0.5 / fd) * FILM_H * filmK;
 // ridge crests (negative curvature): the thin wet lines that catch the light
-crest = max(4.0 * film.r - rxp - rxm - ryp - rym, 0.0) * filmK;
+crest = max(4.0 * film.r - rxp - rxm - ryp - rym, 0.0) * filmK * 0.6;
 }
 }
 #elif defined(WET_NORMAL_DERIV)
@@ -330,7 +330,7 @@ vec3 coat = (env + ring) * F * coatK * uEnvIntensity;
 col += coat * mix(1.0, ao, 0.5);
 #ifdef WET_NORMAL_TAPS
 // Fresh-film glints: bright thin streaks along the stroke on the ridge crests.
-float glintEnv = 0.15 + pow(max(dot(R, L), 0.0), 6.0) * 2.2 + ringLight(R, 0.16) * 1.6;
+float glintEnv = 0.05 + pow(max(dot(R, L), 0.0), 6.0) * 2.4 + ringLight(R, 0.2) * 1.8;
 col += min(crest * GLINT, 1.6) * film.g * glintEnv * coatK * uEnvIntensity * vec3(1.0, 0.97, 0.95);
 #endif
 }
@@ -373,7 +373,7 @@ export function createNailLighting() {
 }
 
 // Wet relief gains (heights in nail-UV units; see the surface-gradient block).
-const RELIEF_DEFINES = Object.freeze({ FILM_H: '0.0090', EDGE_H: '0.0016', GLINT: '18.0' });
+const RELIEF_DEFINES = Object.freeze({ FILM_H: '0.0070', EDGE_H: '0.0016', GLINT: '18.0' });
 
 function definesFor(settings) {
   const d = settings && settings.nailShaderDefines;
