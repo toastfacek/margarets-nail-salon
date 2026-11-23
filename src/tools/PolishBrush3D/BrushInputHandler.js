@@ -162,6 +162,7 @@ export class BrushInputHandler {
     this._toCamera = new THREE.Vector3();
     this._tip = new THREE.Vector3();
     this._span = { top: 0, bottom: 0 };
+    this._box = { left: 0, right: 0, top: 0, bottom: 0, valid: false };
     this._lastCam = new THREE.Matrix4();
     this._lastNailMatrix = new THREE.Matrix4();
     this._lastNail = null;
@@ -380,6 +381,9 @@ export class BrushInputHandler {
       return this;
     }
 
+    if (this.isTouch) this._nailScreenBox(nailMesh, this._box);
+    else this._box.valid = false;
+
     // Pass 1: which entries belong to a pressed stroke, and which to cast.
     const q = this._queue;
     const keep = this._keep;
@@ -535,7 +539,7 @@ export class BrushInputHandler {
     this._ex = x;
     if (this._rawMode) {
       if (this._cast(nailMesh, x, y, row, normal)) {
-        if (newest && this._spare(nailMesh, newest) && this._cast(nailMesh, x, ny, this._rowC, normal)) {
+        if (newest && this._spare(nailMesh, newest, x, ny) && this._cast(nailMesh, x, ny, this._rowC, normal)) {
           row.set(this._rowC);
           this._rawMode = false;
           this._ey = ny;
@@ -546,11 +550,11 @@ export class BrushInputHandler {
       }
       this._rawMode = false;
       this._ey = ny;
-      return this._spare(nailMesh, newest) && this._cast(nailMesh, x, ny, row, normal);
+      return this._spare(nailMesh, newest, x, ny) && this._cast(nailMesh, x, ny, row, normal);
     }
     this._ey = ny;
     if (this._cast(nailMesh, x, ny, row, normal)) return true;
-    if (this._spare(nailMesh, newest) && this._cast(nailMesh, x, y, row, normal)) {
+    if (this._spare(nailMesh, newest, x, y) && this._cast(nailMesh, x, y, row, normal)) {
       this._rawMode = true;
       this._ey = y;
       return true;
@@ -558,9 +562,15 @@ export class BrushInputHandler {
     return false;
   }
 
-  /** Take one extra cast if the budget allows (the newest sample may take the last). */
-  _spare(nailMesh, newest) {
+  /**
+   * Take one extra cast for the raw contact point (x, y) if it can be on the
+   * nail (inside the nail's projected screen box: no raycast) and the budget
+   * allows it (the newest sample may take the last one).
+   */
+  _spare(nailMesh, newest, x, y) {
     if (!nailMesh || this._extraLeft <= (newest ? 0 : 1)) return false;
+    const b = this._box;
+    if (b.valid && (x < b.left - 2 || x > b.right + 2 || y < b.top - 2 || y > b.bottom + 2)) return false;
     this._extraLeft--;
     return true;
   }
@@ -678,6 +688,29 @@ export class BrushInputHandler {
     out.top = top;
     out.bottom = bottom;
     return bottom > top;
+  }
+
+  /** The nail's projected bounding box on screen (CSS px), into `out`. */
+  _nailScreenBox(nailMesh, out) {
+    out.valid = false;
+    if (!nailMesh || !nailMesh.geometry) return;
+    const geo = nailMesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    let l = Infinity, r = -Infinity, t = Infinity, b = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      _corner.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z)
+        .applyMatrix4(nailMesh.matrixWorld).project(this.camera);
+      if (_corner.z > 1) return; // behind the camera: no box, no pretest
+      const x = this._rectLeft + (_corner.x + 1) * 0.5 * this._rectWidth;
+      const y = this._rectTop + (1 - _corner.y) * 0.5 * this._rectHeight;
+      if (x < l) l = x;
+      if (x > r) r = x;
+      if (y < t) t = y;
+      if (y > b) b = y;
+    }
+    out.left = l; out.right = r; out.top = t; out.bottom = b;
+    out.valid = true;
   }
 
   /** True once per pointer change. */
