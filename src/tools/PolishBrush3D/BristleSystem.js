@@ -40,7 +40,7 @@ const MAX_BRISTLES = 128;
 const JOINTS = 5;
 const SEGMENTS = JOINTS - 1;
 const CORE_QUADS = SEGMENTS;     // the flat wet core strip under the strands
-const RAY_BANDS = 8;
+const RAY_BANDS = 5;  // samples across the tip line at -0.5, -0.25, 0, 0.25, 0.5 (centre = the hit itself)
 const DEG = Math.PI / 180;
 
 // Sizes are fractions of the active nail's width (`scale`), so the brush
@@ -71,7 +71,7 @@ const RIG = Object.freeze({
   wobbleZeta: 0.2,         // ~2 visible cycles
   wobbleTime: 0.4,
   leanOmega: 9,            // slow: the hand re-aims, the bristles flip
-  axisOmega: 32,           // legacy driver only (the engine sends its own axis)
+  axisOmega: 42,           // legacy driver only (the engine sends its own axis)
   widthOmega: 26,          // fan closing after a lift
   liftOmega: 40,           // tips leaving the surface after a lift
   dirStep: 0.02,           // legacy: nail widths of travel per direction update
@@ -880,8 +880,9 @@ export class BristleSystem {
   }
 
   /**
-   * On high: 8 rays (one per band of tips) find the real surface under the
-   * tip line where the nail curves away from the tangent plane.
+   * On high: 4 rays across the tip line (the centre is the contact point)
+   * find the real surface where the nail curves away from the tangent
+   * plane; tips in between are interpolated.
    */
   _refineBands(nailMesh, raycaster) {
     const bp = this._bandDh;
@@ -898,7 +899,8 @@ export class BristleSystem {
     dir.copy(N).negate();
     const hits = this._hits;
     for (let k = 0; k < RAY_BANDS; k++) {
-      const tx = (k + 0.5) / RAY_BANDS - 0.5;
+      if (k * 2 === RAY_BANDS - 1) continue; // the centre is the contact point: dh = 0
+      const tx = k / (RAY_BANDS - 1) - 0.5;
       origin.copy(P).addScaledVector(X, tx * 2 * this._hw).addScaledVector(N, L * 0.3);
       raycaster.set(origin, dir);
       hits.length = 0;
@@ -996,7 +998,7 @@ export class BristleSystem {
     for (let i = 0; i < n; i++) {
       let dh = 0;
       if (refine) {
-        const f = (this._ux[i] + 0.5) * RAY_BANDS - 0.5;
+        const f = (this._ux[i] + 0.5) * (RAY_BANDS - 1);
         const k0 = f <= 0 ? 0 : f >= RAY_BANDS - 1 ? RAY_BANDS - 2 : Math.floor(f);
         const w = Math.min(1, Math.max(0, f - k0));
         dh = bd[k0] + (bd[k0 + 1] - bd[k0]) * w;
@@ -1107,8 +1109,8 @@ export class BristleSystem {
     const scale = pose.scale > 0 ? pose.scale : DEFAULT_SCALE;
     const show = pose.onSurface ? 1 - this._c : 0;
     const mat = this.blob.material;
-    mat.opacity = 0.42 * show;
-    const r = this._hw * 0.9;
+    mat.opacity = 0.5 * show;
+    const r = this._hw * 1.15;
     const X = this._X, Y = this._Y, N = this._N, P = this._P;
     const lift = 0.0015 * scale;
     this.blob.matrix.set(
