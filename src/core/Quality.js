@@ -66,6 +66,10 @@ export function computeSettings(tier, scale, dpr, caps) {
     noFlow,
     simEveryNFrames: 1, // low switches to 2 at runtime when the last frame took > 33 ms
     bakedPaintRes: high ? 512 : medium ? 384 : 256,
+    // Brush plan 4.6: wet polish film (relief/freshness) resolution, 0 = none
+    // (low: sheer coats, no wet relief), and pointer samples used per frame.
+    filmRes: high ? 256 : medium ? 192 : 0,
+    strokeSamplesMax: high ? 8 : medium ? 6 : 4,
     bristles: high ? 128 : medium ? 64 : 32,
     bristleRadiusScale: low ? 1.8 : medium ? 1.3 : 1.0,
     physicsSubstepsMax: high ? 3 : medium ? 2 : 1,

@@ -80,6 +80,9 @@ const fragmentShader = /* glsl */ `
 uniform sampler2D uPaintMap;
 uniform float uHasPaint;
 uniform float uPaintTexel;
+uniform sampler2D uFilmMap;
+uniform float uHasFilm;
+uniform float uFilmTexel;
 uniform sampler2D uDecoMap;
 uniform float uHasDeco;
 uniform vec3 uBaseColor;
@@ -145,6 +148,9 @@ return smoothstep(uRing.x - blur, uRing.x + blur, ang) * (1.0 - smoothstep(uRing
 #ifdef WET_NORMAL_TAPS
 float paintA(vec2 uv) { return texture2D(uPaintMap, uv).a; }
 #endif
+#if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
+float filmR(vec2 uv) { return texture2D(uFilmMap, uv).r; }
+#endif
 void main() {
 vec3 N = normalize(vNormalW);
 vec3 V = normalize(cameraPosition - vPosW);
@@ -163,26 +169,59 @@ nail *= 0.985 + 0.015 * sin(w * 37.0);
 vec3 albedo = mix(nail, uUnderColor, uUnderAmount);
 float cov = uUnderAmount;
 float relief = 0.0;
-vec2 g = vec2(0.0);
+float wetLocal = uWet;
+#if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
+vec2 film = vec2(0.0);
+vec2 hg = vec2(0.0);   // relief gradient in uv space (TAPS: edge + film; DERIV: film)
+vec2 hgS = vec2(0.0);  // DERIV: paint-edge gradient in screen space
+float filmK = 0.0;
+float crest = 0.0;
+#endif
 if (uHasPaint > 0.5) {
 vec4 p = texture2D(uPaintMap, vUv);
 vec3 straight = p.rgb / max(p.a, 0.004);
 straight /= max(1.0, max(straight.r, max(straight.g, straight.b)));
-float k = smoothstep(0.03, 0.45, p.a);
+float k = clamp(p.a * (1.15 - 0.15 * p.a), 0.0, 1.0);
+float kGloss = smoothstep(0.02, 0.5, p.a);
+float foot = sqrt(max(dot(dFdx(vUv), dFdx(vUv)), dot(dFdy(vUv), dFdy(vUv)))) / uPaintTexel;
+#if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
+if (uHasFilm > 0.5) {
+film = texture2D(uFilmMap, vUv).rg;
+filmK = 1.0 - smoothstep(1.4, 2.6, foot * uPaintTexel / uFilmTexel);
+}
+wetLocal = max(uWet, film.g);
+#endif
 float pool = clamp(fwidth(p.a) * 6.0, 0.0, 1.0) * (1.0 - smoothstep(0.85, 1.0, p.a));
-vec3 pc = decodeSRGB(straight) * (1.0 - 0.22 * pool * (0.5 + uWet));
+vec3 pc = decodeSRGB(straight) * (1.0 - 0.22 * pool * (0.5 + wetLocal));
+#if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
+pc *= 1.0 - 0.10 * film.r;
+#endif
 albedo = mix(albedo, pc, k);
-cov = max(cov, k);
-float foot = max(fwidth(vUv.x), fwidth(vUv.y)) / uPaintTexel;
-relief = uWet * k * (1.0 - smoothstep(0.6, 1.8, foot));
+cov = max(cov, kGloss);
+relief = kGloss * (0.35 + 0.65 * wetLocal) * (1.0 - smoothstep(2.5, 5.0, foot));
 #ifdef WET_NORMAL_TAPS
 if (relief > 0.001) {
-float d = uPaintTexel * 1.5;
-g = vec2(paintA(vUv + vec2(d, 0.0)) - paintA(vUv - vec2(d, 0.0)),
-paintA(vUv + vec2(0.0, d)) - paintA(vUv - vec2(0.0, d)));
+float pd = uPaintTexel * 1.5;
+hg = vec2(paintA(vUv + vec2(pd, 0.0)) - p.a, paintA(vUv + vec2(0.0, pd)) - p.a) / pd * EDGE_H;
+if (filmK > 0.001) {
+float fd = uFilmTexel * 1.5;
+float rxp = filmR(vUv + vec2(fd, 0.0));
+float rxm = filmR(vUv - vec2(fd, 0.0));
+float ryp = filmR(vUv + vec2(0.0, fd));
+float rym = filmR(vUv - vec2(0.0, fd));
+hg += vec2(rxp - rxm, ryp - rym) * (0.5 / fd) * FILM_H * filmK;
+// ridge crests (negative curvature): the thin wet lines that catch the light
+crest = max(4.0 * film.r - rxp - rxm - ryp - rym, 0.0) * filmK * 0.6;
+}
 }
 #elif defined(WET_NORMAL_DERIV)
-g = vec2(dFdx(p.a), dFdy(p.a));
+// Edge from screen derivatives (cheap); the fine film ridges need texel
+// taps (derivatives are too coarse for them): 2 forward taps.
+hgS = vec2(dFdx(p.a), dFdy(p.a)) * EDGE_H;
+if (filmK > 0.001) {
+float fd = uFilmTexel;
+hg = vec2(filmR(vUv + vec2(fd, 0.0)) - film.r, filmR(vUv + vec2(0.0, fd)) - film.r) / fd * FILM_H * filmK;
+}
 #endif
 }
 vec3 pigment = albedo;
@@ -192,17 +231,25 @@ vec3 decoStraight = deco.rgb / max(deco.a, 0.004);
 albedo = albedo * (1.0 - deco.a) + decodeSRGB(decoStraight) * deco.a;
 cov = max(cov, deco.a);
 }
-#ifdef WET_NORMAL_TAPS
-N = normalize(N - (g.x * T + g.y * B) * relief * 0.9);
-#elif defined(WET_NORMAL_DERIV)
-{
+#if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
+if (relief > 0.001) {
+// Surface gradient of the wet relief (Mikkelsen). Heights are in nail-UV
+// units (scaled by world length per uv), so the look does not depend on how
+// the nail's UVs are laid out.
 vec3 dpx = dFdx(vPosW);
 vec3 dpy = dFdy(vPosW);
 vec3 r1 = cross(dpy, N);
 vec3 r2 = cross(N, dpx);
 float det = dot(dpx, r1);
-vec3 grad = sign(det) * (g.x * r1 + g.y * r2);
-N = normalize(abs(det) * N - grad * relief * 0.35);
+if (abs(det) > 1e-14) {
+vec2 dux = dFdx(vUv);
+vec2 duy = dFdy(vUv);
+vec3 gu = (r1 * dux.x + r2 * duy.x) / det;
+vec3 gv = (r1 * dux.y + r2 * duy.y) / det;
+float wpu = sqrt(abs(det) / max(abs(dux.x * duy.y - dux.y * duy.x), 1e-14));
+vec3 grad = (hg.x * gu + hg.y * gv + (hgS.x * r1 + hgS.y * r2) / det) * wpu;
+N = normalize(N - grad * relief);
+}
 }
 #endif
 float wob = uWet * cov;
@@ -275,12 +322,17 @@ vec3 haze = (pigment + 0.3) * flake * (0.18 + 0.9 * pow(max(dot(R, L), 0.0), 6.0
 col += (fl * resolve * uFlakeGain + haze * (1.0 - resolve * 0.6)) * uLightColor * 1.6;
 }
 if (coatK > 0.001) {
-float coatRough = mix(rough, 0.0, uWet);
+float coatRough = mix(rough, 0.0, wetLocal);
 vec3 env = envSample(R, coatRough * uEnvMaxLod);
-float ringBlur = mix(0.012 + rough * 0.3, 0.03, uWet);
-float ring = ringLight(R, ringBlur) * uRing.z * mix(1.0, 1.35, uWet);
+float ringBlur = mix(0.012 + rough * 0.3, 0.03, wetLocal);
+float ring = ringLight(R, ringBlur) * uRing.z * mix(1.0, 1.35, wetLocal);
 vec3 coat = (env + ring) * F * coatK * uEnvIntensity;
 col += coat * mix(1.0, ao, 0.5);
+#ifdef WET_NORMAL_TAPS
+// Fresh-film glints: bright thin streaks along the stroke on the ridge crests.
+float glintEnv = 0.05 + pow(max(dot(R, L), 0.0), 6.0) * 2.4 + ringLight(R, 0.2) * 1.8;
+col += min(crest * GLINT, 1.6) * film.g * glintEnv * coatK * uEnvIntensity * vec3(1.0, 0.97, 0.95);
+#endif
 }
 col += uHighlight * pow(1.0 - NdV, 3.0) * vec3(1.0, 0.45, 0.7) * 0.25;
 if (uRevealPulse > 0.0) {
@@ -320,9 +372,12 @@ export function createNailLighting() {
   };
 }
 
+// Wet relief gains (heights in nail-UV units; see the surface-gradient block).
+const RELIEF_DEFINES = Object.freeze({ FILM_H: '0.0070', EDGE_H: '0.0016', GLINT: '18.0' });
+
 function definesFor(settings) {
   const d = settings && settings.nailShaderDefines;
-  return Object.assign({}, d || { GLITTER_CHEAP: '' });
+  return Object.assign({}, d || { GLITTER_CHEAP: '' }, RELIEF_DEFINES);
 }
 
 /**
@@ -335,6 +390,9 @@ export function createNailUniforms(lighting) {
     uPaintMap: { value: null },
     uHasPaint: { value: 0 },
     uPaintTexel: { value: 1 / 512 },
+    uFilmMap: { value: null },
+    uHasFilm: { value: 0 },
+    uFilmTexel: { value: 1 / 256 },
     uDecoMap: { value: null },
     uHasDeco: { value: 0 },
     uBaseColor: { value: new THREE.Color('#f7c3c6') },
