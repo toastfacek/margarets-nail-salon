@@ -43,17 +43,19 @@ import { soundManager } from '../../audio/SoundManager.js';
 /** Alpha of one brush pass (sheer coat; two passes 0.86, three 0.95). */
 export const COAT_ALPHA = 0.62;
 const BAND_MIN = 0.182;           // 2*hw / nail width (UV arc) at the lightest touch
-const BAND_PRESS = 0.126;        // ... plus this at full pressure (on screen: ~36% of the nail)
+const BAND_PRESS = 0.14;         // ... plus this at full pressure (on screen: ~36% of the nail)
 const HL_RATIO = 0.35;           // half contact length / half width of a band segment
-const END_HL = 0.9;              // stroke ends: the pressed paddle lies this far (x hw) past the tip line
-const LAND_HL = 0.25;            // landing print: contact length (x hw), short (within the band's end)
-const CAP_HL = 0.7;              // taps and pools: the whole pressed paddle prints
+const END_HL = 1.2;              // stroke ends: a round paddle print (x hw) past the end line
+const CAP_HL = 1.0;              // taps, pools, reversals: round prints
+const FAN_VISIBLE = 0.95;        // the fan spans the band's visible width (its outer edge is feathered)
+const TOUCH_DOT = 0.2;           // x hw: the dot laid the moment the tips touch down
+const PRINT_STILL = 0.35;        // s a press must stay still (no pointer event) before it prints the whole brush
 const EDGE_ON_MIN = 0.6;         // band across the motion never under 60% of 2*hw
-const DRY_NARROW = 0.2;          // dry brush: band this much narrower
+const DRY_NARROW = 0.25;         // dry brush: band this much narrower
 const LOAD_LENGTHS = 3.2;        // nail lengths of stroke per load
 const DRY_AT = 0.35;             // load under which the brush gets streaky
 const DIR_STEP = 0.02;           // x nail width of travel per direction update
-const AXIS_OMEGA = 30;           // 1/s, critically damped (90 deg turn -> < 15 deg in 120 ms)
+const AXIS_OMEGA = 38;           // 1/s, critically damped (90 deg turn -> ~5 deg in 120 ms)
 const REVERSAL = -0.3;           // dot of directions: a hard turn gets a cap pair
 const POOL_DELAY = 0.25;         // s still before a pool starts (a press before moving is not a rest)
 const POOL_EVERY = 0.1;          // s: then resting adds a pool cap this often
@@ -64,12 +66,11 @@ const POOL_STILL = 0.02;         // x nail width: moving more than this resets t
 const LEAD_TEXELS = 2;           // the band leads the newest sample by this many dye texels
 const REDIP_DELAY = 0.12;        // s after a lift ...
 const REDIP_TIME = 0.33;         // ... the load eases back to 1 over this
-const COVERAGE_CORE = 0.92;      // the band is solid nearly to its edge
+const COVERAGE_CORE = 0.97;      // the band is solid nearly to its edge
 const COVERAGE_RES = 32;
 const COVERED_AT = 0.9;
 const LANDING_BEAD = 0.6;
-const LANDING_COAT = 0.85;       // x COAT_ALPHA: the print the brush leaves as it lands
-const DRY_MAX = 0.7;             // a dry brush still lays streaks (about half a band)
+const DRY_MAX = 0.6;             // a dry brush still lays streaks (about half a band)
 const FLICK_SPEED = 2.6;         // nail widths / s: a flick off the free edge or a hard reversal
 const FLICKS_PER_STROKE = 3;
 const AUTO_PRESSURE = 0.8;
@@ -233,6 +234,7 @@ export class PolishBrush3D {
     this._dry = 0;
     this._segs = 0;               // segments laid in this stroke
     this._holdT = 0;
+    this._lastSampleMs = 0;       // stroke time of the newest input sample
     this._poolK = 0;
     this._poolX = 0; this._poolY = 0;
     this._flicks = 0;
@@ -240,7 +242,8 @@ export class PolishBrush3D {
     this._sinceLift = -1;         // s since the last lift (-1: no re-dip pending)
     this._dipEmitted = false;
     this._hw = 0;                 // half width now (plane units)
-    this._landed = false;
+    this._printed = false;        // a still press has printed (the stroke's back end)
+    this._chainFrame = 0;
     this._backCap = false;
     this._depU = 0; this._depV = 0;
 
@@ -585,8 +588,7 @@ export class PolishBrush3D {
       const hw = this._halfWidth(this._pressure);
       if (this._segs === 0) {
         // a tap: the whole pressed brush print, with the landing bead
-        this._cap(this._px, this._py, hw * 1.04, hw * CAP_HL, SEG_FLAGS.CAP_START | SEG_FLAGS.CAP_END,
-          Math.max(LANDING_BEAD, overload * 0.9), COAT_ALPHA);
+        if (!this._printed) this._print(hw, Math.max(LANDING_BEAD, overload * 0.9));
       } else if (this._hasSeg) {
         // the band's end: the paddle's print past the last sample, tiled
         // onto the band (one coat, no overlap); a bead left while overloaded
@@ -646,7 +648,9 @@ export class PolishBrush3D {
   /** A press began (on or off the nail). Paint starts at the first on-nail sample. */
   _pressStart() {
     this.isPainting = true;
-    this._landed = false;
+    this._lastSampleMs = 0;
+    this._printed = false;        // a still press has printed (the stroke's back end)
+    this._chainFrame = 0;
     this._backCap = false;
     this._strokeOpen = false;
     this._chain = false;
@@ -760,16 +764,26 @@ export class PolishBrush3D {
     this._ancY = y;
     this._poolX = x;
     this._poolY = y;
+    // The landing is laid with the first segment, aligned with the first
+    // motion and tiled onto the band (one coat). A press that stays still for
+    // a frame prints the brush instead (see update()).
     this._backCap = landing;
+    this._printed = false;
+    this._chainFrame = this._frame;
     if (landing) {
-      // The brush prints as it lands, in this very frame: a short strip with
-      // a little more polish where it lands (the stroke's back end follows
-      // with the first segment, once the direction is known).
+      // the bristle tips touch down: a small soft dot of polish right under
+      // them, in this very frame (the band's round back end covers it)
       const hw = this._halfWidth(pressure);
-      this._capAt(x, y, Math.cos(this._axA), Math.sin(this._axA), hw * 1.04, hw * LAND_HL,
-        SEG_FLAGS.CAP_START, LANDING_BEAD, COAT_ALPHA * LANDING_COAT);
-      this._landed = true;
+      this._capAt(x, y, Math.cos(this._axA), Math.sin(this._axA), hw * TOUCH_DOT, hw * TOUCH_DOT,
+        SEG_FLAGS.CAP_START | SEG_FLAGS.CAP_END, LANDING_BEAD, COAT_ALPHA * 0.85);
     }
+  }
+
+  /** The pressed brush's round print at the band's end (a tap, or a press before moving). */
+  _print(hw, bead) {
+    this._cap(this._px, this._py, hw * 1.04, hw * CAP_HL, SEG_FLAGS.CAP_START | SEG_FLAGS.CAP_END, bead, COAT_ALPHA);
+    this._printed = true;
+    this._backCap = false;
   }
 
   /**
@@ -830,6 +844,16 @@ export class PolishBrush3D {
     }
     const ux = dx / l, uy = dy / l;
     this._qx = qx; this._qy = qy;
+    if (!this._hasSeg && !this._hasDir) {
+      // The chain's first motion: the paddle lands already across it (the
+      // axis spring is for turns; turning from a default axis here would
+      // start the band edge-on, pinched, behind a full-width back cap).
+      let a = Math.atan2(uy, ux) + Math.PI * 0.5;
+      a -= Math.PI * Math.round((a - this._axA) / Math.PI);
+      this._axA = a; this._axV = 0;
+      this._dirX = ux; this._dirY = uy; this._hasDir = true;
+      this._ancX = qx; this._ancY = qy;
+    }
 
     const ax = Math.cos(this._axA), ay = Math.sin(this._axA);
     const hw = this._halfWidth(pressure);
@@ -845,13 +869,15 @@ export class PolishBrush3D {
     }
 
     let flags = exit ? 0 : SEG_FLAGS.CLIP_END;
-    if (!this._hasSeg && this._backCap) {
+    if (!this._hasSeg && (this._backCap || this._printed)) {
       // first segment after a landing: the band starts at the landing point
-      // and its back end is the paddle's print behind it, tiled.
-      this._backCap = false;
+      // and its back end is the paddle's round print behind it, aligned with
+      // this first motion and tiled (one coat; after a still press, the print
+      // is the back end).
       this._sdx = ux; this._sdy = uy;
       flags |= SEG_FLAGS.CLIP_START;
-      this._endCap(-ux, -uy, hw, SEG_FLAGS.CAP_START, LANDING_BEAD * 0.5);
+      if (this._backCap) this._endCap(-ux, -uy, hw, SEG_FLAGS.CAP_START, LANDING_BEAD);
+      this._backCap = false;
     } else if (this._hasSeg) {
       if (ux * this._sdx + uy * this._sdy < REVERSAL) {
         // hard reversal: a cap pair, no seam clip
@@ -967,16 +993,25 @@ export class PolishBrush3D {
           const tMs = s[o + 5];
           const pr = pen ? input.tip.pressure : Math.min(1, 0.35 + Math.max(0, tMs) * 0.01);
           this._feed(s[o] * g.aspect, s[o + 1], tMs, s[o + 6], s[o + 7], pr);
+          this._lastSampleMs = tMs;
           this._depU = s[o]; this._depV = s[o + 1];
         }
         laid = this._segs - before;
         if (laid > 0) this._holdT = 0;
       }
       if (this.isPainting && input.down) {
+        // a press that has stayed still (no pointer event, by the event clock:
+        // a slow frame may still hold the first moves) prints the brush now
+        const stillS = (performance.now() - input.strokeStartMs - this._lastSampleMs) * 0.001;
+        if (input.onNail && this._chain && this._segs === 0 && this._backCap && this._holdT + dt >= PRINT_STILL && stillS >= PRINT_STILL) {
+          this._print(this._halfWidth(this._pressure), LANDING_BEAD);
+        }
         if (input.onNail && this._chain && laid === 0) {
-          // resting: a pool grows under the still brush
+          // resting: a pool grows under the still brush (after the print, on
+          // a press that has not moved yet; by the event clock too)
           this._holdT += dt;
-          while (this._holdT >= (this._poolK === 0 ? POOL_DELAY : POOL_EVERY)) {
+          const rest = (this._segs > 0 || this._printed) && stillS >= POOL_DELAY;
+          while (rest && this._holdT >= (this._poolK === 0 ? POOL_DELAY : POOL_EVERY)) {
             this._holdT -= this._poolK === 0 ? POOL_DELAY : POOL_EVERY;
             this._poolK++;
             const k = Math.min(1 + POOL_MAX, 1 + POOL_GROW * this._poolK);
@@ -1115,7 +1150,7 @@ export class PolishBrush3D {
     } else {
       pose.velocity.set(0, 0, 0);
     }
-    pose.halfWidth = this._hw * g.perPlane;
+    pose.halfWidth = this._hw * FAN_VISIBLE * g.perPlane;
     pose.pressure = pressure;
     pose.load = this._load;
     pose.contact = contact;

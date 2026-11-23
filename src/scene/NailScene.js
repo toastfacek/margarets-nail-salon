@@ -31,8 +31,8 @@ const RIM_INTENSITY = 0.55;
 // Focused nail: its larger side fills this share of the viewport's short side.
 // A close-up, like the owner's reference (brush plan B6): bigger on touch
 // screens, where the fingertip covers part of the nail.
-const FOCUS_FILL = 0.42;
-const FOCUS_FILL_COARSE = 0.46;
+const FOCUS_FILL = 0.64;
+const FOCUS_FILL_COARSE = 0.70;
 const COARSE = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 // The idle warm-up of other-tier variants starts this long after load.
 const WARM_DELAY_MS = 3500;

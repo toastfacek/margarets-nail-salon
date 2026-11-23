@@ -82,6 +82,7 @@ const Q_STRIDE = 4;                   // clientX, clientY, timeStamp, kind
 const K_MOVE = 0, K_DOWN = 1, K_UP = 2;
 const EXTRA_CASTS = 4;                // per frame: touch fallbacks and edge bisection
 const BISECT_STEPS = 4;
+const TOUCH_EDGE_STEPS = 3;          // touch at the nail's top edge: 12 px / 8 = 1.5 px
 const PRESS_START = 0.35;             // pressure on down, ramps to 1 in ~65 ms
 const PRESS_RATE = 10;                // per second
 const RELEASE_RATE = 8;               // per second (old rig height only)
@@ -154,6 +155,7 @@ export class BrushInputHandler {
     this._extraLeft = 0;
     this._bisectS = 0;
     this._rawMode = false;         // touch: raw contact point in use (nail's top edge)
+    this._prevRawMode = false;
     this._ex = 0;
     this._ey = 0;
 
@@ -373,7 +375,8 @@ export class BrushInputHandler {
     this.sampleCount = 0;
     this.strokeStart = false;
     this.strokeEnd = false;
-    this._extraLeft = EXTRA_CASTS;
+    // touch gets the raw point and its edge bisection on top of the crossings'
+    this._extraLeft = EXTRA_CASTS + (this.isTouch ? TOUCH_EDGE_STEPS : 0);
     const n = this._queueN;
 
     if (n === 0) {
@@ -559,39 +562,38 @@ export class BrushInputHandler {
   }
 
   /**
-   * Touch: the nudged point, or the raw contact point when the nudged one
-   * misses and the raw one hits (the finger is in the nail's top 12 px).
-   * Once the raw point is in use, later samples of the stroke cast it first,
-   * so a frame never flips between the two; the newest sample checks whether
-   * the nudged point is back on the nail. Extra casts come from `_extraLeft`;
-   * the newest sample may use the last one. Leaves the point in `_ex/_ey`.
+   * Touch: the nudged point (12 px above the contact point). When it misses
+   * the nail but the raw contact point hits (the finger is in the nail's top
+   * 12 px), the paint goes to the nail's edge between the two (bisection on
+   * screen), so the deposit slides smoothly onto the edge instead of jumping
+   * 12 px to the raw point. Extra casts come from `_extraLeft` (the newest
+   * sample may use the last one); with none left the raw point is used.
+   * Leaves the point in `_ex/_ey`.
    */
   _castTouch(nailMesh, x, y, row, normal, newest) {
     const ny = y - TOUCH_NUDGE_PX;
     this._ex = x;
-    if (this._rawMode) {
-      if (this._cast(nailMesh, x, y, row, normal)) {
-        if (newest && this._spare(nailMesh, newest, x, ny) && this._cast(nailMesh, x, ny, this._rowC, normal)) {
-          row.set(this._rowC);
-          this._rawMode = false;
-          this._ey = ny;
-        } else {
-          this._ey = y;
-        }
-        return true;
-      }
-      this._rawMode = false;
-      this._ey = ny;
-      return this._spare(nailMesh, newest, x, ny) && this._cast(nailMesh, x, ny, row, normal);
-    }
     this._ey = ny;
+    this._rawMode = false;
     if (this._cast(nailMesh, x, ny, row, normal)) return true;
-    if (this._spare(nailMesh, newest, x, y) && this._cast(nailMesh, x, y, row, normal)) {
-      this._rawMode = true;
+    // The raw point is always tried when it can be on the nail (no budget: a
+    // sample that skipped it would read as leaving and re-entering the nail).
+    const b = this._box;
+    if (b.valid && (x < b.left - 2 || x > b.right + 2 || y < b.top - 2 || y > b.bottom + 2)) return false;
+    if (!this._cast(nailMesh, x, y, row, normal)) return false;
+    this._rawMode = true;
+    // older samples leave enough for a crossing's bisection (the edge sample
+    // that sets where the paint stops); the newest one sets the shown deposit
+    const steps = Math.max(0, Math.min(TOUCH_EDGE_STEPS, this._extraLeft - (newest ? 0 : 1 + BISECT_STEPS)));
+    if (steps > 0) {
+      this._extraLeft -= steps;
+      // P(s) = raw + (nudged - raw) s: on the nail at s = 0, off at s = 1
+      this._bisect(nailMesh, x, y, x, ny, 0, 1, row, row, steps);
+      this._ey = y + (ny - y) * this._bisectS;
+    } else {
       this._ey = y;
-      return true;
     }
-    return false;
+    return true;
   }
 
   /**
@@ -632,16 +634,22 @@ export class BrushInputHandler {
       const pt = this._prevT;
       if (hit) {
         // entry: this sample is the on-nail side (s = 1)
+        // Touch paints while the nudged point or the raw contact is on the
+        // nail, so a crossing is where the leading one enters / the trailing
+        // one leaves: moving down (or in raw contact mode) the raw path.
         if (steps > 0) {
-          this._bisect(nailMesh, this._prevX, this._prevCY - (y - ey), ex, ey, 1, 0, row, edge, steps);
+          if (this._rawMode || (this.isTouch && y > this._prevCY)) this._bisect(nailMesh, this._prevX, this._prevCY, x, y, 1, 0, row, edge, steps);
+          else this._bisect(nailMesh, this._prevX, this._prevCY - (y - ey), ex, ey, 1, 0, row, edge, steps);
           this._emit(edge, pt + (t - pt) * this._bisectS, 1, 1);
           this._emit(row, t, 0, 0);
         } else {
           this._emit(row, t, 1, 1);
         }
       } else {
-        // exit: the previous sample is the on-nail side (s = 0)
-        this._bisect(nailMesh, this._prevX, this._prevY, ex, y - (this._prevCY - this._prevY), 0, 1, this._prevRow, edge, steps);
+        // exit: the previous sample is the on-nail side (s = 0); moving up
+        // (or after raw contact mode) along the finger's raw path
+        if (this._prevRawMode || (this.isTouch && y < this._prevCY)) this._bisect(nailMesh, this._prevX, this._prevCY, x, y, 0, 1, this._prevRow, edge, steps);
+        else this._bisect(nailMesh, this._prevX, this._prevY, ex, y - (this._prevCY - this._prevY), 0, 1, this._prevRow, edge, steps);
         this._emit(edge, pt + (t - pt) * this._bisectS, 1, -1);
       }
     } else if (hit) {
@@ -653,6 +661,7 @@ export class BrushInputHandler {
     this._prevX = ex;
     this._prevY = ey;
     this._prevCY = y;
+    this._prevRawMode = this._rawMode;
     this._prevT = t;
 
     if (newest) {

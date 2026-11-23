@@ -155,24 +155,30 @@ void main() {
   // (low-frequency noise in plane position, continuous across segments).
   float bw = 2.0 * hw;
   float wob = noise2(P / bw * 1.3 + uSeed * 3.7) * 0.7 + noise2(P / bw * 4.1 - uSeed) * 0.3;
-  float r = min(hl, 0.35 * hw);
-  float hx = (hw - r) * (1.0 + 0.24 * (wob - 0.5));
+  // The band's own half width here (segments round their corners by 0.35 hw).
+  float hxBand = 0.65 * hw * (1.0 + 0.24 * (wob - 0.5)) + 0.35 * hw;
+  // Caps (landing / lift / pools) are round: corner radius up to the band's
+  // half width, so a stroke end is a soft semicircle that meets the band.
+  bool isCap = (flags & 12) != 0;
+  float r = isCap ? min(hl, hxBand) : min(hl, 0.35 * hw);
+  float hx = isCap ? max(hxBand - r, 0.0) : (hw - r) * (1.0 + 0.24 * (wob - 0.5));
   float hy = max(hl - r, 0.0);
 
   float m1 = abs(q.x - d.x * 0.5) - (hx + abs(d.x) * 0.5);
   float m2 = abs(q.y - d.y * 0.5) - (hy + abs(d.y) * 0.5);
-  float sd = max(m1, m2);
+  float m3 = -1e6;
   if (len2 > 1e-14) {
     vec2 nd = vec2(-d.y, d.x) * inversesqrt(len2);
-    float m3 = abs(dot(q - d * 0.5, nd)) - (hx * abs(nd.x) + hy * abs(nd.y));
-    sd = max(sd, m3);
+    m3 = abs(dot(q - d * 0.5, nd)) - (hx * abs(nd.x) + hy * abs(nd.y));
   }
-  sd -= r;
-  // Caps (landing / lift): bristle ends push the outline in and out.
-  // (Amplitude capped for long end caps: a ragged comb reads as fake.)
-  if ((flags & 12) != 0) sd += 0.25 * min(hl, 0.45 * hw) * ((noise1(s * 7.0 + uSeed * 2.0) * 0.7 + noise1(s * 19.0 - uSeed) * 0.3) - 0.5) * 2.0;
-
+  // Rounded: Euclidean outside the inner box (a max() alone gives square
+  // corners whatever r is), so round caps are round. The swept segment's
+  // diagonal plane stays a plain max (it would double count the sides).
+  float sd = max(length(max(vec2(m1, m2), 0.0)) + min(max(m1, m2), 0.0), m3) - r;
   float aa = 1.25 * max(uTexel.x * uAspect, uTexel.y);
+  // Caps: bristle ends push the outline in and out a little (at most 2
+  // texels: a ragged comb reads as fake).
+  if (isCap) sd += min(0.25 * min(hl, 0.45 * hw), 1.6 * aa) * ((noise1(s * 7.0 + uSeed * 2.0) * 0.7 + noise1(s * 19.0 - uSeed) * 0.3) - 0.5) * 2.0;
   float mask = 1.0 - smoothstep(-aa, aa, sd);
   if (mask <= 0.0) discard;
 
@@ -194,7 +200,10 @@ void main() {
 #else
   // No along-stroke ripple in the dye: it is permanent, and the nail shader
   // turns alpha ripples into glints long after the film has levelled (A19).
-  float a = mask * body * vSeam.w;
+  // The outer ~13% of the half width fades out, so passes that overlap
+  // blend instead of leaving a hard line where they meet.
+  float feather = smoothstep(0.0, 0.13 * hw, -sd);
+  float a = mask * feather * body * vSeam.w;
   gl_FragColor = vec4(uColor, clamp(a, 0.0, 1.0));
 #endif
 }
@@ -624,6 +633,11 @@ export class PolishFilm {
    * @param {number} dt seconds
    */
   tick(dt) {
+    if (!this.film) {
+      // low tier: nothing to level
+      this.sinceDeposit = AWAKE_SECONDS;
+      return false;
+    }
     if (this.sinceDeposit >= AWAKE_SECONDS) return false;
     if (!(dt > 0)) return true;
     if (dt > 0.1) dt = 0.1;

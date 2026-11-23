@@ -65,10 +65,12 @@ const RIG = Object.freeze({
   tiltTouch: 42 * DEG,     // more upright: clears the finger
   minAN: 0.3,              // handle never closer than ~73 deg to the surface normal
   leanRight: 15 * DEG,     // handle turned from screen-up toward screen-right
-  leanTrail: 0.35,         // ... and pulled behind the motion by up to this
+  leanLead: 0.8,           // ... and pulled toward the motion by up to this (the handle leads, the bristles drag)
   leanFloor: 0.2,          // never below the screen horizon (finger side)
   maxSkew: 40 * DEG,       // max angle between the lean and the across-band direction
-  rightBias: 0.3,          // edge-on strokes put the handle on the screen-right side
+  downTurn: 72 * DEG,      // down-screen strokes: the lean turns this much further to the right
+  downSkew: 40 * DEG,      // ... and may leave the across-band direction this much further
+  rightBias: 0.1,          // edge-on strokes put the handle on the screen-right side
   pressDrop: 0.3,          // ferrule comes down by this x L at full pressure
   minHeight: 0.28,         // x L: ferrule never lower than this
   trailMax: 0.3,           // x L: tips trail the ferrule by up to this
@@ -78,7 +80,7 @@ const RIG = Object.freeze({
   wobbleOmega: 2 * Math.PI * 8,
   wobbleZeta: 0.2,         // ~2 visible cycles
   wobbleTime: 0.4,
-  leanOmega: 9,            // slow: the hand re-aims, the bristles flip
+  leanOmega: 14,           // the hand re-aims within ~0.25 s, the bristles flip
   axisOmega: 42,           // legacy driver only (the engine sends its own axis)
   widthOmega: 26,          // fan closing after a lift
   liftOmega: 40,           // tips leaving the surface after a lift
@@ -185,6 +187,8 @@ export class BristleSystem {
     this._lean = new THREE.Vector3();
     this._leanVel = new THREE.Vector3();
     this._leanInit = false;
+    this._downK = 0;            // 0..1 how much the stroke runs down the screen (smoothed)
+    this._skew = RIG.maxSkew;
     this._side = 1;
     this._hw = DEFAULT_SCALE * RIG.restWidth * 0.5;
     this._c = 0;                // contact blend 1 = on the surface
@@ -337,7 +341,7 @@ export class BristleSystem {
   }
 
   /**
-   * Flat oval ferrule -> short stem -> thick purple cap (the grip), one merged mesh in units
+   * Flat oval ferrule -> stem -> slim purple cap (the grip), one merged mesh in units
    * of the bristle length (the matrix scales it), +Y along the handle,
    * +X across the ferrule. Vertex coloured, same program as the bristles.
    */
@@ -357,21 +361,21 @@ export class BristleSystem {
     const ferrule = new THREE.CylinderGeometry(0.5, 0.42, 0.16, 20, 1, false);
     ferrule.translate(0, 0.08 - 0.02, 0);
     add(ferrule, 0x3d1f5c, ferruleW * 1.12, 0.16);
-    // Stem: a short pearly rod straight into the cap (a real polish brush:
-    // the bristles hang off a short stem, the thick cap is the grip).
-    const stem = new THREE.CylinderGeometry(0.04, 0.05, 0.55, 12, 1, true);
-    stem.translate(0, 0.14 + 0.275, 0);
+    // Stem: a pearly rod, sturdy enough not to read as a toothpick.
+    const stem = new THREE.CylinderGeometry(0.045, 0.055, 1.0, 12, 1, true);
+    stem.translate(0, 0.14 + 0.5, 0);
     add(stem, 0xe9e2f2, 1, 1);
-    // Cap: the thick bottle cap the hand holds, flaring out of the stem.
-    const capNeck = new THREE.CylinderGeometry(0.165, 0.07, 0.1, 24, 1, false);
-    capNeck.translate(0, 0.69 + 0.05, 0);
+    // Cap: the bottle cap the hand holds, slim and far enough up the stem
+    // that it stays off the nail and the fresh paint.
+    const capNeck = new THREE.CylinderGeometry(0.115, 0.06, 0.08, 20, 1, false);
+    capNeck.translate(0, 1.14 + 0.04, 0);
     add(capNeck, 0x4a2270, 1, 1);
-    const cap = new THREE.CylinderGeometry(0.185, 0.17, 1.1, 24, 1, false);
-    cap.translate(0, 0.79 + 0.55, 0);
+    const cap = new THREE.CylinderGeometry(0.12, 0.115, 0.85, 20, 1, false);
+    cap.translate(0, 1.22 + 0.425, 0);
     add(cap, 0x5a2a82, 1, 1);
-    const top = new THREE.SphereGeometry(0.185, 24, 6, 0, Math.PI * 2, 0, Math.PI / 2);
-    top.scale(1, 0.45, 1);
-    top.translate(0, 1.89, 0);
+    const top = new THREE.SphereGeometry(0.12, 20, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+    top.scale(1, 0.5, 1);
+    top.translate(0, 2.07, 0);
     add(top, 0x5a2a82, 1, 1);
 
     // Merge (indexed).
@@ -809,19 +813,36 @@ export class BristleSystem {
     }
     const hw = this._hw;
 
-    // Lean (on screen): up, turned toward screen-right, pulled a little
-    // behind the motion (the handle trails), then kept within maxSkew of
-    // the across-band direction so the flat face shows. The side is sticky
-    // and the lean spring slow, so a scrub does not swing the handle.
+    // Lean (on screen): up, turned toward screen-right, pulled toward the
+    // motion (the handle leads, the bristles drag behind), then kept within
+    // maxSkew of the across-band direction so the flat face shows. The side
+    // is sticky and the lean spring smooth, so a scrub does not swing it.
     const D = this._t2;  // v no longer needed
-    D.copy(up).multiplyScalar(Math.cos(RIG.leanRight)).addScaledVector(right, Math.sin(RIG.leanRight));
-    if (contact && speed > 1e-6) {
+    // Down-screen strokes: the hand would sit over the paint with the handle
+    // straight up, and the bristles would be pushed. Turn the handle out to
+    // the upper right instead (up to downTurn), so the ferrule stays level
+    // with or ahead of the tips and the flat face shows.
+    // Held through brief stalls in contact (touch events arrive in bursts),
+    // so the turn does not flicker back between samples.
+    let downK = contact ? this._downK : 0;
+    if (contact && sat > 0.04) {
+      const vx = pose.velocity.x, vy = pose.velocity.y, vz = pose.velocity.z;
+      const vu = vx * up.x + vy * up.y + vz * up.z;
+      const vr = vx * right.x + vy * right.y + vz * right.z;
+      const vs = Math.hypot(vu, vr);
+      downK = vs > 1e-9 && vu < 0 ? -vu / vs : 0;
+    }
+    this._downK += (downK - this._downK) * (1 - Math.exp(-25 * Math.max(0, dt)));
+    const leanA = RIG.leanRight + RIG.downTurn * this._downK;
+    this._skew = RIG.maxSkew + RIG.downSkew * this._downK;
+    D.copy(up).multiplyScalar(Math.cos(leanA)).addScaledVector(right, Math.sin(leanA));
+    if (contact && speed > 1e-6 && downK < 0.3) {
       const vx = pose.velocity.x, vy = pose.velocity.y, vz = pose.velocity.z;
       const vu = vx * U.x + vy * U.y + vz * U.z;
       const sx = vx - vu * U.x, sy = vy - vu * U.y, sz = vz - vu * U.z;
       const sl = Math.hypot(sx, sy, sz);
       if (sl > 1e-9) {
-        const m = -RIG.leanTrail * sat / sl;
+        const m = RIG.leanLead * sat / sl;
         D.x += sx * m; D.y += sy * m; D.z += sz * m;
       }
     }
@@ -848,7 +869,8 @@ export class BristleSystem {
       this._leanInit = true;
     } else {
       const lx = this._lean.x, ly = this._lean.y, lz = this._lean.z;
-      this._springVec(this._lean, this._leanVel, lean, RIG.leanOmega, 1, dt);
+      // a down stroke turns the handle out quickly, before the tips can lead
+      this._springVec(this._lean, this._leanVel, lean, RIG.leanOmega + 18 * this._downK, 1, dt);
       energy += (this._lean.x - lx) ** 2 + (this._lean.y - ly) ** 2 + (this._lean.z - lz) ** 2;
     }
     // The smoothed lean is clamped again against the current band axis, so
@@ -891,12 +913,13 @@ export class BristleSystem {
   /** Keep unit `v` within maxSkew of side * Ys (rotating it toward Ys). */
   _clampSkew(v, Ys, right) {
     const ys = this._side;
+    const sk = this._skew || RIG.maxSkew;
     const dy = v.dot(Ys);
-    if (dy * ys >= Math.cos(RIG.maxSkew)) return v;
+    if (dy * ys >= Math.cos(sk)) return v;
     v.addScaledVector(Ys, -dy);
     if (v.lengthSq() < 1e-8) v.copy(right).addScaledVector(Ys, -right.dot(Ys));
     if (v.lengthSq() < 1e-8) return v.copy(Ys).multiplyScalar(ys);
-    return v.normalize().multiplyScalar(Math.sin(RIG.maxSkew)).addScaledVector(Ys, ys * Math.cos(RIG.maxSkew));
+    return v.normalize().multiplyScalar(Math.sin(sk)).addScaledVector(Ys, ys * Math.cos(sk));
   }
 
   /**
@@ -1055,15 +1078,15 @@ export class BristleSystem {
     // Core strip: the wet bundle under the strands, from the left to the
     // right edge curve, pushed a hair away from the camera.
     const tmp = this._coreJ;
-    this._curve(-0.46, 0, -0.42, 0, 1, 0, 0, tmp, 0);
-    this._curve(0.46, 0, 0.42, 0, 1, 0, 0, tmp, JOINTS * 3);
+    this._curve(-0.5, 0, -0.45, 0, 1, 0, 0, tmp, 0);
+    this._curve(0.5, 0, 0.45, 0, 1, 0, 0, tmp, JOINTS * 3);
     const tc = this._toCam;
     for (let s = 0; s < SEGMENTS; s++) {
       const o = s * 12;
       for (let e = 0; e < 2; e++) {
         const j = s + e;
         // behind every row, but still above the nail at the tip
-        const back = RIG.coreBack * scale * (1 - 0.65 * j / SEGMENTS);
+        const back = RIG.coreBack * scale * (1 - 0.9 * j / SEGMENTS);
         const l = j * 3, r = JOINTS * 3 + j * 3;
         const vo = o + e * 6;
         pos[vo] = tmp[l] - tc.x * back; pos[vo + 1] = tmp[l + 1] - tc.y * back; pos[vo + 2] = tmp[l + 2] - tc.z * back;
