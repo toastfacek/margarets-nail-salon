@@ -18,6 +18,14 @@
  *     onSurface (optional)   // false when `point` is not on the nail (no landing blob)
  *   bristles.update(dt, nailMesh, raycaster) -> contact count
  *   bristles.tipCenter       // world centroid of the tip line (read only)
+ *   bristles.setCamera(cam)  // optional: the view the handle leans in (else the
+ *                            // first camera that renders the bristles)
+ *   bristles.prewarm(renderer, camera, scene)  // optional: compile now
+ *
+ * Tuning against the owner's reference frame: the handle is tilted from a
+ * blend of view direction and surface normal (55 deg mouse, 42 deg touch)
+ * rather than 45/35 deg from the normal: on our top-down camera a 45 deg
+ * handle hides the bristles' length and the fan reads as a short tuft.
  *
  * The old calls (`setBrushTransform`, `setSurface`, `pressure`,
  * `isContacting`) still work: they fill the pose internally (velocity,
