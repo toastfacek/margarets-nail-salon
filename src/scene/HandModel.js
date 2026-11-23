@@ -628,6 +628,28 @@ export class HandModel {
         u.uHasPaint.value = texture ? 1 : 0;
         const img = texture && texture.image;
         if (img && img.width) u.uPaintTexel.value = 1 / img.width;
+        // No paint, no wet film (brush plan 4.5: the film is cleared with the paint).
+        if (!texture && u.uFilmMap.value) {
+            u.uFilmMap.value = null;
+            u.uHasFilm.value = 0;
+        }
+        this._invalidate();
+    }
+
+    /**
+     * Point the nail shader's uFilmMap at the wet polish film (PolishFilm:
+     * R = relief height, G = freshness), or null. Read on medium/high only.
+     * Uniform writes only: never recompiles.
+     */
+    setFilmTexture(hand, finger, texture) {
+        const rec = this.getNail(hand, finger);
+        if (!rec) return;
+        const u = rec.material.uniforms;
+        if (u.uFilmMap.value === texture) return;
+        u.uFilmMap.value = texture;
+        u.uHasFilm.value = texture ? 1 : 0;
+        const img = texture && texture.image;
+        if (img && img.width) u.uFilmTexel.value = 1 / img.width;
         this._invalidate();
     }
 
