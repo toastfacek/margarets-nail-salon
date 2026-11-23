@@ -441,8 +441,9 @@ export class BristleSystem {
     this.blob.matrixAutoUpdate = false;
     this.blob.renderOrder = 2;
     this.blob.raycast = () => {};
-    // Always "visible" (opacity 0 when unused) so its program is compiled
-    // with the scene at load, never mid-stroke.
+    // Visible (opacity 0) until prewarm() has compiled its program, so it
+    // is compiled with the scene at load, never mid-stroke; hidden while
+    // unused after that.
     this.group.add(this.blob);
   }
 
@@ -450,10 +451,12 @@ export class BristleSystem {
   prewarm(renderer, camera, scene = null) {
     this._warmed = true;
     try {
-      const was = this.group.visible;
+      const was = this.group.visible, blobWas = this.blob.visible;
       this.group.visible = true;
+      this.blob.visible = true;
       renderer.compile(this.group, camera, scene || this.group.parent || undefined);
       this.group.visible = was;
+      this.blob.visible = blobWas;
     } catch (err) {
       // optimisation only
     }
@@ -1129,6 +1132,8 @@ export class BristleSystem {
     const show = pose.onSurface ? 1 - this._c : 0;
     const mat = this.blob.material;
     mat.opacity = 0.5 * show;
+    // No draw while painting; kept in the scene until its program is warm.
+    this.blob.visible = show > 0.002 || !this._warmed;
     const r = this._hw * 1.15;
     const X = this._X, Y = this._Y, N = this._N, P = this._P;
     const lift = 0.0015 * scale;
