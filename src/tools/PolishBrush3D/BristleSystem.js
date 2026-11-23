@@ -77,7 +77,10 @@ const RIG = Object.freeze({
   dirStep: 0.02,           // legacy: nail widths of travel per direction update
   beadRadius: 0.042,
   fanOpen: 0.45,           // belly already this far out toward its tip's place in the fan
-  rowSpread: 0.35,         // x half width: rows of tips spread along the stroke while pressed
+  rowSpread: 0.35,
+  rowDepth: 0.006,         // x scale: tip height step from the front row to the back row
+  strandDepth: 0.005,      // x scale: per-strand tip height jitter
+  coreBack: 0.007,         // x scale: core strip behind the strands (less at the tip)         // x half width: rows of tips spread along the stroke while pressed
 });
 
 const PHYSICS_CONFIG = Object.freeze({
@@ -88,7 +91,10 @@ const PHYSICS_CONFIG = Object.freeze({
 
 // Wet look: per-strand shade (+/-18%), darker / more saturated toward the
 // tip where the polish sits, lighter and drier at the ferrule.
-const SHADE = Object.freeze({ strand: 0.18, tipDark: 0.62, tipSat: 1.3, ferruleLight: 0.12, core: 0.5 });
+// Polish on a brush is the dense bottle colour, much deeper than a sheer
+// coat on the nail (reference-brush-1.png): the whole head is darker than
+// the paint, darkest at the tip.
+const SHADE = Object.freeze({ strand: 0.2, tipDark: 0.4, tipSat: 1.35, ferrule: 0.8, core: 0.72, emissive: 0.03 });
 
 const LEGACY_TOUCH_TILT = -1.2;  // PolishBrush3D passes -pi*0.42 for touch, -pi/3 for mouse
 const DEFAULT_SCALE = 0.068;
@@ -135,6 +141,7 @@ export class BristleSystem {
     this._twist = new Float32Array(MAX_BRISTLES); // normal twist: strands catch light differently
     this._shade = new Float32Array(MAX_BRISTLES);
     this._tipJ = new Float32Array(MAX_BRISTLES);  // tip along-stroke irregularity
+    this._dz = new Float32Array(MAX_BRISTLES);    // tip height per strand (x scale): rows and strands never coplanar
     this._bandDh = new Float32Array(RAY_BANDS);   // height of the real surface under each band
     this._cols = 1;
 
@@ -493,11 +500,12 @@ export class BristleSystem {
         ux[b] = tx;
         uy[b] = ty + jitter(b, 2) * 0.2 / rows;
         this._rx[b] = tx + jitter(b, 3) * 0.2 / cols;
-        this._ry[b] = ty;
+        this._ry[b] = ty + jitter(b, 9) * 0.3 / rows;
         this._bend[b] = 1 + jitter(b, 4) * 0.24;
         this._twist[b] = jitter(b, 5) * 0.7;
         this._shade[b] = 1 + jitter(b, 6) * 2 * SHADE.strand;
         this._tipJ[b] = jitter(b, 7);
+        this._dz[b] = RIG.strandDepth * (jitter(b, 8) + 0.5);
         if (tx < lo) lo = tx;
         if (tx > hi) hi = tx;
         b++;
@@ -528,8 +536,7 @@ export class BristleSystem {
     const tr = Math.max(0, lum + (c.r - lum) * SHADE.tipSat) * SHADE.tipDark;
     const tg = Math.max(0, lum + (c.g - lum) * SHADE.tipSat) * SHADE.tipDark;
     const tb = Math.max(0, lum + (c.b - lum) * SHADE.tipSat) * SHADE.tipDark;
-    const fl = SHADE.ferruleLight;
-    const fr = c.r + (1 - c.r) * fl, fg = c.g + (1 - c.g) * fl, fb = c.b + (1 - c.b) * fl;
+    const fr = c.r * SHADE.ferrule, fg = c.g * SHADE.ferrule, fb = c.b * SHADE.ferrule;
     const ramp = (t) => smooth01((t - 0.1) / 0.9);
     // Core strip (first CORE_QUADS quads): dark wet polish.
     for (let s = 0; s < CORE_QUADS; s++) {
@@ -557,7 +564,7 @@ export class BristleSystem {
     }
     this._colorAttr.needsUpdate = true;
     const m = this.mesh.material;
-    m.emissive.setRGB(c.r * 0.07, c.g * 0.07, c.b * 0.07);
+    m.emissive.setRGB(c.r * SHADE.emissive, c.g * SHADE.emissive, c.b * SHADE.emissive);
   }
 
   // -------------------------------------------------------------- pose --
@@ -993,15 +1000,18 @@ export class BristleSystem {
     this._rowSide = sv > 1 ? 1 : sv < -1 ? -1 : sv;
 
     const refine = this.collisionMode === 'plane+rays' && this._c > 0.5;
+    const rowSign = this._Fn.dot(this._toCam) >= 0 ? 1 : -1;
     const bd = this._bandDh;
     let cx = 0, cy = 0, cz = 0;
     for (let i = 0; i < n; i++) {
-      let dh = 0;
+      // rows stack toward the camera in the same order at the tip as at the
+      // ferrule, so they never cross (no z-fighting mid-length)
+      let dh = (RIG.rowDepth * (rowSign * this._ry[i] + 0.5) + this._dz[i]) * scale;
       if (refine) {
         const f = (this._ux[i] + 0.5) * (RAY_BANDS - 1);
         const k0 = f <= 0 ? 0 : f >= RAY_BANDS - 1 ? RAY_BANDS - 2 : Math.floor(f);
         const w = Math.min(1, Math.max(0, f - k0));
-        dh = bd[k0] + (bd[k0 + 1] - bd[k0]) * w;
+        dh += bd[k0] + (bd[k0 + 1] - bd[k0]) * w;
       }
       const o = i * JOINTS * 3;
       this._curve(this._ux[i], this._uy[i], this._rx[i], this._ry[i], this._bend[i], this._tipJ[i], dh, jp, o);
@@ -1014,7 +1024,7 @@ export class BristleSystem {
     const wf = RIG.ferruleWidth * scale;
     // Ribbon half width: a bit over half the column spacing at that point
     // along the fan, so neighbouring strands in a row just touch.
-    const wk = 0.62 * (0.85 + 0.15 * Math.min(2, this.radiusScale)) / cols;
+    const wk = 0.52 * (0.7 + 0.3 * Math.min(2, this.radiusScale)) / cols;
     const w0 = wf * wk, w1 = (2 * hw - wf) * wk;
 
     // Ribbons.
@@ -1034,12 +1044,13 @@ export class BristleSystem {
     const tmp = this._coreJ;
     this._curve(-0.46, 0, -0.42, 0, 1, 0, 0, tmp, 0);
     this._curve(0.46, 0, 0.42, 0, 1, 0, 0, tmp, JOINTS * 3);
-    const back = 0.0025 * scale;
     const tc = this._toCam;
     for (let s = 0; s < SEGMENTS; s++) {
       const o = s * 12;
       for (let e = 0; e < 2; e++) {
         const j = s + e;
+        // behind every row, but still above the nail at the tip
+        const back = RIG.coreBack * scale * (1 - 0.65 * j / SEGMENTS);
         const l = j * 3, r = JOINTS * 3 + j * 3;
         const vo = o + e * 6;
         pos[vo] = tmp[l] - tc.x * back; pos[vo + 1] = tmp[l + 1] - tc.y * back; pos[vo + 2] = tmp[l + 2] - tc.z * back;
