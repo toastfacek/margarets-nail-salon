@@ -898,12 +898,18 @@ async function runCombo(tier, kind) {
     const trailOf = (f) => (f.mid[0] - f.tipC[0]) * u[0] + (f.mid[1] - f.tipC[1]) * u[1];
     const restT = mean(rest.map(trailOf)), movT = mean(moving.map(trailOf));
     const fer = moving.filter((f) => f.root).map((f) => (f.root[0] - f.tipC[0]) * u[0] + (f.root[1] - f.tipC[1]) * u[1]);
-    S.pose[dn] = { ferrulePx: fer.length ? r1(mean(fer)) : null, trailPx: restT !== null && movT !== null ? r1(movT - restT) : null, fanAng: axStats(moving.map((f) => f.fanAng)), axisDbg: axStats(moving.map((f) => f.axisDbg)), tipToDep: stats(moving.filter((f) => f.dep && f.tip).map((f) => Math.hypot(f.tip[0] - f.dep[0], f.tip[1] - f.dep[1]))) };
+    // how far the handle swings on screen from its resting direction (B8: a push stroke must not swing it round)
+    const hAng = (f) => Math.atan2(f.root[1] - f.tipC[1], f.root[0] - f.tipC[0]) * 180 / Math.PI;
+    const ang0 = (rest.length ? rest : pressed.slice(0, 1)).filter((f) => f.root).map(hAng), ang1 = moving.filter((f) => f.root).map(hAng);
+    const dA = (a, b) => { let d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+    const swingDeg = ang0.length && ang1.length ? r1(Math.max(...ang1.map((a) => dA(a, ang0[0])))) : null;
+    S.pose[dn] = { swingDeg, ferrulePx: fer.length ? r1(mean(fer)) : null, trailPx: restT !== null && movT !== null ? r1(movT - restT) : null, fanAng: axStats(moving.map((f) => f.fanAng)), axisDbg: axStats(moving.map((f) => f.axisDbg)), tipToDep: stats(moving.filter((f) => f.dep && f.tip).map((f) => Math.hypot(f.tip[0] - f.dep[0], f.tip[1] - f.dep[1]))) };
   }
   {
     const names = Object.keys(dirs);
     const dots = names.map((n) => { const d = sub(dirs[n][1], dirs[n][0]); const l = Math.hypot(d[0], d[1]); return (d[0] * hd[0] + d[1] * hd[1]) / l; });
     S.pose.away = dots.indexOf(Math.min(...dots));
+    S.pose.dots = dots.map(r3);
     S.pose.handleDir = hd.map(r3);
     S.pose.axisDeg = axisDeg;
   }
@@ -1035,8 +1041,14 @@ function lines(res) {
   const tr = S.turn; const P = S.pose; const names = ['c2t', 't2c', 'side', 'side-up'];
   const fr = names.map((d) => P[d] ? P[d].ferrulePx : null);
   const away = names[P.away];
-  const a11 = fr.every((v, i) => v !== null && (names[i] === away ? v >= 0 : v >= 5));
-  add('A11', `axis err 120 ms after turn (deg); ferrule - tip along motion px c2t/t2c/side/side-up (away from handle: ${away})`, `${tr.axisErrAt120msDeg}; ${fr.join('/')}`, tr.axisErrAt120msDeg !== null && tr.axisErrAt120msDeg <= 15 && a11, '<= 15; >= +5, away >= 0');
+  // (B8, Fable's review: a push stroke, heading away from the resting handle (dot < -0.3),
+  // buckles the bristles instead of swinging the handle round: there the gate is the
+  // handle's on-screen swing, <= 45 deg, not the ferrule leading.)
+  const push = names.map((n, i) => (P.dots ? P.dots[i] < -0.3 : n === away));
+  const sw = names.map((d) => P[d] ? P[d].swingDeg : null);
+  const a11 = fr.every((v, i) => v !== null && (push[i] ? sw[i] !== null && sw[i] <= 45 : names[i] === away ? v >= 0 : v >= 5));
+  const pushNames = names.filter((n, i) => push[i]).join(',') || 'none';
+  add('A11', `axis err 120 ms after turn (deg); ferrule - tip along motion px c2t/t2c/side/side-up; push strokes (${pushNames}): handle swing deg`, `${tr.axisErrAt120msDeg}; ${fr.join('/')}; ${names.map((n, i) => (push[i] ? sw[i] : '-')).join('/')}`, tr.axisErrAt120msDeg !== null && tr.axisErrAt120msDeg <= 15 && a11, '<= 15; >= +5 (away >= 0); push: swing <= 45');
   // A12
   const lr = S['leave-return'];
   const both = lr.runs.length >= 2 && lr.runs.every((q) => q.paintedFrac >= 0.9);

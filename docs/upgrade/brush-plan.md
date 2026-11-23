@@ -315,3 +315,12 @@ Owner, after B7: "The brush is too flat and wide ... the physics need to be 100%
 - **Look**: one lofted closed bundle (12 sections x 14) + up to 10 loose strand ribbons in one draw call, Phong + wet clear coat, fresnel, procedural strand grooves and a Kajiya-Kay highlight (off on low, uniform switch: no recompiles). No textures.
 - **Test**: `scripts/brush-shape.mjs` (S1 length / screen ratio, S2 thickness / width, S3 dome, S4 pressed footprint, S5 spring overshoot and settle).
 - Known: on a push stroke (free edge -> cuticle, away from the handle) the bristles run along the band axis, so the visible tip span is narrower than the band there (the band itself is unchanged).
+
+### 9.1 B8 review fixes (Fable)
+
+- Handle laid down (tilt 70 deg mouse / 66 touch from a 0.5 view/normal blend), stem 0.24: on screen the stem and belly are smaller than the pressed tip, which flares like the reference.
+- No sideways swing: downTurn 25 deg, downSkew 15, leanLead 0.6 and the handle never more than 20 deg from its resting direction (25 deg right of down in portrait). A push stroke (away from the handle) bends the tip region harder and bows it (the bristles buckle). A11 now gates push strokes on the handle's on-screen swing (<= 45 deg) instead of the ferrule leading. The tip region twists at most 40 deg from the bundle's own width axis toward the band axis.
+- Paddle tip: classic belly 0.27 x 0.145, tip region from 0.58, splay reached at 0.80, flattened 75% when pressed (prowide in proportion).
+- The bead is hover-only (0.028, squashed, under the tip's leading face); on the nail the polish is the film's landing / pooling relief.
+- Grooves: ~14 clumps of uneven width (per-clump hash), weaker when wet; a broad wet lobe on every tier; extra highlights weighted to the key light.
+- Visible bend: trailLag 0.18, bendLight 0.5 (spring unchanged: ~10% overshoot, 75 ms).

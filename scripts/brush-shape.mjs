@@ -276,7 +276,10 @@ for (const tier of TIERS) {
     if (tier === 'high' && brush === 'classic' && SHOTS) {
       const p = await boot(tier, brush, 390, 844);
       const b = p.box; const px = (b.x0 + b.x1) / 2, py = (b.y0 + b.y1) / 2, ph = b.y1 - b.y0;
-      await stroke(p, [[px, py + ph * 0.3], [px, py - ph * 0.25]], 700, { shotAt: 0.6, shotName: 'portrait-390x844' });
+      const pw = b.x1 - b.x0;
+      await stroke(p, [[px + pw * 0.1, py - ph * 0.28], [px + pw * 0.1, py + ph * 0.3]], 700, { shotAt: 0.6, shotName: 'portrait-390x844' });
+      await sleep(300);
+      await stroke(p, [[px - pw * 0.12, py + ph * 0.3], [px - pw * 0.12, py - ph * 0.25]], 700, { shotAt: 0.6, shotName: 'push-portrait' });
       await p.browser.close();
     }
 
@@ -291,7 +294,7 @@ for (const tier of TIERS) {
     if (R.mid) {
       const tipSpan = R.mid.m.tipSpan, band = R.mid.d ? 2 * R.mid.d.hwPx / nailW : null;
       add(`S4.${tag}`, 'mid-stroke (cuticle -> free edge) footprint (tip span) / nail width; band on screen / nail width', `${r3(tipSpan)}; ${r3(band)}`, pr ? tipSpan >= 0.4 && tipSpan <= 0.5 : tipSpan >= 0.29 && tipSpan <= 0.37, pr ? '0.40-0.50' : '0.29-0.37');
-      if (R.up) add(`S4u.${tag}`, 'push stroke (free edge -> cuticle, away from the handle): tip span / band (info: bristles run along the band axis there)', `${r3(R.up.m.tipSpan)} / ${r3(R.up.m.footprint)}`, null, 'info');
+      if (R.up) add(`S4u.${tag}`, 'push stroke (free edge -> cuticle, away from the handle): tip span / band (bristles buckle, handle does not swing)', `${r3(R.up.m.tipSpan)} / ${r3(R.up.m.footprint)}`, null, 'info');
     }
     add(`S5.${tag}`, 'reversal overshoot % / settle ms; lift bend overshoot % / settle ms', `${R.reversal.overshootPct} / ${R.reversal.settleMs}; ${R.liftBend.overshootPct} / ${R.liftBend.settleMs}`, R.reversal.overshootPct >= 8 && R.reversal.overshootPct <= 18 && R.reversal.settleMs >= 60 && R.reversal.settleMs <= 140, '8-18 %, 60-140 ms');
     add(`E.${tag}`, 'page errors', `${R.errors.length}`, R.errors.length === 0, '0');

@@ -78,37 +78,42 @@ const DEG = Math.PI / 180;
 const RIG = Object.freeze({
   clearance: 0.004,        // tips this far above the tangent plane (no z-fight)
   hoverLift: 0.15,         // tips above the point while hovering
-  viewBlend: 0.65,         // handle "up" = this much view direction + the rest surface normal
-  tiltMouse: 55 * DEG,     // handle angle from that up: low, so the bristles show their length
-  tiltTouch: 52 * DEG,     // more upright: clears the finger
+  viewBlend: 0.5,          // handle "up" = this much view direction + the rest surface normal
+  tiltMouse: 70 * DEG,     // handle angle from that up: laid down, so the stem stays small on screen
+  tiltTouch: 66 * DEG,     // a little more upright: clears the finger
   minAN: 0.3,              // handle never closer than ~73 deg to the surface normal
   leanSide: -1,            // the handle's side of the screen: -1 = bottom (the reference: the
                            // brush comes in from the lower right; the finger comes from the top)
   leanRight: 40 * DEG,     // handle turned from that side toward screen-right
-  leanLead: 1.0,           // ... and pulled toward the motion by up to this (the handle leads, the bristles drag)
+  leanRightPortrait: 25 * DEG, // ... less on a tall screen (the nail is narrow there)
+  leanLead: 0.6,           // ... and pulled toward the motion by up to this (the handle leads, the bristles drag)
+  maxSwing: 20 * DEG,      // ... but never further than this from its resting direction (it never lies across the nail)
   leanFloor: 0.2,          // never past the screen horizon (the finger's side)
-  maxSkew: 40 * DEG,       // max angle between the lean and the across-band direction
-  downTurn: 72 * DEG,      // strokes away from the handle: the lean turns this much further to the right
-  downSkew: 40 * DEG,      // ... and may leave the across-band direction this much further
+  maxSkew: 70 * DEG,       // max angle between the lean and the across-band direction (the face is held flat, the tips twist to the band)
+  downTurn: 25 * DEG,      // strokes away from the handle: the lean turns only this much further (the bristles buckle instead)
+  downSkew: 15 * DEG,      // ... and may leave the across-band direction this much further
   rightBias: 0.1,          // edge-on strokes put the handle on the screen-right side
   minHeight: 0.25,         // stem end never lower than this above the nail
   trailMax: 0.2,           // the stem leads the tips by up to this at full drag
-  trailLag: 0.1,           // the bend's belly lags further
+  trailLag: 0.18,          // the bend's belly lags further (the last third curves back along the stroke)
   trailTilt: 0.55,         // the tips' direction tilts back along the trail
   trailSpeed: 1.0,         // nail widths / s that saturate the drag
   springOmega: 60,         // nylon: zeta 0.55 -> ~12% overshoot, within 5% in ~90 ms
   springZeta: 0.55,
-  bendLight: 0.35,         // bend at the lightest touch (full pressure: 1)
+  bendLight: 0.5,          // bend at the lightest touch (full pressure: 1)
+  pushBend: 0.35,          // pushing away from the handle: extra bend ...
+  pushBow: 0.12,           // ... and the bend's belly bows up (the bristles buckle)
   steepEase: 0.5,          // a steep handle (near the normal) bends this much less
   leanOmega: 14,           // the hand re-aims within ~0.25 s
   axisOmega: 42,           // legacy driver only (the engine sends its own axis)
   widthOmega: 26,          // footprint closing after a lift
   liftOmega: 40,           // tips leaving the surface after a lift
   dirStep: 0.02,           // legacy: nail widths of travel per direction update
-  beadRadius: 0.042,
-  splayEnd: 0.88,          // pressed: the footprint width is reached here along the bundle
-  flatten: 0.45,           // pressed: the tip region gets this much thinner
+  beadRadius: 0.028,       // hovering only: on the nail the polish is in the film
+  splayEnd: 0.8,           // pressed: the footprint width is reached here along the bundle
+  flatten: 0.75,           // pressed: the tip region gets this much thinner (a paddle)
   domePress: 0.4,          // pressed: the dome trim shrinks by this (an arc front edge stays)
+  maxTwist: 40 * DEG,      // the tip region twists at most this from the bundle's own width axis
   edgeLift: 0.6,           // light touch: dome edges outside the footprint lift by this x their overhang
   looseW: 0.0032,          // loose strand half width
 });
@@ -122,7 +127,7 @@ const PHYSICS_CONFIG = Object.freeze({
 // Wet look: polish on a brush is the dense bottle colour, much deeper than a
 // sheer coat (reference-brush-1.png): darker and more saturated toward the
 // tip where it pools, lighter and drier at the stem.
-const SHADE = Object.freeze({ tipDark: 0.38, tipSat: 1.4, root: 0.62, emissive: 0.02 });
+const SHADE = Object.freeze({ tipDark: 0.38, tipSat: 1.4, root: 0.5, emissive: 0.02 });
 
 const LEGACY_TOUCH_TILT = -1.2;  // PolishBrush3D passes -pi*0.42 for touch, -pi/3 for mouse
 const DEFAULT_SCALE = 0.068;
@@ -162,16 +167,23 @@ uniform float uAniso;
 uniform float uGroove;
 varying vec3 vTanV;
 varying vec2 vSt;
+// ~14 wet clumps of uneven width around the bundle (per-clump hash, no trig)
 float brushGroove(vec2 st) {
-  // strand clumps around the bundle, drifting a little along it (no trig: cheap on low)
-  return st.x * 41.0 + st.y * 1.6 * (fract(st.x * 5.3) - 0.5);
+  return st.x * 14.0;
+}
+vec2 brushClump(float g) {
+  float i = floor(g), f = fract(g);
+  float c = 0.3 + 0.4 * fract(i * 0.6180339 + 0.13);   // clump centre
+  float w = 0.32 + 0.3 * fract(i * 0.3819660 + 0.71);  // clump half width
+  float d = clamp((f - c) / w, -1.0, 1.0);
+  return vec2(d, 1.0 - d * d);                          // slope, height
 }
 `;
 const HEAD_COLOR = `float tipK = smoothstep(0.25, 1.0, vSt.y);
 float grooveP = brushGroove(vSt);
-float grooveF = fract(grooveP) * 2.0 - 1.0;          // -1..1 across one clump
-float grooveS = 1.0 - abs(grooveF);
-grooveS = grooveS * grooveS * (3.0 - 2.0 * grooveS);  // 0 between clumps, 1 on a clump
+vec2 clump = brushClump(grooveP);
+float grooveF = clump.x;                               // -1..1 across one clump
+float grooveS = clump.y;                               // 0 between clumps, 1 on a clump
 diffuseColor.rgb = mix(uRootCol, uTipCol, tipK) * (1.0 - uGroove * (0.55 + 0.3 * tipK) * (1.0 - grooveS));
 `;
 const HEAD_NORMAL = `#include <normal_fragment_maps>
@@ -186,16 +198,17 @@ for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
   {
   vec3 bL = directionalLights[ i ].direction;
   vec3 bH = normalize(bL + brushV);
-  float bWin = smoothstep(-0.15, 0.4, dot(normal, bL));
-  float bCoat = pow(max(dot(normal, bH), 0.0), 420.0) * 1.4 * uWet;
+  float bWin = smoothstep(-0.15, 0.4, dot(normal, bL)) * (UNROLLED_LOOP_INDEX == 0 ? 1.0 : 0.25);  // the key light; the rim only grazes
+  float bCoat = pow(max(dot(normal, bH), 0.0), 600.0) * 0.8 * uWet;
   float bHair = 0.0;
   if (uAniso > 0.5) {
     float b1 = dot(normalize(hairT + normal * 0.1), bH);
     float b2 = dot(normalize(hairT - normal * 0.2), bH);
-    bHair = pow(max(1.0 - b1 * b1, 0.0), 60.0) * (0.22 + 0.16 * uWet);
-    brushX += directionalLights[ i ].color * diffuseColor.rgb * (pow(max(1.0 - b2 * b2, 0.0), 12.0) * 0.35 * bWin);
+    bHair = pow(max(1.0 - b1 * b1, 0.0), 120.0) * (0.12 + 0.12 * uWet);
+    brushX += directionalLights[ i ].color * diffuseColor.rgb * (pow(max(1.0 - b2 * b2, 0.0), 16.0) * 0.18 * bWin);
   }
-  brushX += directionalLights[ i ].color * (bWin * (bCoat + bHair));
+  float bSheen = pow(max(dot(normal, bH), 0.0), 24.0) * 0.07 * uWet;   // broad wet lobe, every tier
+  brushX += directionalLights[ i ].color * (bWin * (bCoat + bHair + bSheen));
   }
 }
 #pragma unroll_loop_end
@@ -291,11 +304,13 @@ export class BristleSystem {
     this._wasContact = false;
     this._tilt = RIG.tiltMouse;
     this._dry = 0;              // 0 loaded .. 1 dry (clump loosens)
+    this._push = 0;             // 0..1 pushing away from the handle (smoothed)
 
     // Frame of the current pose (scratch, reused)
     this._P = new THREE.Vector3();
     this._N = new THREE.Vector3(0, 1, 0);
     this._X = new THREE.Vector3(1, 0, 0);
+    this._Xt = new THREE.Vector3(1, 0, 0);  // the tips' width axis (band axis, twist-limited)
     this._Y = new THREE.Vector3(0, 0, 1);
     this._A = new THREE.Vector3(0, 1, 0);   // handle direction
     this._U = new THREE.Vector3(0, 1, 0);   // handle 'up' (view/normal blend)
@@ -966,7 +981,8 @@ export class BristleSystem {
       downK = vs > 1e-9 && vu < 0 ? -vu / vs : 0;
     }
     this._downK += (downK - this._downK) * (1 - Math.exp(-25 * Math.max(0, dt)));
-    const leanA = RIG.leanRight + RIG.downTurn * this._downK;
+    const leanR = cam && cam.aspect < 1 ? RIG.leanRightPortrait : RIG.leanRight;
+    const leanA = leanR + RIG.downTurn * this._downK;
     this._skew = RIG.maxSkew + RIG.downSkew * this._downK;
     D.copy(B).multiplyScalar(Math.cos(leanA)).addScaledVector(right, Math.sin(leanA));
     if (contact && speed > 1e-6 && downK < 0.3) {
@@ -980,6 +996,20 @@ export class BristleSystem {
       }
     }
     D.normalize();
+    // the hand turns a little with the stroke, it does not swing the handle round
+    {
+      const r0x = B.x * Math.cos(leanR) + right.x * Math.sin(leanR);
+      const r0y = B.y * Math.cos(leanR) + right.y * Math.sin(leanR);
+      const r0z = B.z * Math.cos(leanR) + right.z * Math.sin(leanR);
+      const cd = D.x * r0x + D.y * r0y + D.z * r0z;
+      if (cd < Math.cos(RIG.maxSwing)) {
+        let px = D.x - cd * r0x, py = D.y - cd * r0y, pz = D.z - cd * r0z;
+        const pl = Math.hypot(px, py, pz);
+        if (pl > 1e-6) { px /= pl; py /= pl; pz /= pl; } else { px = right.x; py = right.y; pz = right.z; }
+        const cs = Math.cos(RIG.maxSwing), sn = Math.sin(RIG.maxSwing);
+        D.set(r0x * cs + px * sn, r0y * cs + py * sn, r0z * cs + pz * sn);
+      }
+    }
     // never past the horizon of the screen (the finger's side)
     const du = D.dot(B);
     if (du < RIG.leanFloor) {
@@ -1018,7 +1048,21 @@ export class BristleSystem {
 
     // Bend: pressure, less with a steep handle; springy both ways.
     const steep = smooth01((an - 0.45) / 0.45);
-    const bendT = contact ? (RIG.bendLight + (1 - RIG.bendLight) * p) * (1 - RIG.steepEase * steep) : 0;
+    // Pushing away from the handle (the handle no longer swings round): the
+    // tip region bends harder and its belly bows, as pressed nylon buckles.
+    let push = 0;
+    if (contact && sat > 0) {
+      const ahx = A.x - N.x * an, ahy = A.y - N.y * an, ahz = A.z - N.z * an;
+      const al = Math.hypot(ahx, ahy, ahz);
+      if (al > 1e-6) {
+        const vx = pose.velocity.x, vy = pose.velocity.y, vz = pose.velocity.z;
+        const vl = Math.hypot(vx, vy, vz) || 1;
+        push = Math.max(0, -(vx * ahx + vy * ahy + vz * ahz) / (vl * al)) * sat;
+      }
+    }
+    this._push += (push - this._push) * (1 - Math.exp(-20 * Math.max(0, dt)));
+    let bendT = contact ? (RIG.bendLight + (1 - RIG.bendLight) * p) * (1 - RIG.steepEase * steep) : 0;
+    bendT = Math.min(1.05, bendT * (1 + RIG.pushBend * this._push));
     const b0 = this._bend;
     this._springBend(bendT, dt);
     energy += (this._bend - b0) ** 2 + this._bendVel * this._bendVel * 1e-4;
@@ -1032,7 +1076,7 @@ export class BristleSystem {
     const G = this._t2.copy(A).negate().addScaledVector(N, an);   // -A in the tangent plane
     if (G.lengthSq() < 1e-8) G.copy(Y);
     G.normalize();
-    const tT = this._tT.copy(A).multiplyScalar(-(1 - bend)).addScaledVector(G, bend).addScaledVector(T, RIG.trailTilt * c);
+    const tT = this._tT.copy(A).multiplyScalar(-(1 - bend)).addScaledVector(G, bend).addScaledVector(T, RIG.trailTilt * c * (1 - 0.8 * this._push));
     if (tT.lengthSq() < 1e-8) tT.copy(A).negate();
     tT.normalize();
 
@@ -1046,7 +1090,7 @@ export class BristleSystem {
     const Bp = this._B.copy(A).multiplyScalar(-1).add(tT);
     if (Bp.lengthSq() < 1e-8) Bp.copy(A).negate();
     Bp.normalize();
-    const drag = RIG.trailMax * scale * (0.5 + 0.5 * p) * c;
+    const drag = RIG.trailMax * scale * (0.5 + 0.5 * p) * c * (1 - 0.8 * this._push);
     Bp.multiplyScalar(-chord).add(tipC).addScaledVector(T, -drag);
     // Keep the bent region's length: scale its chord until the cubic
     // _buildFrames lays (same handles) is Lt long.
@@ -1068,6 +1112,24 @@ export class BristleSystem {
     F.normalize();
     if (F.dot(X) < 0) F.negate();
     this._Fn.crossVectors(A, F).normalize();
+    // The tips' width axis: the band axis, but the bundle twists at most
+    // maxTwist toward it from its own width axis (a bigger twist folds the
+    // paddle; the band edges then run just past the tips).
+    {
+      const Xt = this._Xt.copy(X).addScaledVector(N, -X.dot(N));
+      const Fp = this._t1.copy(F).addScaledVector(N, -F.dot(N));
+      if (Fp.lengthSq() > 1e-8 && Xt.lengthSq() > 1e-8) {
+        Fp.normalize(); Xt.normalize();
+        const cf = Math.max(-1, Math.min(1, Fp.dot(Xt)));
+        const ang = Math.acos(cf);
+        if (ang > RIG.maxTwist) {
+          Xt.addScaledVector(Fp, -cf);
+          if (Xt.lengthSq() < 1e-8) Xt.crossVectors(N, Fp);
+          Xt.normalize();
+          Xt.multiplyScalar(Math.sin(RIG.maxTwist)).addScaledVector(Fp, Math.cos(RIG.maxTwist)).normalize();
+        }
+      } else Xt.copy(X);
+    }
 
     this.energy = energy;
     return energy;
@@ -1078,8 +1140,9 @@ export class BristleSystem {
     const Bp = this._B, Bt = this._Bt, tipC = this._tipC, tT = this._tT, T = this._T, q = this._q;
     const gap = Math.hypot(tipC.x - Bp.x, tipC.y - Bp.y, tipC.z - Bp.z);
     const hh = gap * 0.38;
-    const lag = RIG.trailLag * scale * this._c;
-    q[0] = Bp.x + Bt.x * hh + T.x * lag; q[1] = Bp.y + Bt.y * hh + T.y * lag; q[2] = Bp.z + Bt.z * hh + T.z * lag;
+    const lag = RIG.trailLag * scale * this._c * (1 - 0.7 * this._push);
+    const bow = RIG.pushBow * scale * this._c * this._push, N = this._N;
+    q[0] = Bp.x + Bt.x * hh + T.x * lag + N.x * bow; q[1] = Bp.y + Bt.y * hh + T.y * lag + N.y * bow; q[2] = Bp.z + Bt.z * hh + T.z * lag + N.z * bow;
     q[3] = tipC.x - tT.x * hh + T.x * lag * 0.5; q[4] = tipC.y - tT.y * hh + T.y * lag * 0.5; q[5] = tipC.z - tT.z * hh + T.z * lag * 0.5;
     return q;
   }
@@ -1193,7 +1256,7 @@ export class BristleSystem {
     const scale = pose.scale > 0 ? pose.scale : DEFAULT_SCALE;
     const fr = this._fr;
     const Fc = this._Fc, Bp = this._B, Bt = this._Bt, tipC = this._tipC;
-    const F = this._F, X = this._X;
+    const F = this._F, X = this._Xt;
     const sb = this._sbody;
     const c = this._c;
     const bend = this._bend < 0 ? 0 : this._bend > 1 ? 1 : this._bend;
@@ -1231,7 +1294,7 @@ export class BristleSystem {
       // at the tips the section lines up with the band axis itself (a skewed
       // paddle), so the pressed tips span exactly the band
       const xt = X.x * tx + X.y * ty + X.z * tz;
-      const kb = smooth01((s - 0.8) / 0.12) * (1 - xt * xt);
+      const kb = smooth01((s - 0.8) / 0.12) * smooth01((0.97 - Math.abs(xt)) / 0.2);
       if (kb > 0) {
         xx += (X.x - xx) * kb; xy += (X.y - xy) * kb; xz += (X.z - xz) * kb;
         xl = Math.hypot(xx, xy, xz) || 1;
@@ -1424,7 +1487,7 @@ export class BristleSystem {
     this._stAttr.needsUpdate = true;
     const uni = this._uni;
     uni.uWet.value = 1 - 0.8 * this._dry;
-    uni.uGroove.value = 0.42 + 0.45 * this._dry;
+    uni.uGroove.value = 0.18 + 0.5 * this._dry;
     this._needsMatrices = false;
     this.updateBead();
     this._placeHandle();
@@ -1439,7 +1502,7 @@ export class BristleSystem {
     const dl = Math.hypot(dx, dy, dz) || 1;
     dx /= dl; dy /= dl; dz /= dl;
     // width direction: the stem's at the root, the band's at the tip
-    const F = this._F, X = this._X;
+    const F = this._F, X = this._Xt;
     let wx = F.x + (X.x - F.x) * t, wy = F.y + (X.y - F.y) * t, wz = F.z + (X.z - F.z) * t;
     const wd = wx * dx + wy * dy + wz * dz;
     wx -= wd * dx; wy -= wd * dy; wz -= wd * dz;
@@ -1511,25 +1574,29 @@ export class BristleSystem {
       bead.visible = false;
       return;
     }
+    // On the nail the polish is in the film (its landing / pooling relief):
+    // the drop is gone at contact.
+    const c = this._c;
+    const k = 1 - c;
+    if (k < 0.02) {
+      bead.visible = false;
+      return;
+    }
     bead.visible = true;
     const pose = this.pose;
     const scale = pose.scale > 0 ? pose.scale : DEFAULT_SCALE;
-    const c = this._c;
-    const p = pose.contact ? pose.pressure : 0;
-    const r = RIG.beadRadius * scale * (0.4 + 0.6 * load);
-    const wide = r * (1 + 0.8 * p * c);
-    const tall = r * (1 - 0.75 * p * c);
-    const N = this._N, X = this._X, Y = this._Y, T = this._T;
-    const q = this._frameAt(0.93);
-    // the nail-facing side of the section there
+    const r = RIG.beadRadius * scale * (0.4 + 0.6 * load) * k;
+    const wide = r;
+    const tall = r * 0.5;
+    const N = this._N, X = this._X, Y = this._Y, tT = this._tT;
+    const q = this._frameAt(0.95);
+    // tucked under the tip's leading face (the nail-facing side; the brush
+    // is wiped on the other one)
     const side = q[6] * N.x + q[7] * N.y + q[8] * N.z > 0 ? -1 : 1;
-    const hang = q[10] + tall * 0.55;
-    const hx = q[0] + q[6] * side * hang, hy = q[1] + q[7] * side * hang, hz = q[2] + q[8] * side * hang;
-    const tc = this.tipCenter;
-    const sit = tall * 0.3;
-    const px = hx + (tc.x + N.x * sit + T.x * r * 0.5 - hx) * c;
-    const py = hy + (tc.y + N.y * sit + T.y * r * 0.5 - hy) * c;
-    const pz = hz + (tc.z + N.z * sit + T.z * r * 0.5 - hz) * c;
+    const hang = q[10] + tall * 0.6;
+    const px = q[0] + q[6] * side * hang + tT.x * r * 0.3;
+    const py = q[1] + q[7] * side * hang + tT.y * r * 0.3;
+    const pz = q[2] + q[8] * side * hang + tT.z * r * 0.3;
     bead.matrix.set(
       X.x * wide, N.x * tall, Y.x * wide * 0.9, px,
       X.y * wide, N.y * tall, Y.y * wide * 0.9, py,
