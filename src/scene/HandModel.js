@@ -7,6 +7,7 @@
  * Public API: build plan section 0.6.
  */
 import * as THREE from 'three';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { modelLoader } from './ModelLoader.js';
 import { createNailMaterial, createNailLighting, applyNailFinish, nailVariantKey } from './NailMaterial.js';
 import { createSkinMaterials, createSkinShared, setSkinTone } from './SkinMaterial.js';
@@ -49,8 +50,14 @@ const MASK_RES = 32;
 
 const DEFAULT_SETTINGS = Object.freeze({ decoCanvasRes: 1024, bakedPaintRes: 512 });
 
-function modelUrl(hand) {
-    return `${import.meta.env.BASE_URL}models/hand-${hand}.glb`;
+// One file: the right hand. The left hand is its mirror image, made at load
+// (tools/blender/build_hand.py builds the file; the old left GLB was an exact
+// mirror of the right one about this plane, x = 0.7 in the file's space).
+const MODEL_URL = 'models/hand.glb';
+const MIRROR_X = 0.7;
+
+function modelUrl() {
+    return `${import.meta.env.BASE_URL}${MODEL_URL}`;
 }
 
 /**
@@ -285,7 +292,10 @@ export class HandModel {
         if (this.hands[hand].model) return Promise.resolve();
         if (this._loading[hand]) return this._loading[hand];
 
-        this._loading[hand] = modelLoader.load(modelUrl(hand)).then((model) => {
+        this._loading[hand] = this._loadSource().then((source) => {
+            // both hands are clones: the loaded scene stays pristine (its
+            // materials and geometry are never set up in place)
+            const model = hand === 'right' ? cloneSkinned(source) : this._mirrorClone(source);
             this.hands[hand].model = model;
             model.visible = hand === this.currentHand;
             this.group.add(model);
@@ -302,6 +312,52 @@ export class HandModel {
             throw error;
         });
         return this._loading[hand];
+    }
+
+    /** The one hand file, fetched once (the right hand). */
+    _loadSource() {
+        if (!this._source) {
+            this._source = modelLoader.load(modelUrl()).catch((error) => {
+                this._source = null;
+                throw error;
+            });
+        }
+        return this._source;
+    }
+
+    /**
+     * The left hand: a skeleton-aware clone of the right one, mirrored in X.
+     * Skin and nail geometry are shared; each left nail gets its own `uv`
+     * attribute with u flipped (position, normal and index are shared), so
+     * stickers and drawings read the right way round on both hands. The
+     * negative determinant makes three flip the face winding by itself.
+     */
+    _mirrorClone(source) {
+        const root = new THREE.Group();
+        root.name = 'HandMirror';
+        root.scale.x = -1;
+        root.position.x = 2 * MIRROR_X;
+        const model = cloneSkinned(source);
+        root.add(model);
+        model.traverse((o) => {
+            if (!o.isMesh || !o.name.startsWith('Nail_')) return;
+            const src = o.geometry;
+            const g = new THREE.BufferGeometry();
+            for (const k in src.attributes) g.setAttribute(k, src.attributes[k]);
+            g.setIndex(src.index);
+            if (src.attributes.uv) {
+                const uv = src.attributes.uv;
+                const a = new Float32Array(uv.count * 2);
+                for (let i = 0; i < uv.count; i++) {
+                    a[i * 2] = 1 - uv.getX(i);
+                    a[i * 2 + 1] = uv.getY(i);
+                }
+                g.setAttribute('uv', new THREE.BufferAttribute(a, 2));
+            }
+            g.userData.flipU = true;
+            o.geometry = g;
+        });
+        return root;
     }
 
     isHandLoaded(hand) {
@@ -354,8 +410,10 @@ export class HandModel {
         const uvs = new Float32Array(positions.count * 2);
         const sizeX = (bbox.max.x - bbox.min.x) || 1;
         const sizeY = (bbox.max.y - bbox.min.y) || 1;
+        const flip = !!geometry.userData.flipU;
         for (let i = 0; i < positions.count; i++) {
-            uvs[i * 2] = (positions.getX(i) - bbox.min.x) / sizeX;
+            const u = (positions.getX(i) - bbox.min.x) / sizeX;
+            uvs[i * 2] = flip ? 1 - u : u;
             uvs[i * 2 + 1] = (positions.getY(i) - bbox.min.y) / sizeY;
         }
         geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
