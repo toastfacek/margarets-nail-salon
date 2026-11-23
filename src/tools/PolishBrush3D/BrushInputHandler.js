@@ -562,6 +562,50 @@ export class BrushInputHandler {
   }
 
   /**
+   * Touch crossing: bisect along the finger's raw path from (ax, ay)
+   * (P(s) = a + (b - a) s) on "the nudged point or the raw contact is on the
+   * nail" (touch paints while either is), the deeper of the two tried first
+   * and the other only when it misses (from the frame's spare raycasts).
+   * When the raw contact alone is on at the end, the paint sits on the
+   * outline above it (as in raw contact mode): refined there with what is
+   * left. Writes the paint point's hit into `out` and its s into `_bisectS`.
+   */
+  _bisectTouch(nailMesh, ax, ay, bx, by, sOn, sOff, onRow, out, steps, rawFirst) {
+    out.set(onRow);
+    const scratch = this._rowC;
+    let rawOnly = false;
+    for (let k = 0; k < steps; k++) {
+      const s = (sOn + sOff) * 0.5;
+      const px = ax + (bx - ax) * s, py = ay + (by - ay) * s;
+      const y1 = rawFirst ? py : py - TOUCH_NUDGE_PX, y2 = rawFirst ? py - TOUCH_NUDGE_PX : py;
+      let on = this._cast(nailMesh, px, y1, scratch, null);
+      let second = false;
+      if (!on && this._extraLeft > 0) {
+        this._extraLeft--;
+        on = this._cast(nailMesh, px, y2, scratch, null);
+        second = true;
+      }
+      if (on) {
+        out.set(scratch);
+        sOn = s;
+        rawOnly = rawFirst !== second;
+      } else {
+        sOff = s;
+      }
+    }
+    this._bisectS = sOn;
+    if (rawOnly) {
+      const n = Math.min(TOUCH_EDGE_STEPS, this._extraLeft);
+      if (n > 0) {
+        this._extraLeft -= n;
+        const px = ax + (bx - ax) * sOn, py = ay + (by - ay) * sOn;
+        this._bisect(nailMesh, px, py, px, py - TOUCH_NUDGE_PX, 0, 1, out, out, n);
+      }
+      this._bisectS = sOn;
+    }
+  }
+
+  /**
    * Touch: the nudged point (12 px above the contact point). When it misses
    * the nail but the raw contact point hits (the finger is in the nail's top
    * 12 px), the paint goes to the nail's edge between the two (bisection on
@@ -632,24 +676,43 @@ export class BrushInputHandler {
       this._extraLeft -= steps;
       const edge = this._rowB;
       const pt = this._prevT;
-      if (hit) {
+      // Touch paints while the nudged point or the raw contact (12 px below
+      // it) is on the nail, so a crossing is where the first of the two
+      // enters / the last of the two leaves: bisect on "either is on" along
+      // the finger's raw path (B7: before, the motion picked one path, down =
+      // raw, which is right on the nail's top edge only; the pointing-down
+      // nail is crossed on its sides as often). The deeper point is tried
+      // first (the raw contact on the upper half of the nail on screen,
+      // where the outline mostly faces up), so most steps take one raycast.
+      if (this.isTouch) {
+        const b = this._box;
+        const rawFirst = b.valid ? (y + this._prevCY) * 0.5 < (b.top + b.bottom) * 0.5 : true;
+        if (hit) {
+          // entry: this sample is the on-nail side (s = 1)
+          if (steps > 0) {
+            this._bisectTouch(nailMesh, this._prevX, this._prevCY, x, y, 1, 0, row, edge, steps, rawFirst);
+            this._emit(edge, pt + (t - pt) * this._bisectS, 1, 1);
+            this._emit(row, t, 0, 0);
+          } else {
+            this._emit(row, t, 1, 1);
+          }
+        } else {
+          // exit: the previous sample is the on-nail side (s = 0)
+          this._bisectTouch(nailMesh, this._prevX, this._prevCY, x, y, 0, 1, this._prevRow, edge, steps, rawFirst);
+          this._emit(edge, pt + (t - pt) * this._bisectS, 1, -1);
+        }
+      } else if (hit) {
         // entry: this sample is the on-nail side (s = 1)
-        // Touch paints while the nudged point or the raw contact is on the
-        // nail, so a crossing is where the leading one enters / the trailing
-        // one leaves: moving down (or in raw contact mode) the raw path.
         if (steps > 0) {
-          if (this._rawMode || (this.isTouch && y > this._prevCY)) this._bisect(nailMesh, this._prevX, this._prevCY, x, y, 1, 0, row, edge, steps);
-          else this._bisect(nailMesh, this._prevX, this._prevCY - (y - ey), ex, ey, 1, 0, row, edge, steps);
+          this._bisect(nailMesh, this._prevX, this._prevY, x, y, 1, 0, row, edge, steps);
           this._emit(edge, pt + (t - pt) * this._bisectS, 1, 1);
           this._emit(row, t, 0, 0);
         } else {
           this._emit(row, t, 1, 1);
         }
       } else {
-        // exit: the previous sample is the on-nail side (s = 0); moving up
-        // (or after raw contact mode) along the finger's raw path
-        if (this._prevRawMode || (this.isTouch && y < this._prevCY)) this._bisect(nailMesh, this._prevX, this._prevCY, x, y, 0, 1, this._prevRow, edge, steps);
-        else this._bisect(nailMesh, this._prevX, this._prevY, ex, y - (this._prevCY - this._prevY), 0, 1, this._prevRow, edge, steps);
+        // exit: the previous sample is the on-nail side (s = 0)
+        this._bisect(nailMesh, this._prevX, this._prevY, x, y, 0, 1, this._prevRow, edge, steps);
         this._emit(edge, pt + (t - pt) * this._bisectS, 1, -1);
       }
     } else if (hit) {

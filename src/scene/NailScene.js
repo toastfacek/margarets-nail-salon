@@ -31,7 +31,7 @@ const RIM_INTENSITY = 0.55;
 // Focused nail: its larger side fills this share of the viewport's short side.
 // A close-up, like the owner's reference (brush plan B6): bigger on touch
 // screens, where the fingertip covers part of the nail.
-const FOCUS_FILL = 0.64;
+const FOCUS_FILL = 0.60;  // B7: the nail now stands upright (long side on the short axis): 0.60 measures ~0.56
 const FOCUS_FILL_COARSE = 0.70;
 const COARSE = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 // The focused nail is centred in the band the HUD leaves free (CSS px):
