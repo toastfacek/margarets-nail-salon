@@ -113,6 +113,8 @@ rendering, no ghost finger or auto-advance, short intro), `?tier=high|medium|low
 (forced tier), `?mode=free` (start in the sandbox). Standard runs: `?perf=1`,
 `?perf=1&tier=low`, `?perf=1&tier=high`.
 
+`scripts/brush-shape.mjs` (B8: the head's shape, pressed footprint and spring
+overshoot; `?brush=prowide` picks the wide brush),
 `scripts/brush-feel.mjs` (stroke feel, gates A1..A20 and B1; strokes laid out
 in the nail's on-screen frame) and `scripts/pan.mjs` (the finger pan: drag,
 flick, tap, rubber band, paint-never-pans, round rules, glide frame time) run

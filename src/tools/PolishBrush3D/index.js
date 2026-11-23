@@ -6,6 +6,7 @@
  */
 export { PolishBrush3D, COAT_ALPHA } from './PolishBrush3D.js';
 export { BristleSystem } from './BristleSystem.js';
+export { BRUSH_PRESETS, brushPreset } from './brushPresets.js';
 export { BrushInputHandler, TOUCH_NUDGE_PX, touchLiftPx, TOUCH_LIFT } from './BrushInputHandler.js';
 export { BrushEffects } from './BrushEffects.js';
 export { PolishFilm } from './PolishFilm.js';
