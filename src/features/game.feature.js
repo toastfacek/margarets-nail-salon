@@ -335,7 +335,8 @@ export function install(app) {
   let swayT = 0, swayA = 0;
   const Y = new THREE.Vector3(0, 1, 0);
   const tick = (dt) => {
-    const down = !!(brush.inputHandler && brush.inputHandler.isPointerDown);
+    // a pan between fingers counts as busy too (no auto-advance, ghost or sway mid-pan)
+    const down = !!(brush.inputHandler && brush.inputHandler.isPointerDown) || !!(app.fingerPan && app.fingerPan.busy);
     let moved = rounds.update(dt, down);
 
     if (introPending && app.__ready && !scene.isAnimating && rounds.state === 'paint') startIntro();
@@ -367,6 +368,7 @@ export function install(app) {
       const a = SWAY * Math.sin(swayT * 0.45);
       const t = scene.controls.target;
       cam.position.sub(t).applyAxisAngle(Y, a - swayA).add(t);
+      cam.up.applyAxisAngle(Y, a - swayA); // the close-up is rolled: sway the roll with it
       cam.lookAt(t);
       swayA = a;
       moved = true;

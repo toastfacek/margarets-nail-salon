@@ -1,0 +1,45 @@
+/* fingerPan.feature.js: the finger dots (round mode, 2+ nails) and the pan cursor. */
+.fp-dots {
+  position: fixed;
+  left: 50%;
+  top: 10px;
+  z-index: 30;
+  display: flex;
+  gap: 0;
+  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.fp-dots.on { opacity: 1; pointer-events: auto; }
+/* portrait: the stars and bubble fill the top; the dots sit above the tray,
+   on the left (the Done heart is on the right) */
+@media (orientation: portrait) {
+  .fp-dots { top: auto; bottom: 182px; left: 14px; transform: none; }
+}
+.fp-dots.rtl { flex-direction: row-reverse; }
+body.revealing .fp-dots,
+body.bowl-open .fp-dots,
+body.mode-free .fp-dots { opacity: 0; pointer-events: none; }
+.fp-dot {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.fp-dot[hidden] { display: none; }
+.fp-dot i {
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 15px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 0 0 2px #9d4edd inset, 0 1px 4px rgba(90, 42, 130, 0.25);
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+.fp-dot.on i { background: #9d4edd; transform: scale(1.3); }
+body.fp-panning #canvas-container canvas { cursor: grabbing; }

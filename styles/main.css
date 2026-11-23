@@ -155,8 +155,8 @@ body.revealing #ui-overlay * { pointer-events: none !important; }
 .f-middle { --h: 100%; }
 .f-index { --h: 88%; }
 .f-thumb { --h: 56%; }
-.f-thumb i { rotate: 14deg; }
-.finger-selector.right .f-thumb i { rotate: -14deg; }
+.f-thumb i { rotate: -14deg; }
+.finger-selector.right .f-thumb i { rotate: 14deg; }
 .finger-btn.active i { translate: 0 -4px; }
 .finger-btn.active i::after { background: var(--pink); box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px var(--pink); }
 

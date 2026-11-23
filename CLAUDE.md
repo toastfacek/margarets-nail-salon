@@ -47,7 +47,15 @@ through `app.*` services and events, not by editing `main.js`.
 | `audio` | 20 | wires every sound to events |
 | `brushJuice` | 60 | sparkles, wet-to-cure, the dryer (UV lamp) button, gem/sticker pops |
 | `game` | 70 | round mode: client requests (`src/game`), bubble, stars, bottle tray, Done heart, ghost finger, door |
+| `fingerPan` | 72 | smart pan between the five fingers (drag off the nail, flick, tap a nail or a dot), on NailScene's finger rail |
 | `reveal` | 75 | the Slay reveal and the polaroid wall (`src/reveal`) |
+
+The close-up (`NailScene.focusPose`) looks at the nail face-on with the camera
+rolled (its `up` vector) so the finger runs down the screen: cuticle up, free
+edge down, the brush coming in from the lower right. Camera flights ease the
+roll (`beginFlight`, `rollToward`); the reveal and the bowl roll back upright.
+The finger rail (`railPose`, `railGlideTo`) blends the five
+focus poses that pans and finger changes glide along.
 
 Main events: `tool:change`, `nail:select`, `mode:change`, `brush:strokeStart`,
 `brush:stroke` (per frame, reused payload), `brush:strokeEnd`, `nail:coverage`,
@@ -104,3 +112,8 @@ element (kept in the DOM even when hidden). URL flags: `?perf=1` (continuous
 rendering, no ghost finger or auto-advance, short intro), `?tier=high|medium|low`
 (forced tier), `?mode=free` (start in the sandbox). Standard runs: `?perf=1`,
 `?perf=1&tier=low`, `?perf=1&tier=high`.
+
+`scripts/brush-feel.mjs` (stroke feel, gates A1..A20 and B1; strokes laid out
+in the nail's on-screen frame) and `scripts/pan.mjs` (the finger pan: drag,
+flick, tap, rubber band, paint-never-pans, round rules, glide frame time) run
+against the same preview server.

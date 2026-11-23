@@ -142,8 +142,9 @@ export class RoundManager {
     if (instant) {
       this.paint();
     } else {
-      // slide in from below the screen
-      this._down.set(0, -1, 0).applyQuaternion(app.scene.camera.quaternion);
+      // slide in from the top of the screen, where the finger comes from
+      // (the close-up has the nail pointing down)
+      this._down.copy(app.scene.targetUp); // screen-up of the view the camera is going to
       this._slideDir = 1;
       this._slide = SLIDE_IN;
       this._placeHand(1);
@@ -199,7 +200,7 @@ export class RoundManager {
   leave() {
     this.state = 'leave';
     this.ui.onLeave();
-    this._down.set(0, -1, 0).applyQuaternion(this.app.scene.camera.quaternion);
+    this._down.set(0, 1, 0).applyQuaternion(this.app.scene.camera.quaternion);
     this._slideDir = -1;
     this._slide = SLIDE_OUT;
     this.app.quality.hold(1000);
@@ -234,19 +235,22 @@ export class RoundManager {
     return false;
   }
 
-  /** Paint another requested nail (auto-advance or a tap on it). */
-  goTo(finger) {
+  /**
+   * Paint another requested nail (auto-advance, a pan or a tap on it).
+   * `zoom` false: the camera is already on its way (a pan's glide).
+   */
+  goTo(finger, zoom = true) {
     const app = this.app;
     app.selectNail(finger);
     app.polishBrush3D.setFinish(this.request.finish);
-    app.zoomToFinger(finger);
+    if (zoom) app.zoomToFinger(finger);
     app.updateFingerSelectorUI?.();
     this.ui.onAdvance(finger);
   }
 
   // ------------------------------------------------------------ helpers --
 
-  /** Hand offset along screen-down: 0 = at rest, 1 = fully below. */
+  /** Hand offset along `_down` (screen-up, the wrist side): 0 = at rest, 1 = fully off screen. */
   _placeHand(k) {
     const root = this.app.nail.getMesh();
     root.position.copy(this._base).addScaledVector(this._down, this._slideDist * k);

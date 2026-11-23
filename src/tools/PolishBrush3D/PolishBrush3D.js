@@ -266,6 +266,7 @@ export class PolishBrush3D {
 
     // Auto strokes (intro demo)
     this._autoActive = false;
+    this._stowed = false;          // hidden while the camera travels between fingers
     this._autoFrame = -10;
     this._autoT = 0;
 
@@ -482,13 +483,31 @@ export class PolishBrush3D {
       window.addEventListener('resize', this._refreshRect);
     }
 
-    this.bristleSystem.setVisible(true);
+    this.bristleSystem.setVisible(!this._stowed);
     this.bristleSystem.setColor(this.color);
-    this.brushEffects.setVisible(true);
+    this.brushEffects.setVisible(!this._stowed);
     this._needsPose = true;
 
     soundManager.init();
     this._rebind();
+    this.invalidate();
+  }
+
+  /**
+   * Stow the rig while the camera travels between fingers (the finger pan):
+   * hidden, not posed, no bristle physics. Unstowed, it is posed again where
+   * the pointer is (or parked at the free edge).
+   * @param {boolean} on
+   */
+  setStowed(on) {
+    on = !!on;
+    if (this._stowed === on) return;
+    this._stowed = on;
+    if (this.isActive) {
+      this.bristleSystem.setVisible(!on);
+      this.brushEffects.setVisible(!on);
+    }
+    this._needsPose = true;
     this.invalidate();
   }
 
@@ -1075,7 +1094,7 @@ export class PolishBrush3D {
     }
 
     // The rig, posed on the newest sample.
-    if (g && !this._autoActive) {
+    if (g && !this._autoActive && !this._stowed) {
       if (input && (this._needsPose || moved || this.isPainting || input.sampleCount > 0 || input.strokeEnd)) {
         this._poseRig(input);
         this._needsPose = false;
@@ -1087,7 +1106,7 @@ export class PolishBrush3D {
     }
 
     const bristles = this.bristleSystem;
-    if (!bristles.isAtRest()) {
+    if (!this._stowed && !bristles.isAtRest()) {
       bristles.update(dt, nailMesh, this.raycaster);
       changed = true;
     }
