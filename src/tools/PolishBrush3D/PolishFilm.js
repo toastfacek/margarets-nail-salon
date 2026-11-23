@@ -169,7 +169,8 @@ void main() {
   }
   sd -= r;
   // Caps (landing / lift): bristle ends push the outline in and out.
-  if ((flags & 12) != 0) sd += 0.25 * hl * (noise1(s * 9.0 + uSeed * 2.0) - 0.5) * 2.0;
+  // (Amplitude capped for long end caps: a ragged comb reads as fake.)
+  if ((flags & 12) != 0) sd += 0.25 * min(hl, 0.45 * hw) * ((noise1(s * 7.0 + uSeed * 2.0) * 0.7 + noise1(s * 19.0 - uSeed) * 0.3) - 0.5) * 2.0;
 
   float aa = 1.25 * max(uTexel.x * uAspect, uTexel.y);
   float mask = 1.0 - smoothstep(-aa, aa, sd);
@@ -191,7 +192,9 @@ void main() {
   float h = (0.28 + 0.50 * rg + 0.30 * rim) * body + 0.5 * vExtra.y * dome;
   gl_FragColor = vec4(min(h, 1.0), 1.0, 0.0, mask * seamFade);
 #else
-  float a = mask * body * vSeam.w * (0.98 + 0.06 * rg);
+  // No along-stroke ripple in the dye: it is permanent, and the nail shader
+  // turns alpha ripples into glints long after the film has levelled (A19).
+  float a = mask * body * vSeam.w;
   gl_FragColor = vec4(uColor, clamp(a, 0.0, 1.0));
 #endif
 }

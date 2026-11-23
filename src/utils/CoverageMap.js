@@ -18,7 +18,7 @@
 // A fully painted nail rarely touches every last edge cell; this much of the
 // mask counts as "everything" so the meter reaches 100% for real strokes.
 const COMPLETE_FRACTION = 0.96;
-// The brush's solid core (the splat is fully opaque to 0.62 r and fades to r).
+// Default solid core of a round splat (opaque to ~0.6 r, fading to r).
 const CORE = 0.8;
 
 export class CoverageMap {
@@ -65,13 +65,15 @@ export class CoverageMap {
    * Mark the cells under a stroke capsule from (u0,v0) to (u1,v1).
    * @param {number} radius in aspect-corrected UV units (v units), like the splat
    * @param {number} [aspect=1] nail u/v world aspect (HandModel.getUVAspect)
+   * @param {number} [core=CORE] share of the radius that counts as painted
+   *   (the brush band is solid nearly to its edge: PolishBrush3D passes 0.92)
    * @returns {boolean} whether any new cell was painted
    */
-  addSegment(u0, v0, u1, v1, radius, aspect = 1) {
+  addSegment(u0, v0, u1, v1, radius, aspect = 1, core = CORE) {
     const N = this.resolution;
     const a = aspect > 1e-3 ? aspect : 1e-3;
     // A cell counts when the brush core reaches within half a cell of its centre.
-    const r = radius * CORE + 0.5 / N;
+    const r = radius * core + 0.5 / N;
     const r2 = r * r;
     const ru = r / a;
     const x0 = Math.max(0, Math.floor((Math.min(u0, u1) - ru) * N));

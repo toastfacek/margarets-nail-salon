@@ -123,6 +123,10 @@ export class BrushInputHandler {
     this._queueN = 0;
     this._keep = new Uint8Array(QUEUE);
     this._inStroke = new Uint8Array(QUEUE);
+    this._turn = new Float32Array(QUEUE);
+    this._rawPrevX = 0;              // last raw entry of the previous frame (turn scores)
+    this._rawPrevY = 0;
+    this._rawPrevOk = false;
 
     // Frame output (plan 4.2).
     this.maxSamples = MAX_SAMPLES;
@@ -404,8 +408,33 @@ export class BrushInputHandler {
         moves++;
       }
     }
-    // Even subsample of the other pressed moves.
-    const slots = Math.max(0, this.maxSamples - marked);
+    // Subsample the other pressed moves: when there are more than the cap,
+    // the sharpest turns are kept first (a fast zig-zag keeps its corners;
+    // at least one slot stays for an even spread), the rest are spread evenly.
+    let slots = Math.max(0, this.maxSamples - marked);
+    if (moves > slots && slots >= 2) {
+      const turn = this._turn;
+      for (let i = 0; i < n; i++) {
+        turn[i] = -1;
+        if (keep[i] || !inStroke[i] || i === n - 1 || (i === 0 && !this._rawPrevOk)) continue;
+        const o = i * Q_STRIDE;
+        // the entry before the first one is the previous frame's last
+        const px = i > 0 ? q[o - Q_STRIDE] : this._rawPrevX, py = i > 0 ? q[o - Q_STRIDE + 1] : this._rawPrevY;
+        const ax = q[o] - px, ay = q[o + 1] - py;
+        const bx = q[o + Q_STRIDE] - q[o], by = q[o + Q_STRIDE + 1] - q[o + 1];
+        const la = Math.sqrt(ax * ax + ay * ay), lb = Math.sqrt(bx * bx + by * by);
+        if (la > 0.5 && lb > 0.5) turn[i] = 1 - (ax * bx + ay * by) / (la * lb);
+      }
+      for (let c = slots - 1; c > 0; c--) {
+        let best = -1, bs = 0.15; // only real turns (> ~32 deg)
+        for (let i = 0; i < n; i++) if (turn[i] > bs) { bs = turn[i]; best = i; }
+        if (best < 0) break;
+        keep[best] = 1;
+        turn[best] = -1;
+        slots--;
+        moves--;
+      }
+    }
     let j = 0;
     for (let i = 0; i < n; i++) {
       if (keep[i] || !inStroke[i]) continue;
@@ -437,6 +466,9 @@ export class BrushInputHandler {
     }
     this._walkDown = down;
     this.down = down;
+    this._rawPrevX = q[(n - 1) * Q_STRIDE];
+    this._rawPrevY = q[(n - 1) * Q_STRIDE + 1];
+    this._rawPrevOk = down;
     this._queueN = 0;
     this.tip.pressure = down ? this._pressureAt(q[(n - 1) * Q_STRIDE + 2]) : 0;
     this._endFrame(nailMesh, rc0);

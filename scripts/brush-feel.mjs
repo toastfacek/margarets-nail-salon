@@ -599,10 +599,13 @@ async function runCombo(tier, kind) {
     const fr = await frames();
     const c1 = await counters();
     const out = { pts, dur, ...frameStats(fr, kind, info), engineStarts: c1.engineStarts - c0.engineStarts, coveredFired: c1.covered - c0.covered };
+    // Time-critical reads first (the film levels within a second; a SwiftShader
+    // screenshot alone can take that long).
+    if (opts.film) { const fm = await page.evaluate(() => __T.film()); out.film0 = fm; }
+    if (opts.atLift) out.atLift = await opts.atLift();
     await shot(`${name}-wet`);
     const m = await page.evaluate(() => __T.mask());
     out.cov = r3(coverage(m)); out.appCov = r3(m.appCov);
-    if (opts.film) { const fm = await page.evaluate(() => __T.film()); out.film0 = fm; }
     if (opts.settle) {
       await sleep(opts.settleMs || 2500);
       await shot(`${name}-settled`);
@@ -653,9 +656,9 @@ async function runCombo(tier, kind) {
   // A19 streaks: fresh stroke and 1.5 s later, luminance rows across the band
   {
     await clear();
-    const o = await run('streaks', [[R, cy], [L, cy]], 450, { keep: true });
-    const b = band(o._mask, [R, cy], [L, cy], { expect: exp });
-    const half = b.widthPx ? b.widthPx.med / 2 : 10;
+    // the band's half width is known from the c2t strokes (same stroke)
+    const bw = S['c2t-med'] && S['c2t-med'].band && S['c2t-med'].band.widthPx ? S['c2t-med'].band.widthPx.med : 20;
+    const half = bw / 2;
     const region = { x0: L + 20, x1: R - 20, y0: cy - nudge - half * 0.8, y1: cy - nudge + half * 0.8 };
     const count = async () => {
       const buf = await page.screenshot({ clip: { x: Math.floor(region.x0), y: Math.floor(region.y0), width: Math.max(4, Math.ceil(region.x1 - region.x0)), height: Math.max(4, Math.ceil(region.y1 - region.y0)) } });
@@ -671,7 +674,8 @@ async function runCombo(tier, kind) {
         return { rows: rows.length, peaks, maxResid: +Math.max(...res).toFixed(2) };
       }, buf.toString('base64'));
     };
-    const wet = await count();
+    const o = await run('streaks', [[R, cy], [L, cy]], 450, { keep: true, atLift: () => count() });
+    const wet = o.atLift;
     await sleep(1500);
     const dry = await count();
     o.streaks = { wet, settled: dry };

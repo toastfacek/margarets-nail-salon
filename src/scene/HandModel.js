@@ -439,9 +439,16 @@ export class HandModel {
             centreW.multiplyScalar(1 / Math.max(1, pos.count));
             if (normalW.lengthSq() < 1e-8) normalW.set(0, 1, 0);
             normalW.normalize();
-            // skin within reach of the nail, projected onto the nail plane
+            // skin within reach of the nail, projected onto the nail plane.
+            // The reach is about one nail length: the finger continues past
+            // the cuticle, not past the free edge. A wider search (it was
+            // 0.3 world units, ~4 nail widths) reaches the neighbouring
+            // fingers and the palm and turned the axis across the nail.
             toBase.set(0, 0, 0);
-            const R2 = 0.3 * 0.3;
+            if (!geo.boundingBox) geo.computeBoundingBox();
+            const reach = new THREE.Box3().copy(geo.boundingBox).applyMatrix4(mesh.matrixWorld)
+                .getSize(new THREE.Vector3()).length() * 0.9;
+            const R2 = reach * reach;
             for (let i = 0; i < skinPts.length; i += 3) {
                 const dx = skinPts[i] - centreW.x, dy = skinPts[i + 1] - centreW.y, dz = skinPts[i + 2] - centreW.z;
                 const d2 = dx * dx + dy * dy + dz * dz;

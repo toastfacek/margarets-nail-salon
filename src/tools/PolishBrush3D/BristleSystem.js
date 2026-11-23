@@ -337,7 +337,7 @@ export class BristleSystem {
   }
 
   /**
-   * Flat oval ferrule -> thin stem -> purple cap, one merged mesh in units
+   * Flat oval ferrule -> short stem -> thick purple cap (the grip), one merged mesh in units
    * of the bristle length (the matrix scales it), +Y along the handle,
    * +X across the ferrule. Vertex coloured, same program as the bristles.
    */
@@ -357,19 +357,21 @@ export class BristleSystem {
     const ferrule = new THREE.CylinderGeometry(0.5, 0.42, 0.16, 20, 1, false);
     ferrule.translate(0, 0.08 - 0.02, 0);
     add(ferrule, 0x3d1f5c, ferruleW * 1.12, 0.16);
-    // Stem: thin pearly rod.
-    const stem = new THREE.CylinderGeometry(0.03, 0.04, 0.9, 10, 1, true);
-    stem.translate(0, 0.14 + 0.45, 0);
+    // Stem: a short pearly rod straight into the cap (a real polish brush:
+    // the bristles hang off a short stem, the thick cap is the grip).
+    const stem = new THREE.CylinderGeometry(0.04, 0.05, 0.55, 12, 1, true);
+    stem.translate(0, 0.14 + 0.275, 0);
     add(stem, 0xe9e2f2, 1, 1);
-    // Cap: the purple bottle cap the hand holds.
-    const capNeck = new THREE.CylinderGeometry(0.12, 0.08, 0.08, 18, 1, false);
-    capNeck.translate(0, 1.04 + 0.04, 0);
+    // Cap: the thick bottle cap the hand holds, flaring out of the stem.
+    const capNeck = new THREE.CylinderGeometry(0.165, 0.07, 0.1, 24, 1, false);
+    capNeck.translate(0, 0.69 + 0.05, 0);
     add(capNeck, 0x4a2270, 1, 1);
-    const cap = new THREE.CylinderGeometry(0.13, 0.135, 0.85, 18, 1, false);
-    cap.translate(0, 1.12 + 0.425, 0);
+    const cap = new THREE.CylinderGeometry(0.185, 0.17, 1.1, 24, 1, false);
+    cap.translate(0, 0.79 + 0.55, 0);
     add(cap, 0x5a2a82, 1, 1);
-    const top = new THREE.SphereGeometry(0.13, 18, 6, 0, Math.PI * 2, 0, Math.PI / 2);
-    top.translate(0, 1.97, 0);
+    const top = new THREE.SphereGeometry(0.185, 24, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+    top.scale(1, 0.45, 1);
+    top.translate(0, 1.89, 0);
     add(top, 0x5a2a82, 1, 1);
 
     // Merge (indexed).
