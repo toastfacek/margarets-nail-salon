@@ -2,12 +2,13 @@
  * FingerMap.js (WP8)
  * Free-mode finger picker: a little hand drawn from five fingertip buttons
  * (staggered like real fingers, the nail on top) plus a swap-hands button.
- * Laid out as the hand on screen is seen: fingers up, back of the hand, so
- * the left hand's thumb is on the right; the right hand mirrors it. No text.
+ * In the order the fingers sit on screen: the close-up has the back of the
+ * hand with the nails pointing down, so the left hand's thumb is on the
+ * left; the right hand mirrors it. No text.
  */
 
 // left hand, left to right (CSS reverses the row for the right hand)
-const ORDER = ['pinky', 'ring', 'middle', 'index', 'thumb'];
+const ORDER = ['thumb', 'index', 'middle', 'ring', 'pinky'];
 const SWAP = '<svg viewBox="0 0 32 32" aria-hidden="true">'
   + '<path d="M9 27c-3 0-5-2-5-5V12a2 2 0 0 1 4 0V8a2 2 0 0 1 4 0v12" fill="#f2c9ad" stroke="#5a2a82" stroke-width="1.8" stroke-linejoin="round"/>'
   + '<path d="M23 27c3 0 5-2 5-5V12a2 2 0 0 0-4 0V8a2 2 0 0 0-4 0v12" fill="#f2c9ad" stroke="#5a2a82" stroke-width="1.8" stroke-linejoin="round"/>'

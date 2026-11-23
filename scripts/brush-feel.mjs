@@ -284,6 +284,24 @@ async function install(page) {
         bristles: brush.bristleSystem.bristleCount, cap: ih && ih.maxSamples ? ih.maxSamples : 1,
       };
     };
+    // the active nail's frame on screen: centre and cuticle point (centre + axis * half length)
+    T.frame = () => {
+      const hm = app.nail; const rec = hm.getNail(hm.getCurrentHand(), hm.getActiveNail());
+      const u = rec.material.uniforms; rec.mesh.updateWorldMatrix(true, false);
+      const c = u.uNailCentre.value.clone();
+      const k = u.uNailAxis.value.clone().multiplyScalar(u.uNailHalf.value.x).add(c);
+      R = canvas.getBoundingClientRect();
+      return { c: proj(c.applyMatrix4(rec.mesh.matrixWorld)), cut: proj(k.applyMatrix4(rec.mesh.matrixWorld)) };
+    };
+    // the resting handle's direction on screen (tip line centre -> handle mesh centre)
+    T.handleDir = () => {
+      const b = brush.bristleSystem; b.group.updateMatrixWorld(true);
+      const g = b.handle.geometry; if (!g.boundingBox) g.computeBoundingBox();
+      const hc = proj(g.boundingBox.getCenter(new V3()).applyMatrix4(b.handle.matrixWorld));
+      const tc = proj(b.tipCenter);
+      const dx = hc[0] - tc[0], dy = hc[1] - tc[1], l = Math.hypot(dx, dy) || 1;
+      return [dx / l, dy / l];
+    };
     // handle + head height on screen (projected mesh bounding boxes)
     T.rigScreen = () => {
       const b = brush.bristleSystem; b.group.updateMatrixWorld(true);
@@ -566,20 +584,37 @@ async function runCombo(tier, kind) {
   if (!box) throw new Error('nail not found on screen');
   const mapInfo = await page.evaluate((b) => __T.buildMap(b), box);
   const w = box.x1 - box.x0, h = box.y1 - box.y0, cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
-  const clip = { x: Math.max(0, box.x0 - 110), y: Math.max(0, box.y0 - 150), width: w + 220, height: h + 260 };
-  const L = box.x0 + 0.12 * w, R = box.x1 - 0.12 * w;
+  const clip = { x: Math.max(0, box.x0 - 130), y: Math.max(0, box.y0 - 130), width: w + 260, height: h + 260 };
+  // B7: every stroke and pose check is laid out in the nail's own frame on
+  // screen: AX from the cuticle to the free edge, AC across it (AX turned a
+  // quarter counter-clockwise on screen). Before B7 the nail lay with the
+  // cuticle on the right (AX = left, AC = down); now it points down (AX = down,
+  // AC = right).
+  const fr0 = await page.evaluate(() => __T.frame());
+  const AX = (() => { const dx = fr0.c[0] - fr0.cut[0], dy = fr0.c[1] - fr0.cut[1], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l]; })();
+  const AC = [AX[1], -AX[0]];
+  const axisDeg = r1(Math.atan2(AX[0], AX[1]) * 180 / Math.PI); // 0 = pointing straight down
+  // half extents of the box along / across the nail
+  const hl = (Math.abs(AX[0]) * w + Math.abs(AX[1]) * h) / 2, hw = (Math.abs(AC[0]) * w + Math.abs(AC[1]) * h) / 2;
+  /** Screen point at a px along the nail (toward the free edge) and c px across it, from the box centre. */
+  const P = (a, c) => [cx + AX[0] * a + AC[0] * c, cy + AX[1] * a + AC[1] * c];
+  const pR = P(-0.76 * hl, 0), pL = P(0.76 * hl, 0); // cuticle-side and tip-side ends of a c2t stroke (old R, L)
+  const lerp2 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
   const nudge = kind === 'touch' ? NUDGE : 0;
   const engineWalksSamples = !!info.debugHook;
   const res = { tag, tier, kind, info, box, mapInfo, strokes: {}, errors: s.errors };
   const emit = (name, o) => { res.strokes[name] = o; console.log(JSON.stringify({ combo: tag, stroke: name, ...o })); };
 
-  // nail size on screen (px) from the map: width across the finger (vertical on
-  // screen: cuticle right, tip left), length along it
+  // nail size on screen (px) from the map: width across the finger (AC), length along it (AX)
   const mask0 = await page.evaluate(() => __T.mask());
-  const colN = (x) => { let n = 0; for (let y = 0; y < mask0.H; y++) if (maskAt(mask0, x, mask0.y0 + y) >= 0) n++; return n; };
-  const rowN = (y) => { let n = 0; for (let x = 0; x < mask0.W; x++) if (maskAt(mask0, mask0.x0 + x, y) >= 0) n++; return n; };
-  const nailW = colN(cx), nailL = rowN(cy);
-  res.nailWidthPx = nailW; res.nailLengthPx = nailL;
+  const lineN = (u) => { let n = 0; for (let t = -2000; t <= 2000; t++) if (maskAt(mask0, cx + u[0] * t, cy + u[1] * t) >= 0) n++; return n; };
+  const nailW = lineN(AC), nailL = lineN(AX);
+  res.nailWidthPx = nailW; res.nailLengthPx = nailL; res.axisDeg = axisDeg;
+  // just outside the nail's outline: walk from the centre along u until off the nail, then `px` more
+  const outside = (u, px) => { let t = 0; while (t < 3000 && maskAt(mask0, cx + u[0] * t, cy + u[1] * t) >= 0) t += 0.5; return [cx + u[0] * (t + px), cy + u[1] * (t + px)]; };
+  // B7: a press off the nail pans the camera unless it lands within the grace
+  // margin (10 px) of the outline: off-nail starts here start 6 px out.
+  const GRACE_IN = 6;
 
   const shot = async (name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${tag}-${name}.png`), clip }); };
   const clear = async () => {
@@ -629,7 +664,7 @@ async function runCombo(tier, kind) {
   if (kind === 'mouse') {
     await clear();
     await rec(true);
-    for (let i = 0; i <= 30; i++) { await s.input.hover(R + (L - R) * i / 30, cy); await sleep(30); }
+    for (let i = 0; i <= 30; i++) { const q = lerp2(pR, pL, i / 30); await s.input.hover(q[0], q[1]); await sleep(30); }
     await sleep(200);
     await rec(false);
     const fr = await frames();
@@ -649,38 +684,46 @@ async function runCombo(tier, kind) {
     S[name] = o; emit(name, strip(o));
     return o;
   };
-  await straight('c2t-slow', [R, cy], [L, cy], 1600, { settle: true, film: true });
-  await straight('c2t-med', [R, cy], [L, cy], 450, { settle: true, film: true });
-  await straight('c2t-fast', [R, cy], [L, cy], 110);
-  await straight('t2c-med', [L, cy], [R, cy], 450);
-  await straight('side-med', [cx, box.y0 + 0.12 * h], [cx, box.y1 - 0.12 * h], 400);
-  await straight('side-up-med', [cx, box.y1 - 0.12 * h], [cx, box.y0 + 0.12 * h], 400);
+  await straight('c2t-slow', pR, pL, 1600, { settle: true, film: true });
+  await straight('c2t-med', pR, pL, 450, { settle: true, film: true });
+  await straight('c2t-fast', pR, pL, 110);
+  await straight('t2c-med', pL, pR, 450);
+  await straight('side-med', P(0, -0.76 * hw), P(0, 0.76 * hw), 400);
+  await straight('side-up-med', P(0, 0.76 * hw), P(0, -0.76 * hw), 400);
   // A3: same-frame readback of the dye at the newest deposit
-  { const o = await run('a3', [[R, cy], [L, cy]], 450, { a3: true }); const v = o._frames.filter((f) => f.a3 !== undefined); o.a3 = { frames: v.length, over50: v.filter((f) => f.a3 > 128).length, min: v.length ? Math.min(...v.map((f) => f.a3)) : null }; S.a3 = o; emit('a3', strip(o)); }
+  { const o = await run('a3', [pR, pL], 450, { a3: true }); const v = o._frames.filter((f) => f.a3 !== undefined); o.a3 = { frames: v.length, over50: v.filter((f) => f.a3 > 128).length, min: v.length ? Math.min(...v.map((f) => f.a3)) : null }; S.a3 = o; emit('a3', strip(o)); }
   // second pass on the same line (A18)
-  { const o = await run('pass2', [[R, cy], [L, cy]], 450, { keep: true }); o.band = band(o._mask, [R, cy], [L, cy], { expect: exp }); S.pass2 = o; emit('pass2', strip(o)); await shot('pass2'); }
+  { const o = await run('pass2', [pR, pL], 450, { keep: true }); o.band = band(o._mask, pR, pL, { expect: exp }); S.pass2 = o; emit('pass2', strip(o)); await shot('pass2'); }
   // A19 streaks: fresh stroke and 1.5 s later, luminance rows across the band
   {
     await clear();
     // the band's half width is known from the c2t strokes (same stroke)
     const bw = S['c2t-med'] && S['c2t-med'].band && S['c2t-med'].band.widthPx ? S['c2t-med'].band.widthPx.med : 20;
     const half = bw / 2;
-    const region = { x0: L + 20, x1: R - 20, y0: cy - nudge - half * 0.8, y1: cy - nudge + half * 0.8 };
+    // the band between its ends (20 px in), +-0.8 half width across, shifted by the touch nudge
+    const vert = Math.abs(AX[1]) > Math.abs(AX[0]);
+    const e0 = P(-0.76 * hl + 20, 0), e1 = P(0.76 * hl - 20, 0);
+    const region = vert
+      ? { x0: cx - half * 0.8, x1: cx + half * 0.8, y0: Math.min(e0[1], e1[1]) - nudge, y1: Math.max(e0[1], e1[1]) - nudge }
+      : { x0: Math.min(e0[0], e1[0]), x1: Math.max(e0[0], e1[0]), y0: cy - nudge - half * 0.8, y1: cy - nudge + half * 0.8 };
     const count = async () => {
       const buf = await page.screenshot({ clip: { x: Math.floor(region.x0), y: Math.floor(region.y0), width: Math.max(4, Math.ceil(region.x1 - region.x0)), height: Math.max(4, Math.ceil(region.y1 - region.y0)) } });
-      return page.evaluate(async (b64) => {
+      return page.evaluate(async ([b64, vert]) => {
         const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
         const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0);
         const d = g.getImageData(0, 0, c.width, c.height).data; const rows = [];
-        for (let y = 0; y < c.height; y++) { let s = 0; for (let x = 0; x < c.width; x++) { const k = (y * c.width + x) * 4; s += 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2]; } rows.push(s / c.width); }
+        // lines parallel to the stroke: rows for a horizontal stroke, columns for a vertical one
+        const lum = (x, y) => { const k = (y * c.width + x) * 4; return 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2]; };
+        if (vert) for (let x = 0; x < c.width; x++) { let s = 0; for (let y = 0; y < c.height; y++) s += lum(x, y); rows.push(s / c.height); }
+        else for (let y = 0; y < c.height; y++) { let s = 0; for (let x = 0; x < c.width; x++) s += lum(x, y); rows.push(s / c.width); }
         // detrend (7-row box) and count separated peaks > 1.5 levels
         const sm = rows.map((_, i) => { let s = 0, n = 0; for (let j = Math.max(0, i - 3); j <= Math.min(rows.length - 1, i + 3); j++) { s += rows[j]; n++; } return s / n; });
         const res = rows.map((v, i) => v - sm[i]); let peaks = 0, lastP = -9;
         for (let i = 1; i + 1 < res.length; i++) if (res[i] > 1.5 && res[i] >= res[i - 1] && res[i] >= res[i + 1] && i - lastP >= 2) { peaks++; lastP = i; }
         return { rows: rows.length, peaks, maxResid: +Math.max(...res).toFixed(2) };
-      }, buf.toString('base64'));
+      }, [buf.toString('base64'), vert]);
     };
-    const o = await run('streaks', [[R, cy], [L, cy]], 450, { keep: true, atLift: () => count() });
+    const o = await run('streaks', [pR, pL], 450, { keep: true, atLift: () => count() });
     const wet = o.atLift;
     await sleep(1500);
     const dry = await count();
@@ -694,11 +737,12 @@ async function runCombo(tier, kind) {
   await run('tap', [[cx, cy]], 60, { hold: 20 }).then((o) => { o.print = bbox(o._mask); S.tap = o; emit('tap', strip(o)); });
   await shot('tap');
   await run('hold', [[cx, cy]], 1000).then((o) => { o.print = bbox(o._mask); S.hold = o; emit('hold', strip(o)); });
-  await run('off-start', [[box.x1 + 70, cy], [L, cy]], 600).then((o) => { S['off-start'] = o; emit('off-start', strip(o)); });
-  await run('off-end', [[R, cy], [box.x0 - 70, cy]], 600).then((o) => { S['off-end'] = o; emit('off-end', strip(o)); });
+  // press just off the cuticle edge (inside the grace margin: still the brush's), into the nail
+  await run('off-start', [outside([-AX[0], -AX[1]], GRACE_IN), pL], 600).then((o) => { S['off-start'] = o; emit('off-start', strip(o)); });
+  await run('off-end', [pR, P(hl + 70, 0)], 600).then((o) => { S['off-end'] = o; emit('off-end', strip(o)); });
   // leave the nail over its side edge and come back, one press (A12)
   {
-    const pts = [[box.x1 - 0.3 * w, cy], [cx, box.y0 - 45], [box.x0 + 0.3 * w, cy]];
+    const pts = [P(-0.4 * hl, 0), P(0, -(hw + 45)), P(0.4 * hl, 0)];
     const o = await run('leave-return', pts, 700);
     // walk the expected deposit path at 1 px, find on-nail runs and their paint
     // expected paint point: nudged, or the raw contact point when only that is on the nail
@@ -721,9 +765,14 @@ async function runCombo(tier, kind) {
     S['leave-return'] = o; emit('leave-return', strip(o));
     await shot('leave-return');
   }
-  await run('diag-through', [[box.x1 + 30, box.y0 - 30], [box.x0 - 30, box.y1 + 30]], 500).then((o) => { S['diag-through'] = o; emit('diag-through', strip(o)); });
+  {
+    // corner to corner through the nail (cuticle/across- to tip/across+), from just inside the grace margin to 30 px past the far side
+    const dl = Math.hypot(hl, hw); const ud = [(AX[0] * hl + AC[0] * hw) / dl, (AX[1] * hl + AC[1] * hw) / dl];
+    const d0 = outside([-ud[0], -ud[1]], GRACE_IN), d1 = outside(ud, 30);
+    await run('diag-through', [d0, d1], 500).then((o) => { S['diag-through'] = o; emit('diag-through', strip(o)); });
+  }
   // fast zig-zag: 8 turns in 600 ms, native frame rate and 20 fps (A4, B1)
-  const zig = []; for (let i = 0; i <= 8; i++) zig.push([R + (L - R) * i / 8, i % 2 ? box.y0 + 0.15 * h : box.y1 - 0.15 * h]);
+  const zig = []; for (let i = 0; i <= 8; i++) zig.push(P(-0.76 * hl + 1.52 * hl * i / 8, (i % 2 ? -0.7 : 0.7) * hw));
   for (const fps of [null, 20]) {
     const name = fps ? 'zig-fast-20fps' : 'zig-fast';
     const o = await run(name, zig, 600, { fps, settle: !fps });
@@ -751,27 +800,28 @@ async function runCombo(tier, kind) {
     o.sampleVsEventsPx = smp.length > 1 && onNail.length ? r1(Math.max(...onNail.map((p) => distToPolyline(p, smp)))) : null;
     // gap columns between the first and last painted x of the zig-zag
     let gaps = 0, cols = 0;
-    for (let x = Math.ceil(L + 12); x <= R - 12; x++) { let nh = 0, pa = 0; for (let y = 0; y < o._mask.H; y++) { const a = maskAt(o._mask, x, o._mask.y0 + y); if (a >= 0) nh++; if (a > 128) pa++; } if (nh) { cols++; if (!pa) gaps++; } }
+    // lines across the nail, 1 px apart along it
+    for (let t = Math.ceil(-0.76 * hl + 12); t <= 0.76 * hl - 12; t++) { let nh = 0, pa = 0; for (let c = -2 * hw - 40; c <= 2 * hw + 40; c++) { const q = P(t, c); const a = maskAt(o._mask, q[0], q[1]); if (a >= 0) nh++; if (a > 128) pa++; } if (nh) { cols++; if (!pa) gaps++; } }
     o.gapCols = gaps; o.gapColsOf = cols;
     S[name] = o; emit(name, strip(o));
   }
   // c2t at 20 fps: are all samples used?
-  await run('c2t-med-20fps', [[R, cy], [L, cy]], 450, { fps: 20 }).then((o) => { S['c2t-med-20fps'] = o; emit('c2t-med-20fps', strip(o)); });
+  await run('c2t-med-20fps', [pR, pL], 450, { fps: 20 }).then((o) => { S['c2t-med-20fps'] = o; emit('c2t-med-20fps', strip(o)); });
   // three strokes: centre, +28 %, -28 % of the nail width (no clear in between)
   {
     const off = 0.28 * nailW;
     await clear();
     const c0 = await counters();
-    const a = await run('three-1', [[R, cy], [L, cy]], 500, { keep: true }); S['three-1'] = a; emit('three-1', strip(a));
-    const b = await run('three-2', [[R, cy - off], [L, cy - off]], 500, { keep: true }); S['three-2'] = b; emit('three-2', strip(b));
-    const c = await run('three-3', [[R, cy + off], [L, cy + off]], 500, { keep: true, settle: true }); S['three-3'] = c;
+    const a = await run('three-1', [pR, pL], 500, { keep: true }); S['three-1'] = a; emit('three-1', strip(a));
+    const b = await run('three-2', [P(-0.76 * hl, -off), P(0.76 * hl, -off)], 500, { keep: true }); S['three-2'] = b; emit('three-2', strip(b));
+    const c = await run('three-3', [P(-0.76 * hl, off), P(0.76 * hl, off)], 500, { keep: true, settle: true }); S['three-3'] = c;
     c.coveredAfterThree = (await counters()).covered - c0.covered; emit('three-3', strip(c));
   }
   // 12-stroke scrub
   if (!QUICK) {
     await clear();
     const covs = [];
-    for (let n = 0; n < 12; n++) { const yy = box.y0 + h * (0.1 + 0.8 * ((n * 0.37) % 1)); await stroke(s, [[R, yy], [L, yy]], 350); await sleep(60); covs.push(await page.evaluate(() => [+app.polishBrush3D.getCoverage().toFixed(3), +(app.polishBrush3D.debug ? app.polishBrush3D.debug.load : app.polishBrush3D.bristleSystem.load).toFixed(2)])); }
+    for (let n = 0; n < 12; n++) { const cc = hw * (2 * (0.1 + 0.8 * ((n * 0.37) % 1)) - 1); await stroke(s, [P(-0.76 * hl, cc), P(0.76 * hl, cc)], 350); await sleep(60); covs.push(await page.evaluate(() => [+app.polishBrush3D.getCoverage().toFixed(3), +(app.polishBrush3D.debug ? app.polishBrush3D.debug.load : app.polishBrush3D.bristleSystem.load).toFixed(2)])); }
     const m = await page.evaluate(() => __T.mask());
     S.scrub12 = { scrub: covs, cov: r3(coverage(m)), appCov: covs[covs.length - 1][0] }; emit('scrub12', S.scrub12);
     await shot('scrub12');
@@ -780,20 +830,20 @@ async function runCombo(tier, kind) {
   // the paint mid-press, then lay one c2t pass and compare it with a loaded pass.
   async function dryTest(nl) {
     await clear();
-    const travel = nl * nailL; const seg = R - L; const n = Math.max(1, Math.round(travel / seg));
-    const pts = []; for (let i = 0; i <= n; i++) pts.push([i % 2 ? L : R, cy]);
+    const travel = nl * nailL; const seg = 1.52 * hl; const n = Math.max(1, Math.round(travel / seg));
+    const pts = []; for (let i = 0; i <= n; i++) pts.push(i % 2 ? pL : pR);
     await rec(true);
     const end = await stroke(s, pts, n * seg / 0.7, { noUp: true }); // 700 px/s
     // back to the cuticle side, still pressed
-    if (Math.abs(end[0] - R) > 1) await stroke(s, [end, [R, cy]], 250, { noUp: true, skipDown: true });
+    if (Math.hypot(end[0] - pR[0], end[1] - pR[1]) > 1) await stroke(s, [end, pR], 250, { noUp: true, skipDown: true });
     await page.evaluate(() => app.polishBrush3D.clearNail());
     await sleep(80);
-    await stroke(s, [[R, cy], [L, cy]], 450, { skipDown: true });
+    await stroke(s, [pR, pL], 450, { skipDown: true });
     await sleep(150);
     await rec(false);
     const fr = await frames();
     const m = await page.evaluate(() => __T.mask());
-    const bd = band(m, [R, cy], [L, cy], { expect: exp });
+    const bd = band(m, pR, pL, { expect: exp });
     await sleep(500);
     const after = await page.evaluate(() => (app.polishBrush3D.debug ? app.polishBrush3D.debug.load : app.polishBrush3D.bristleSystem.load));
     // travel along the way, from the deposit path
@@ -809,24 +859,31 @@ async function runCombo(tier, kind) {
     S.dry.widthDropAtNL = hw0 ? (tr.find((q) => q[2] < 0.97 * hw0) || [null])[0] : null;
     emit('dry', { ...S.dry, d14: { ...S.dry.d14, trace: undefined }, d26: { ...S.dry.d26, trace: undefined }, d50: { ...S.dry.d50, trace: S.dry.d50.trace.slice(0, 40) } });
   }
-  // Pose (A11): an L-shaped stroke (left, then down) and 4 straight directions with
+  // Pose (A11): an L-shaped stroke (c2t, then across) and 4 straight directions with
   // a screenshot mid-motion.
   {
-    const p0 = [R, box.y0 + 0.3 * h], p1 = [cx - 0.05 * w, box.y0 + 0.3 * h], p2 = [cx - 0.05 * w, box.y1 - 0.15 * h];
+    // c2t, then across (AC): before B7 "left, then down"
+    const p0 = P(-0.76 * hl, -0.4 * hw), p1 = P(0.1 * hl, -0.4 * hw), p2 = P(0.1 * hl, 0.7 * hw);
     const o = await run('turn', [p0, p1, p2], 700);
     const fr = o._frames.filter((f) => f.painting && f.dep && f.fanAng !== undefined);
     // the turn frame: first frame whose deposit is past the corner
-    let turnT = null; for (const f of fr) { if (f.dep[1] > p1[1] - nudge + 2) { turnT = f.t; break; } }
+    let turnT = null; for (const f of fr) { if ((f.dep[0] - p1[0]) * AC[0] + (f.dep[1] - p1[1] + nudge) * AC[1] > 2) { turnT = f.t; break; } }
     const angAt = (dt) => { const f = fr.find((q) => q.t >= turnT + dt); return f ? f.fanAng : null; };
     const before = fr.filter((f) => turnT !== null && f.t < turnT - 50 && f.t > fr[0].t + 120).map((f) => f.fanAng);
     o.axisBeforeTurn = axStats(before);
-    o.axisErrBeforeDeg = before.length ? r1(Math.max(...before.map((a) => angDiff180(a, 90)))) : null;
+    // the fan lies across the motion: along AC on the c2t leg, along AX after the turn
+    const angOf = (u) => ((Math.atan2(u[1], u[0]) * 180 / Math.PI) % 180 + 180) % 180;
+    o.axisErrBeforeDeg = before.length ? r1(Math.max(...before.map((a) => angDiff180(a, angOf(AC))))) : null;
     o.axisAt120msDeg = turnT !== null ? r1(angAt(120)) : null;
-    o.axisErrAt120msDeg = o.axisAt120msDeg !== null ? r1(angDiff180(o.axisAt120msDeg, 0)) : null;
+    o.axisErrAt120msDeg = o.axisAt120msDeg !== null ? r1(angDiff180(o.axisAt120msDeg, angOf(AX))) : null;
     S.turn = o; emit('turn', strip(o));
   }
-  const dirs = { left: [[R, cy], [L + 0.2 * w, cy]], right: [[L, cy], [R - 0.2 * w, cy]], down: [[cx, box.y0 + 0.12 * h], [cx, box.y1 - 0.25 * h]], up: [[cx, box.y1 - 0.12 * h], [cx, box.y0 + 0.25 * h]] };
+  // the four directions in the nail's frame (before B7: left, right, down, up on screen)
+  const dirs = { c2t: [pR, P(0.36 * hl, 0)], t2c: [pL, P(-0.36 * hl, 0)], side: [P(0, -0.76 * hw), P(0, 0.5 * hw)], 'side-up': [P(0, 0.76 * hw), P(0, -0.5 * hw)] };
   S.pose = {};
+  // where the resting handle points on screen: the stroke heading most directly away from it is A11's exception
+  await clear();
+  const hd = await page.evaluate(() => __T.handleDir());
   for (const [dn, pts] of Object.entries(dirs)) {
     await clear();
     await rec(true);
@@ -843,20 +900,28 @@ async function runCombo(tier, kind) {
     const fer = moving.filter((f) => f.root).map((f) => (f.root[0] - f.tipC[0]) * u[0] + (f.root[1] - f.tipC[1]) * u[1]);
     S.pose[dn] = { ferrulePx: fer.length ? r1(mean(fer)) : null, trailPx: restT !== null && movT !== null ? r1(movT - restT) : null, fanAng: axStats(moving.map((f) => f.fanAng)), axisDbg: axStats(moving.map((f) => f.axisDbg)), tipToDep: stats(moving.filter((f) => f.dep && f.tip).map((f) => Math.hypot(f.tip[0] - f.dep[0], f.tip[1] - f.dep[1]))) };
   }
+  {
+    const names = Object.keys(dirs);
+    const dots = names.map((n) => { const d = sub(dirs[n][1], dirs[n][0]); const l = Math.hypot(d[0], d[1]); return (d[0] * hd[0] + d[1] * hd[1]) / l; });
+    S.pose.away = dots.indexOf(Math.min(...dots));
+    S.pose.handleDir = hd.map(r3);
+    S.pose.axisDeg = axisDeg;
+  }
   emit('pose', S.pose);
   // second finger (touch): finger 2 lands on the nail mid-stroke and moves
   if (kind === 'touch') {
-    const o = await run('second-finger', [[R, cy], [L, cy]], 700, { second: { from: 0.3, to: 0.75, pts: [[cx, box.y1 - 0.1 * h], [R, box.y1 - 0.1 * h]] } });
-    const truth = [[R, cy - nudge], [L, cy - nudge]];
+    const o = await run('second-finger', [pR, pL], 700, { second: { from: 0.3, to: 0.75, pts: [P(0, 0.8 * hw), P(-0.76 * hl, 0.8 * hw)] } });
+    const truth = [[pR[0], pR[1] - nudge], [pL[0], pL[1] - nudge]];
     const p = o._frames.filter((f) => f.painting && f.dep);
     o.depOffPathPx = p.length ? r1(Math.max(...p.map((f) => distToPolyline(f.dep, truth)))) : null;
-    o.depVsFinger1Px = p.length ? r1(Math.max(...p.map((f) => Math.abs(f.dep[0] - f.px)))) : null;
+    // along the stroke, the deposit stays with finger 1 (its nudged point)
+    o.depVsFinger1Px = p.length ? r1(Math.max(...p.map((f) => Math.abs((f.dep[0] - f.px) * AX[0] + (f.dep[1] - f.py + nudge) * AX[1])))) : null;
     S['second-finger'] = o; emit('second-finger', strip(o));
   }
   // A9 relief levelling and A17 idle passes: one stroke, then watch 6 s
   {
     await clear();
-    const o = await run('level', [[R, cy], [L, cy]], 450, { keep: true, film: true });
+    const o = await run('level', [pR, pL], 450, { keep: true, film: true });
     const rms = (fm) => { if (!fm) return null; let s2 = 0, n = 0; for (const a of fm.a) { if (a < 0) continue; s2 += (a / 255) ** 2; n++; } return n ? Math.sqrt(s2 / n) : null; };
     const f0 = o.film0; await sleep(1050);
     const f1 = await page.evaluate(() => __T.film());
@@ -964,8 +1029,14 @@ function lines(res) {
   } else add('A10', 'load', 'skipped (--quick)', null, '');
   // A11
   // (Fable's ruling: the handle leads a dragged brush: ferrule ahead of the tips along the motion.)
-  const tr = S.turn; const P = S.pose; const fr = ['left', 'right', 'down', 'up'].map((d) => P[d] ? P[d].ferrulePx : null);
-  add('A11', 'axis err 120 ms after turn (deg); ferrule - tip along motion px L/R/D/U', `${tr.axisErrAt120msDeg}; ${fr.join('/')}`, tr.axisErrAt120msDeg !== null && tr.axisErrAt120msDeg <= 15 && fr[0] >= 5 && fr[1] >= 5 && fr[3] >= 5 && fr[2] >= 0, '<= 15; L/R/U >= +5, D >= 0');
+  // (B7: the directions are in the nail's frame; the one heading most directly away from the
+  // resting handle keeps the old "down" exception, >= 0. Before B7 that was "down" (the handle
+  // leaned up-right); with the brush now coming in from the lower right it is t2c, up the screen.)
+  const tr = S.turn; const P = S.pose; const names = ['c2t', 't2c', 'side', 'side-up'];
+  const fr = names.map((d) => P[d] ? P[d].ferrulePx : null);
+  const away = names[P.away];
+  const a11 = fr.every((v, i) => v !== null && (names[i] === away ? v >= 0 : v >= 5));
+  add('A11', `axis err 120 ms after turn (deg); ferrule - tip along motion px c2t/t2c/side/side-up (away from handle: ${away})`, `${tr.axisErrAt120msDeg}; ${fr.join('/')}`, tr.axisErrAt120msDeg !== null && tr.axisErrAt120msDeg <= 15 && a11, '<= 15; >= +5, away >= 0');
   // A12
   const lr = S['leave-return'];
   const both = lr.runs.length >= 2 && lr.runs.every((q) => q.paintedFrac >= 0.9);

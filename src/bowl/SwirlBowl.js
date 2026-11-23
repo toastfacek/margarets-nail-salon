@@ -301,14 +301,13 @@ export function installBowl(app) {
     S.targetCameraPos.copy(VIEW).multiplyScalar(dist).add(tgtB);
     S.targetTarget.copy(tgtB);
     if (fly) {
-      S.startCameraPos.copy(cam.position);
-      S.startTarget.copy(S.controls.target);
       S.controls.maxDistance = 9;
-      S.animationProgress = 0;
-      S.isAnimating = true;
+      // rolls back from the nail close-up (finger down the screen) to an upright view
+      S.beginFlight(null, 0.5);
     } else if (!S.isAnimating) {
       cam.position.copy(S.targetCameraPos);
       S.controls.target.copy(tgtB);
+      S.naturalUp(cam.position, tgtB, cam.up);
       cam.lookAt(tgtB);
       app.invalidate();
     }

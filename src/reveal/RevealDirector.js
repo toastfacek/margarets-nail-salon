@@ -58,6 +58,8 @@ export class RevealDirector {
     this._pos0 = V();
     this._tgt0 = V();
     this._q0 = new THREE.Quaternion();
+    this._up0 = V();
+    this._upN = V();
     this._p = V();
     this._l = V();
     this._v = V();
@@ -185,7 +187,9 @@ export class RevealDirector {
     // hold the camera (no resize re-framing), snapshot it, stop any zoom in flight, lock the controls
     scene.holdCamera(true);
     scene.isAnimating = false;
+    if (scene.cancelRail) scene.cancelRail();
     this._aspect = cam.aspect;
+    this._up0.copy(cam.up);
     this._pos0.copy(cam.position);
     this._q0.copy(cam.quaternion);
     this._tgt0.copy(scene.controls.target);
@@ -253,6 +257,11 @@ export class RevealDirector {
       this._p.lerp(this._pos0, back);
       this._l.lerp(this._tgt0, back);
     }
+    // roll: the close-up has the finger down the screen; the sweep turns it
+    // upright with the first second of the flight, and back on the glide home
+    const r = ease((t - SWEEP0) / 0.9) * (1 - back);
+    scene.naturalUp(this._p, this._l, this._upN);
+    scene.rollToward(this._up0, this._upN, r, cam.up);
     cam.position.copy(this._p);
     cam.lookAt(this._l);
     scene.controls.target.copy(this._l);
@@ -360,6 +369,7 @@ export class RevealDirector {
       spline(this._cp, 1, this._p);
       spline(this._lp, 1, this._l);
       scene.camera.position.copy(this._p);
+      scene.naturalUp(this._p, this._l, scene.camera.up);
       scene.camera.lookAt(this._l);
       scene.setDim(0.75);
       if (this._bones.length) this._wiggle(0, 0);
@@ -385,6 +395,7 @@ export class RevealDirector {
     scene.holdCamera(false);
     scene.camera.position.copy(this._pos0);
     scene.camera.quaternion.copy(this._q0);
+    scene.camera.up.copy(this._up0);
     scene.controls.target.copy(this._tgt0);
     scene.controls.enabled = this._ctl;
     if (scene.camera.aspect !== this._aspect) scene.onResize();

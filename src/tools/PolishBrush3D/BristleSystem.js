@@ -25,7 +25,10 @@
  * Tuning against the owner's reference frame: the handle is tilted from a
  * blend of view direction and surface normal (55 deg mouse, 42 deg touch)
  * rather than 45/35 deg from the normal: on our top-down camera a 45 deg
- * handle hides the bristles' length and the fan reads as a short tuft.
+ * handle hides the bristles' length and the fan reads as a short tuft. It
+ * leans toward the bottom of the screen, turned 40 deg to the right (B7: the
+ * close-up has the nail pointing down, the brush comes in from the lower
+ * right, as in the reference photo).
  *
  * The old calls (`setBrushTransform`, `setSurface`, `pressure`,
  * `isContacting`) still work: they fill the pose internally (velocity,
@@ -62,13 +65,15 @@ const RIG = Object.freeze({
   hoverLift: 0.25,         // x L: tips above the point while hovering
   viewBlend: 0.65,         // handle "up" = this much view direction + the rest surface normal
   tiltMouse: 55 * DEG,     // handle angle from that up: low, so the bristles show their length
-  tiltTouch: 42 * DEG,     // more upright: clears the finger
+  tiltTouch: 52 * DEG,     // more upright: clears the finger
   minAN: 0.3,              // handle never closer than ~73 deg to the surface normal
-  leanRight: 15 * DEG,     // handle turned from screen-up toward screen-right
+  leanSide: -1,            // the handle's side of the screen: -1 = bottom (the reference: the
+                           // brush comes in from the lower right; the finger comes from the top)
+  leanRight: 40 * DEG,     // handle turned from that side toward screen-right
   leanLead: 0.8,           // ... and pulled toward the motion by up to this (the handle leads, the bristles drag)
-  leanFloor: 0.2,          // never below the screen horizon (finger side)
+  leanFloor: 0.2,          // never past the screen horizon (the finger's side)
   maxSkew: 40 * DEG,       // max angle between the lean and the across-band direction
-  downTurn: 72 * DEG,      // down-screen strokes: the lean turns this much further to the right
+  downTurn: 72 * DEG,      // strokes away from the handle: the lean turns this much further to the right
   downSkew: 40 * DEG,      // ... and may leave the across-band direction this much further
   rightBias: 0.1,          // edge-on strokes put the handle on the screen-right side
   pressDrop: 0.3,          // ferrule comes down by this x L at full pressure
@@ -475,7 +480,7 @@ export class BristleSystem {
     else setTimeout(go, 500);
   }
 
-  /** Set the camera used to lean the handle toward screen-up. */
+  /** Set the camera whose screen the handle leans in (toward the lower right). */
   setCamera(camera) {
     this.camera = camera;
     this._cameraSet = !!camera;
@@ -813,21 +818,23 @@ export class BristleSystem {
     }
     const hw = this._hw;
 
-    // Lean (on screen): up, turned toward screen-right, pulled toward the
-    // motion (the handle leads, the bristles drag behind), then kept within
-    // maxSkew of the across-band direction so the flat face shows. The side
-    // is sticky and the lean spring smooth, so a scrub does not swing it.
+    // Lean (on screen): toward the handle's side (B: screen-down), turned
+    // toward screen-right, pulled toward the motion (the handle leads, the
+    // bristles drag behind), then kept within maxSkew of the across-band
+    // direction so the flat face shows. The side is sticky and the lean
+    // spring smooth, so a scrub does not swing it.
+    const B = up.multiplyScalar(RIG.leanSide);
     const D = this._t2;  // v no longer needed
-    // Down-screen strokes: the hand would sit over the paint with the handle
-    // straight up, and the bristles would be pushed. Turn the handle out to
-    // the upper right instead (up to downTurn), so the ferrule stays level
-    // with or ahead of the tips and the flat face shows.
+    // Strokes away from the handle (up the screen): the hand would sit over
+    // the paint with the handle straight behind, and the bristles would be
+    // pushed. Turn the handle out to the right instead (up to downTurn), so
+    // the ferrule stays level with or ahead of the tips and the flat face shows.
     // Held through brief stalls in contact (touch events arrive in bursts),
     // so the turn does not flicker back between samples.
     let downK = contact ? this._downK : 0;
     if (contact && sat > 0.04) {
       const vx = pose.velocity.x, vy = pose.velocity.y, vz = pose.velocity.z;
-      const vu = vx * up.x + vy * up.y + vz * up.z;
+      const vu = vx * B.x + vy * B.y + vz * B.z;
       const vr = vx * right.x + vy * right.y + vz * right.z;
       const vs = Math.hypot(vu, vr);
       downK = vs > 1e-9 && vu < 0 ? -vu / vs : 0;
@@ -835,7 +842,7 @@ export class BristleSystem {
     this._downK += (downK - this._downK) * (1 - Math.exp(-25 * Math.max(0, dt)));
     const leanA = RIG.leanRight + RIG.downTurn * this._downK;
     this._skew = RIG.maxSkew + RIG.downSkew * this._downK;
-    D.copy(up).multiplyScalar(Math.cos(leanA)).addScaledVector(right, Math.sin(leanA));
+    D.copy(B).multiplyScalar(Math.cos(leanA)).addScaledVector(right, Math.sin(leanA));
     if (contact && speed > 1e-6 && downK < 0.3) {
       const vx = pose.velocity.x, vy = pose.velocity.y, vz = pose.velocity.z;
       const vu = vx * U.x + vy * U.y + vz * U.z;
@@ -847,14 +854,14 @@ export class BristleSystem {
       }
     }
     D.normalize();
-    // never below the horizon of the screen (a finger comes from below)
-    const du = D.dot(up);
+    // never past the horizon of the screen (the finger's side)
+    const du = D.dot(B);
     if (du < RIG.leanFloor) {
       const dr = D.dot(right) >= 0 ? 1 : -1;
-      D.copy(up).multiplyScalar(RIG.leanFloor).addScaledVector(right, dr * Math.sqrt(1 - RIG.leanFloor * RIG.leanFloor));
+      D.copy(B).multiplyScalar(RIG.leanFloor).addScaledVector(right, dr * Math.sqrt(1 - RIG.leanFloor * RIG.leanFloor));
     }
     const Ys = this._t1.copy(Y).addScaledVector(U, -Y.dot(U));
-    if (Ys.lengthSq() < 1e-8) Ys.copy(up);
+    if (Ys.lengthSq() < 1e-8) Ys.copy(B);
     Ys.normalize();
     // Which side of the band the handle sits on: the one D points to, with
     // a bias to screen-right (ties on edge-on strokes go right) and hysteresis.

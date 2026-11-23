@@ -34,6 +34,26 @@ const RIM_INTENSITY = 0.55;
 const FOCUS_FILL = 0.64;
 const FOCUS_FILL_COARSE = 0.70;
 const COARSE = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+// The focused nail is centred in the band the HUD leaves free (CSS px):
+// [top, bottom] reserved at the top (bubble, stars, finger dots / finger map)
+// and at the bottom (bottle tray, and the finger dots above it in portrait).
+// Matches styles/game.css and styles/pan.css layouts.
+function focusBand(w, h, out) {
+    if (w < h) { out[0] = 150; out[1] = 230; }          // portrait
+    else if (h <= 420) { out[0] = 58; out[1] = 70; }    // small landscape
+    else { out[0] = 58; out[1] = 96; }                  // landscape
+    // never more than a third of the screen each
+    out[0] = Math.min(out[0], h / 3);
+    out[1] = Math.min(out[1], h / 3);
+    return out;
+}
+// Finger rail (smart pan): the hand order on the rail, and how far the camera
+// backs off between two fingers (x focus distance) so the next one shows sooner.
+const RAIL = Object.freeze(['thumb', 'index', 'middle', 'ring', 'pinky']);
+const RAIL_BULGE = 0.22;
+const WORLD_UP = Object.freeze(new THREE.Vector3(0, 1, 0));
+/** A camera pose: position, look-at target, up (unit), focus distance. */
+const makePose = () => ({ pos: new THREE.Vector3(), target: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), d: 0.5, ok: false });
 // The idle warm-up of other-tier variants starts this long after load.
 const WARM_DELAY_MS = 3500;
 
@@ -58,6 +78,11 @@ export class NailScene {
         this.targetCameraPos = new THREE.Vector3();
         this.startTarget = new THREE.Vector3();
         this.targetTarget = new THREE.Vector3();
+        // The camera's up vector is animated too (the close-up is rolled so
+        // the nail points down the screen): eased around the view axis.
+        this.startUp = new THREE.Vector3(0, 1, 0);
+        this.targetUp = new THREE.Vector3(0, 1, 0);
+        this._rollAxis = new THREE.Vector3();
 
         // Default camera state - frontal view looking down at nail
         this.defaultCameraPos = new THREE.Vector3(0, 1.5, 0.3);
@@ -85,6 +110,22 @@ export class NailScene {
         this._warmQueued = false;
         this.cameraHeld = false;
 
+        // Finger rail: one focus pose per finger of the shown hand, and the
+        // path through them, pose to pose (src/features/fingerPan.feature.js drives it).
+        this._railPoses = RAIL.map(() => makePose());
+        this._railReady = false;
+        this.railS = -1;              // where the camera sits on the rail (finger index, fractional), -1 = off
+        this._railGlide = false;      // a rail glide is running (isAnimating too)
+        this._glide = { s0: 0, s1: 0, v0: 0, t: 0, T: 0.35 };
+        this._railBlend = { w: 0, t0: 0, T: 220, pos: new THREE.Vector3(), target: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) };
+        this._pose = makePose();
+        this._band = [0, 0];
+        this._poseB = makePose();
+        this._fp = { c: new THREE.Vector3(), a: new THREE.Vector3(), s: new THREE.Vector3(), n: new THREE.Vector3(), v: new THREE.Vector3() };
+        this.onRailSettle = null;     // (finger) => void, when a rail glide lands
+        this.onRailGlide = null;      // () => void, when a rail glide starts
+        this._flightFocus = false;    // the flight in progress ends on a nail's focus pose
+
         this.init();
         this.setupLighting();
         this.setupSalon();
@@ -102,7 +143,8 @@ export class NailScene {
         this.scene.background = null;
         this.clearColor = new THREE.Color(0xDCD0E4);
 
-        this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
+        // near 0.04: the pinky's close-up sits ~0.14 from its nail, the brush handle closer
+        this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.04, 1000);
         this.camera.position.set(0, 1.5, 0.3);
         this.camera.lookAt(0, 0, 0);
 
@@ -515,12 +557,16 @@ export class NailScene {
         this.camera.aspect = this.width / this.height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(this.width, this.height);
+        // Focus distances depend on the aspect: rebuild the rail on next use.
+        this._railReady = false;
         if (this.isZoomedIn && this.zoomedFinger && !this.cameraHeld) {
             // Re-frame the focused nail for the new aspect (no animation).
             this._focusTargets(this._focusPos, this.zoomedFinger);
             if (!this.isAnimating) {
                 this.camera.position.copy(this.targetCameraPos);
                 this.controls.target.copy(this.targetTarget);
+                this.camera.up.copy(this.targetUp);
+                this.camera.lookAt(this.controls.target);
             }
         }
         this.invalidate();
@@ -531,8 +577,14 @@ export class NailScene {
      * @param {number} dt seconds
      */
     update(dt) {
+        if (!this.isAnimating) this._railGlide = false;
         if (this.isAnimating) {
-            this.updateCameraAnimation(dt);
+            if (this._railGlide) this._stepGlide(dt);
+            else this.updateCameraAnimation(dt);
+            this.invalidate();
+        } else if (this._railBlend.w > 0 && !this.cameraHeld && this.railS >= 0) {
+            // a drag that grabbed the camera off the rail: fade the offset out
+            this._applyRail(this.railS);
             this.invalidate();
         }
         // update() returns true while damping is still moving the camera.
@@ -564,6 +616,56 @@ export class NailScene {
     }
 
     /**
+     * Rotate unit `a` toward unit `b` by fraction t, about their common
+     * normal (about the view axis when they are opposite): a roll, never a
+     * flip through the screen. Writes `out` (may be `a`).
+     */
+    rollToward(a, b, t, out) {
+        const dot = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y + a.z * b.z));
+        const ang = Math.acos(dot);
+        if (ang < 1e-5 || t >= 1) return out.copy(b);
+        const axis = this._rollAxis.crossVectors(a, b);
+        if (axis.lengthSq() < 1e-10) this.camera.getWorldDirection(axis);
+        axis.normalize();
+        return out.copy(a).applyAxisAngle(axis, ang * t);
+    }
+
+    /**
+     * The screen-up a plain lookAt (world +Y up) gives a camera at `pos`
+     * looking at `target`, as a unit vector across the view. Writes `out`.
+     */
+    naturalUp(pos, target, out) {
+        const v = this._camDir.subVectors(target, pos).normalize();
+        out.copy(WORLD_UP).addScaledVector(v, -v.y);
+        if (out.lengthSq() < 1e-8) out.set(0, 0, -1);
+        return out.normalize();
+    }
+
+    /**
+     * Start a flight from the current camera to targetCameraPos /
+     * targetTarget, rolling the up vector to `up` (default: the target's
+     * natural up). Used by the nail focus, zoom-out and the swirl bowl.
+     * @param {THREE.Vector3} [up]
+     * @param {number} [duration] seconds
+     */
+    beginFlight(up = null, duration = 0.5, focus = false) {
+        // only a flight to a nail's focus pose lands on the finger rail
+        this._flightFocus = focus;
+        this.railS = -1;
+        this.startCameraPos.copy(this.camera.position);
+        this.startTarget.copy(this.controls.target);
+        this.startUp.copy(this.camera.up).normalize();
+        if (up) this.targetUp.copy(up).normalize();
+        else this.naturalUp(this.targetCameraPos, this.targetTarget, this.targetUp);
+        this.animationDuration = duration;
+        this.animationProgress = 0;
+        this.isAnimating = true;
+        this._railGlide = false;
+        this._railBlend.w = 0;
+        this.invalidate();
+    }
+
+    /**
      * Update camera animation using smooth easing
      * @param {number} dt seconds
      */
@@ -577,6 +679,8 @@ export class NailScene {
         const t = 1 - Math.pow(1 - this.animationProgress, 3);
         this.camera.position.lerpVectors(this.startCameraPos, this.targetCameraPos, t);
         this.controls.target.lerpVectors(this.startTarget, this.targetTarget, t);
+        this.rollToward(this.startUp, this.targetUp, t, this.camera.up);
+        if (!this.isAnimating && this._flightFocus && this.isZoomedIn && this.zoomedFinger) this.railS = RAIL.indexOf(this.zoomedFinger);
     }
 
     /**
@@ -585,43 +689,337 @@ export class NailScene {
      * @param {string} finger - Finger identifier for tracking
      */
     focusOnPosition(position, finger) {
-        this.startCameraPos.copy(this.camera.position);
-        this.startTarget.copy(this.controls.target);
+        const from = this.zoomedFinger;
+        const wasIn = this.isZoomedIn && !this.cameraHeld;
         this._focusPos.copy(position);
         this._focusTargets(position, finger);
-
-        this.animationProgress = 0;
-        this.isAnimating = true;
         this.isZoomedIn = true;
         this.zoomedFinger = finger;
         this.controls.maxDistance = 1.5;
-        this.invalidate();
+        // From one finger of this hand to another: glide along the fingertip
+        // row (the same path a pan takes), else fly straight.
+        const i1 = RAIL.indexOf(finger);
+        const s0 = this.railS;
+        this._railReady = false; // the hand may have moved since the last build
+        if (wasIn && from && from !== finger && i1 >= 0 && s0 >= 0 && !this.isAnimating && this._buildRail()) {
+            this.railGlideTo(i1, 0);
+            return;
+        }
+        this.beginFlight(this.targetUp, 0.5, true);
     }
 
     /**
-     * Camera distance from the nail's size and the viewport's aspect, so the
-     * focused nail fills FOCUS_FILL of the short side in landscape and
-     * portrait alike. The nail stays centred, clear of the top-left bubble.
+     * The close-up pose for one nail of the shown hand: looking at the nail
+     * face-on (along its normal), rolled so the finger runs down the screen
+     * (cuticle up, free edge down, like a manicurist's view), at the distance
+     * where its long side fills FOCUS_FILL of the screen's short side.
+     * @param {string} finger
+     * @param {{pos, target, up, d, ok}} out
+     * @param {number} [aspect]
      */
-    _focusTargets(position, finger) {
-        let size = 0.1;
+    focusPose(finger, out, aspect = this.width / Math.max(1, this.height)) {
+        out.ok = false;
         const hm = this.handModel;
         const rec = hm && finger ? hm.getNail(hm.getCurrentHand(), finger) : null;
-        if (rec) {
-            rec.mesh.updateWorldMatrix(true, false);
-            if (!rec.mesh.geometry.boundingBox) rec.mesh.geometry.computeBoundingBox();
-            this._box.copy(rec.mesh.geometry.boundingBox).applyMatrix4(rec.mesh.matrixWorld);
-            size = Math.max(this._box.max.x - this._box.min.x, this._box.max.z - this._box.min.z) || size;
+        if (!rec || !rec.mesh || !rec.material || !rec.material.uniforms.uNailAxis) return out;
+        const f = this._fp;
+        const mesh = rec.mesh;
+        mesh.updateWorldMatrix(true, false);
+        const u = rec.material.uniforms;
+        const half = u.uNailHalf.value;
+        // the nail's visual middle along its axis (the frame centre is the
+        // vertex mean, which sits nearer the cuticle on most nails): cached
+        if (rec.focusMid === undefined) {
+            const pos = mesh.geometry.attributes.position;
+            const ax = u.uNailAxis.value, c0 = u.uNailCentre.value;
+            let lo = Infinity, hi = -Infinity;
+            for (let i = 0; i < pos.count; i++) {
+                const t = (pos.getX(i) - c0.x) * ax.x + (pos.getY(i) - c0.y) * ax.y + (pos.getZ(i) - c0.z) * ax.z;
+                if (t < lo) lo = t;
+                if (t > hi) hi = t;
+            }
+            rec.focusMid = isFinite(lo) ? (lo + hi) * 0.5 : 0;
+        }
+        const C = f.c.copy(u.uNailAxis.value).multiplyScalar(rec.focusMid).add(u.uNailCentre.value).applyMatrix4(mesh.matrixWorld);
+        // world half extents along the axis and across (mesh scale may be mirrored)
+        const C0 = f.s.copy(u.uNailCentre.value).applyMatrix4(mesh.matrixWorld);
+        const halfL = f.v.copy(u.uNailAxis.value).multiplyScalar(half.x).add(u.uNailCentre.value).applyMatrix4(mesh.matrixWorld).distanceTo(C0);
+        const halfW = f.v.copy(u.uNailSide.value).multiplyScalar(half.y).add(u.uNailCentre.value).applyMatrix4(mesh.matrixWorld).distanceTo(C0);
+        const A = f.a.copy(u.uNailAxis.value).transformDirection(mesh.matrixWorld);
+        const S = f.s.copy(u.uNailSide.value).transformDirection(mesh.matrixWorld);
+        const N = f.n.crossVectors(A, S);
+        if (N.lengthSq() < 1e-10) N.set(0, 1, 0);
+        N.normalize();
+        if (N.y < 0) N.negate();
+        // cuticle direction across the view = screen up
+        A.addScaledVector(N, -A.dot(N));
+        if (A.lengthSq() < 1e-10) A.set(1, 0, 0).addScaledVector(N, -N.x);
+        A.normalize();
+        const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+        const fill = COARSE ? FOCUS_FILL_COARSE : FOCUS_FILL;
+        const size = 2 * Math.max(halfL, halfW) || 0.1;
+        const d = THREE.MathUtils.clamp(size / (fill * 2 * tanHalf * Math.min(1, aspect)), 0.1, 1.2);
+        // centre the nail in the band the HUD leaves free: look a little
+        // below (or above) it by that band's offset from the screen centre
+        const band = focusBand(this.width, this.height, this._band);
+        const raise = (band[1] - band[0]) / (2 * Math.max(1, this.height));
+        out.target.copy(C).addScaledVector(A, -raise * 2 * d * tanHalf);
+        out.pos.copy(out.target).addScaledVector(N, d);
+        out.up.copy(A);
+        out.d = d;
+        out.ok = true;
+        return out;
+    }
+
+    /**
+     * Camera targets for the focused nail (see focusPose). Falls back to the
+     * old straight-down view when the nail has no frame.
+     */
+    _focusTargets(position, finger) {
+        const pose = this.focusPose(finger, this._pose);
+        if (pose.ok) {
+            this.targetTarget.copy(pose.target);
+            this.targetCameraPos.copy(pose.pos);
+            this.targetUp.copy(pose.up);
+            this.controls.minDistance = Math.min(0.2, pose.d * 0.7);
+            return;
         }
         const aspect = this.width / Math.max(1, this.height);
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
         const fill = COARSE ? FOCUS_FILL_COARSE : FOCUS_FILL;
-        const d = THREE.MathUtils.clamp(size / (fill * 2 * tanHalf * Math.min(1, aspect)), 0.18, 1.2);
-        // Same viewing direction as always (from above, slightly toward +z).
+        const d = THREE.MathUtils.clamp(0.1 / (fill * 2 * tanHalf * Math.min(1, aspect)), 0.18, 1.2);
         const k = d / 0.541;
         this.targetTarget.set(position.x, position.y - 0.03 * k, position.z - 0.03 * k);
         this.targetCameraPos.set(position.x, position.y + 0.5 * k, position.z + 0.08 * k);
+        this.naturalUp(this.targetCameraPos, this.targetTarget, this.targetUp);
         this.controls.minDistance = Math.min(0.2, d * 0.7);
+    }
+
+    // ------------------------------------------------------------ rail --
+
+    /** The rail's finger order (thumb .. pinky). */
+    get railFingers() {
+        return RAIL;
+    }
+
+    /** Focus poses of every nail of the shown hand (at this aspect). */
+    _buildRail() {
+        if (this._railReady) return true;
+        let n = 0;
+        for (let i = 0; i < RAIL.length; i++) {
+            const p = this.focusPose(RAIL[i], this._railPoses[i]);
+            if (p.ok) n++;
+        }
+        // every finger must have a pose (the hand models have all five)
+        this._railReady = n === RAIL.length;
+        return this._railReady;
+    }
+
+    /** Forget the cached poses (the hand moved or changed). */
+    invalidateRail() {
+        this._railReady = false;
+    }
+
+    /**
+     * Camera pose at rail position s (0 = thumb .. 4 = pinky; fractional
+     * between fingers, past the ends extrapolated for the rubber band).
+     * Between two neighbouring fingers the pose is blended from their focus
+     * poses: the look-at point slides from one nail to the next (so the row
+     * of fingertips is followed finger to finger, wherever the thumb sits),
+     * the view direction and distance blend, the up vector rolls from one
+     * finger's axis to the other's, and the camera backs off a little half
+     * way so the next finger shows sooner. On a finger it is exactly that
+     * finger's focus pose.
+     */
+    railPose(s, out) {
+        out.ok = false;
+        if (!this._buildRail()) return out;
+        const P = this._railPoses;
+        const last = P.length - 1;
+        const sc = Math.max(0, Math.min(last, s));
+        const i = Math.min(last - 1, Math.floor(sc));
+        const t = sc - i;
+        const b = P[i], c = P[i + 1];
+        out.target.lerpVectors(b.target, c.target, t);
+        this.rollToward(b.up, c.up, t, out.up);
+        // view direction (pos - target) blended, distance blended, plus the bulge
+        const v = this._fp.v;
+        v.subVectors(b.pos, b.target).multiplyScalar(1 - t);
+        out.pos.subVectors(c.pos, c.target).multiplyScalar(t).add(v);
+        const dist = b.d + (c.d - b.d) * t;
+        const bulge = 1 + RAIL_BULGE * Math.sin(Math.PI * t);
+        out.pos.normalize().multiplyScalar(dist * bulge).add(out.target);
+        out.d = dist * bulge;
+        // past an end: slide on along the end segment (rubber band)
+        if (s < 0 || s > last) {
+            const e0 = s < 0 ? P[0] : P[last], e1 = s < 0 ? P[1] : P[last - 1];
+            const k = s < 0 ? -s : s - last;
+            v.subVectors(e0.target, e1.target);
+            out.target.addScaledVector(v, k);
+            out.pos.addScaledVector(v, k);
+        }
+        out.ok = true;
+        return out;
+    }
+
+    /**
+     * Where world point `P` would show on screen (CSS px, canvas-relative)
+     * with the camera at rail position s. Writes [x, y] into `out`; returns
+     * false when the rail is not ready or P is behind that camera.
+     */
+    railScreenOf(s, P, out) {
+        const pose = this.railPose(s, this._poseB);
+        if (!pose.ok) return false;
+        let c = this._railCam;
+        if (!c) c = this._railCam = this.camera.clone();
+        c.projectionMatrix.copy(this.camera.projectionMatrix);
+        c.position.copy(pose.pos);
+        c.up.copy(pose.up);
+        c.lookAt(pose.target);
+        c.updateMatrixWorld(true);
+        const v = this._fp.v.copy(P).project(c);
+        if (v.z > 1) return false;
+        out[0] = (v.x + 1) * 0.5 * this.width;
+        out[1] = (1 - v.y) * 0.5 * this.height;
+        return true;
+    }
+
+    /**
+     * The world point under canvas pixel (x, y), on the plane through the
+     * look-at target facing the camera: what a pan drag holds on to.
+     */
+    pickPanPoint(x, y, out) {
+        this._mouse.set((x / Math.max(1, this.width)) * 2 - 1, -(y / Math.max(1, this.height)) * 2 + 1);
+        this._raycaster.setFromCamera(this._mouse, this.camera);
+        const r = this._raycaster.ray;
+        const n = this.camera.getWorldDirection(this._camDir);
+        const den = r.direction.dot(n);
+        if (Math.abs(den) < 1e-6) return false;
+        const t = this._fp.v.subVectors(this.controls.target, r.origin).dot(n) / den;
+        out.copy(r.origin).addScaledVector(r.direction, t);
+        return true;
+    }
+
+    /** Put the camera at rail position s now (a drag). */
+    railSet(s) {
+        if (!this._buildRail()) return false;
+        this.isAnimating = false;
+        this._railGlide = false;
+        this.railS = s;
+        this._applyRail(s);
+        this.invalidate();
+        return true;
+    }
+
+    /**
+     * Start a drag on the rail at s from wherever the camera is: the gap to
+     * the rail pose fades out over ~0.2 s, so nothing jumps.
+     */
+    railGrab(s) {
+        if (!this._buildRail()) return false;
+        this.isAnimating = false;
+        this._railGlide = false;
+        const pose = this.railPose(s, this._poseB);
+        const bl = this._railBlend;
+        bl.pos.subVectors(this.camera.position, pose.pos);
+        bl.target.subVectors(this.controls.target, pose.target);
+        bl.up.copy(this.camera.up).normalize();
+        bl.w = bl.pos.lengthSq() + bl.target.lengthSq() > 1e-10 || bl.up.dot(pose.up) < 0.99999 ? 1 : 0;
+        bl.t0 = performance.now();
+        this.railS = s;
+        this.controls.minDistance = 0.05;
+        return true;
+    }
+
+    _applyRail(s) {
+        const pose = this.railPose(s, this._poseB);
+        if (!pose.ok) return;
+        const cam = this.camera;
+        cam.position.copy(pose.pos);
+        this.controls.target.copy(pose.target);
+        cam.up.copy(pose.up);
+        const bl = this._railBlend;
+        if (bl.w > 0) {
+            const k = Math.max(0, 1 - (performance.now() - bl.t0) / bl.T);
+            bl.w = k * k * (3 - 2 * k);
+            cam.position.addScaledVector(bl.pos, bl.w);
+            this.controls.target.addScaledVector(bl.target, bl.w);
+            this.rollToward(pose.up, bl.up, bl.w, cam.up);
+        }
+        cam.lookAt(this.controls.target);
+    }
+
+    /**
+     * Glide along the rail to finger index `to`, starting with rail speed
+     * `v0` (fingers per second, a flick), landing still in about 0.35 s
+     * (longer for a longer trip). Cubic Hermite: the flick carries on,
+     * the landing is soft.
+     */
+    railGlideTo(to, v0 = 0) {
+        if (!this._buildRail()) return false;
+        const g = this._glide;
+        const from = this.railS >= 0 ? this.railS : to;
+        // whatever gap there is between the camera and the rail fades out
+        this.railGrab(from);
+        g.s0 = from;
+        g.s1 = to;
+        g.v0 = v0;
+        g.t = 0;
+        g.T = Math.min(0.7, 0.35 + 0.1 * Math.max(0, Math.abs(to - from) - 1));
+        this._railGlide = true;
+        this.isAnimating = true;
+        this.controls.minDistance = 0.05;
+        this.invalidate();
+        if (this.onRailGlide) this.onRailGlide();
+        return true;
+    }
+
+    _stepGlide(dt) {
+        const g = this._glide;
+        g.t = Math.min(g.T, g.t + dt);
+        const x = g.t / g.T;
+        const x2 = x * x, x3 = x2 * x;
+        // Hermite: p0 = s0, m0 = v0 T, p1 = s1, m1 = 0
+        const s = (2 * x3 - 3 * x2 + 1) * g.s0 + (x3 - 2 * x2 + x) * g.v0 * g.T + (-2 * x3 + 3 * x2) * g.s1;
+        this.railS = s;
+        this._applyRail(s);
+        if (g.t >= g.T) this._settleRail(g.s1);
+    }
+
+    /** The glide landed on finger index i: exactly the focus framing. */
+    _settleRail(i) {
+        this._railGlide = false;
+        this.isAnimating = false;
+        this._railBlend.w = 0;
+        this.railS = i;
+        const finger = RAIL[i];
+        const pose = this._railPoses[i];
+        this.camera.position.copy(pose.pos);
+        this.controls.target.copy(pose.target);
+        this.camera.up.copy(pose.up);
+        this.camera.lookAt(pose.target);
+        this.targetCameraPos.copy(pose.pos);
+        this.targetTarget.copy(pose.target);
+        this.targetUp.copy(pose.up);
+        this.controls.minDistance = Math.min(0.2, pose.d * 0.7);
+        this.isZoomedIn = true;
+        this.zoomedFinger = finger;
+        const hm = this.handModel;
+        if (hm) hm.getNailWorldPosition(finger, this._focusPos);
+        this.invalidate();
+        if (this.onRailSettle) this.onRailSettle(finger);
+    }
+
+    /** Stop a rail glide or drag where it is (the reveal, the bowl). */
+    cancelRail() {
+        if (this._railGlide) this.isAnimating = false;
+        this._railGlide = false;
+        this._railBlend.w = 0;
+    }
+
+    /** True while a rail glide runs. */
+    isRailGliding() {
+        return this._railGlide && this.isAnimating;
     }
 
     /**
@@ -629,17 +1027,14 @@ export class NailScene {
      */
     zoomOut() {
         if (!this.isZoomedIn) return;
-        this.startCameraPos.copy(this.camera.position);
-        this.startTarget.copy(this.controls.target);
         this.targetCameraPos.copy(this.defaultCameraPos);
         this.targetTarget.copy(this.defaultTarget);
-        this.animationProgress = 0;
-        this.isAnimating = true;
         this.isZoomedIn = false;
         this.zoomedFinger = null;
+        this.railS = -1;
         this.controls.minDistance = 0.5;
         this.controls.maxDistance = 3.0;
-        this.invalidate();
+        this.beginFlight(null, 0.6);
     }
 
     getIsZoomedIn() {
