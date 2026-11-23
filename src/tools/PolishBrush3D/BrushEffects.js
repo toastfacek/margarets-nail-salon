@@ -1,6 +1,9 @@
 /**
  * BrushEffects.js
- * Polish droplets that flick off fast strokes.
+ * Polish droplets that flick off the brush: only on a fast flick off the
+ * nail's free edge or a hard reversal (the stroke engine decides, at most 3
+ * per stroke), thrown from the bristle tip line along the motion, and they
+ * fall onto the desk and stay there a moment (no drops hanging in the air).
  *
  * Cheap by construction:
  * - One THREE.Points draw for every droplet (a pool sized for the highest
@@ -15,8 +18,8 @@
 import * as THREE from 'three';
 
 const POOL = 48;              // highest tier's brushParticles
-const LIFE = 0.5;             // seconds (per-droplet jitter in the shader)
-const GRAVITY = -0.6;         // world units / s^2 (a nail is ~0.07 units wide)
+const LIFE = 1.1;             // seconds (per-droplet jitter in the shader)
+const GRAVITY = -2.4;         // world units / s^2 (a nail is ~0.07 units wide)
 const SIZE = 0.007;           // world-space droplet diameter
 const SPEED_START = 0.9;      // UV/s: slower strokes flick nothing
 const RATE_PER_SPEED = 9;     // droplets per second per UV/s above SPEED_START
@@ -27,6 +30,7 @@ const vertexShader = /* glsl */ `
 uniform float uTime;
 uniform float uScale;
 uniform float uSize;
+uniform float uFloor;
 attribute vec3 aVelocity;
 attribute float aSeed;
 attribute float aBirth;
@@ -44,11 +48,14 @@ void main() {
   // light air drag on the throw, then gravity
   vec3 p = position + aVelocity * (1.0 - exp(-2.5 * age)) / 2.5;
   p.y += ${GRAVITY.toFixed(3)} * 0.5 * age * age;
+  // lands on the desk and stays there (flattened a little)
+  float landed = step(p.y, uFloor);
+  p.y = max(p.y, uFloor + 0.0008);
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
-  float s = uSize * (0.55 + 0.9 * fract(aSeed * 3.17)) * (1.0 - 0.45 * t);
+  float s = uSize * (0.55 + 0.9 * fract(aSeed * 3.17)) * (1.0 + 0.25 * landed);
   gl_PointSize = max(1.0, s * uScale / -mv.z);
-  vAlpha = 1.0 - smoothstep(0.6, 1.0, t);
+  vAlpha = 1.0 - smoothstep(0.75, 1.0, t);
 }
 `;
 
@@ -81,6 +88,7 @@ export class BrushEffects {
     this._lastDeath = -1;     // time after which nothing is alive (-1: nothing alive)
     this._next = 0;
     this._budget = 0;         // fractional droplets owed by the rate limiter
+    this._p = new THREE.Vector3();
 
     const geometry = new THREE.BufferGeometry();
     this._start = new THREE.BufferAttribute(new Float32Array(POOL * 3), 3);
@@ -106,6 +114,7 @@ export class BrushEffects {
         uTime: { value: 0 },
         uScale: { value: 400 },
         uSize: { value: SIZE },
+        uFloor: { value: -10 },
         uColor: { value: new THREE.Color(1, 0.16, 0.43) },
         uGlint: { value: 1 },
       },
@@ -138,6 +147,11 @@ export class BrushEffects {
     c.convertLinearToSRGB();
   }
 
+  /** World height of the desk the droplets land on. */
+  setFloor(y) {
+    this.material.uniforms.uFloor.value = y;
+  }
+
   /** Tier settings: droplet cap and glint. */
   setQuality(settings) {
     if (!settings) return;
@@ -147,7 +161,27 @@ export class BrushEffects {
   }
 
   /**
-   * Flick droplets from the stroke, rate-limited by stroke speed.
+   * A flick: n droplets thrown from the bristle tip line (centre `point`,
+   * along `axis` by up to `halfWidth`) with the stroke's world velocity.
+   * @param {THREE.Vector3} point
+   * @param {THREE.Vector3} normal
+   * @param {THREE.Vector3} axis
+   * @param {number} halfWidth world units
+   * @param {THREE.Vector3} worldVel
+   * @param {number} n
+   */
+  emitFlick(point, normal, axis, halfWidth, worldVel, n) {
+    if (!this.visible || n <= 0) return;
+    const p = this._p;
+    for (let i = 0; i < n; i++) {
+      const k = (Math.random() * 2 - 1) * halfWidth * 0.8;
+      p.copy(point).addScaledVector(axis, k).addScaledVector(normal, 0.002);
+      this._spawn(p, normal, worldVel);
+    }
+  }
+
+  /**
+   * Flick droplets from the stroke, rate-limited by stroke speed (legacy).
    * @param {Array} contacts BristleSystem contact pool
    * @param {number} contactCount live entries in `contacts`
    * @param {number} speed stroke speed in UV per second
@@ -189,10 +223,10 @@ export class BrushEffects {
     let vy = (Math.random() - 0.5) * 0.12 + normal.y * 0.1;
     let vz = (Math.random() - 0.5) * 0.12 + normal.z * 0.1;
     if (worldVel) {
-      // thrown along the stroke
-      vx += worldVel.x * 0.55;
-      vy += worldVel.y * 0.55;
-      vz += worldVel.z * 0.55;
+      // thrown along the stroke, a little up
+      vx += worldVel.x * 0.5;
+      vy += worldVel.y * 0.5 + 0.12;
+      vz += worldVel.z * 0.5;
     }
     const s = this._start.array;
     const v = this._vel.array;

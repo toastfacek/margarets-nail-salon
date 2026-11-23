@@ -3,6 +3,8 @@
  * Makes every stroke answer back:
  *   - sparkle burst + glitter sweep the first time a nail crosses 90% coverage
  *   - wet shine that sets to tacky (PolishBrush3D.wetCure), cured by the dryer
+ *     (the stroke's own fresh gloss comes from the polish film, brush plan B5)
+ *   - flicked droplets land on the desk (BrushEffects floor)
  *   - the dryer: a big UV-lamp icon button, press and hold to cure the nail
  *   - decoration pops (sparkles for stickers and gems, gem pop-in)
  *   - the coverage meter shows the active nail's own coverage
@@ -279,6 +281,11 @@ export function install(app) {
   const markDryer = () => { dryerDirty = true; };
   events.on(EVENTS.NAIL_COVERAGE, markDryer);
   events.on(EVENTS.BRUSH_STROKE_START, markDryer);
+  // flicked droplets land on the desk (its height is known once the scene is laid out)
+  events.on(EVENTS.BRUSH_STROKE_START, () => {
+    const desk = app.scene.backdrop && app.scene.backdrop.desk;
+    if (desk) brush.brushEffects.setFloor(desk.position.y);
+  });
   events.on(EVENTS.NAIL_SELECT, () => {
     stopHold();
     dryerDirty = true;

@@ -19,7 +19,7 @@ import { GhostFinger } from '../ui/GhostFinger.js';
 import { RequestBubble } from '../ui/RequestBubble.js';
 import { StarMeter } from '../ui/StarMeter.js';
 import { STICKERS } from '../tools/StickerTool.js';
-import { touchLiftPx, TOUCH_LIFT } from '../tools/PolishBrush3D/BrushInputHandler.js';
+import { TOUCH_NUDGE_PX } from '../tools/PolishBrush3D/BrushInputHandler.js';
 
 export const order = 70;
 
@@ -169,11 +169,9 @@ export function install(app) {
 
   // --------------------------------------------------------------- ghost --
   const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
-  /** Fingertip y for a paint point at y: on touch the brush paints above the finger. */
+  /** Fingertip y for a paint point at y: on touch the paint lands a constant 12 px above the finger. */
   function tipY(g, y) {
-    if (!coarse) return y;
-    const full = Math.min(TOUCH_LIFT.maxPx, TOUCH_LIFT.fraction * (g.bottom - g.top));
-    return y + touchLiftPx(y + full, g.top, g.bottom);
+    return coarse ? y + TOUCH_NUDGE_PX : y;
   }
   let ghostFrom = 0.2;
   let ghostLoops = 0;
@@ -198,9 +196,11 @@ export function install(app) {
   };
 
   // -------------------------------------------------------------- intro --
-  // First ever session: a wet zig-zag stripe over the cuticle-side 40% of
-  // the nail, painted by autoStroke in under a second, brush left resting at
-  // its end. Points are picked on screen and raycast to UV.
+  // First ever session: the brush paints one neat stroke down the middle of
+  // the cuticle-side half of the nail (autoStroke: the same band as a real
+  // stroke), in under a second, and is left resting at its end. The ghost
+  // finger then shows the rest of the stroke. Points are picked on screen and
+  // raycast to UV.
   let introPending = app.mode === 'round' && !store.get('seen.intro', false);
   let path = null;      // [[u, v], ...] or null
   let introT = 0, introSeg = 0, restX = 0, restY = 0;
@@ -211,8 +211,8 @@ export function install(app) {
     const g = nailGeom();
     if (!g) return;
     const uv = [];
-    for (let k = 0; k < 8; k++) {
-      const [x, y] = at(g, k < 7 ? 0.06 + k * 0.06 : 0.42, k < 7 ? (k & 1 ? 0.8 : -0.8) : 0);
+    for (let k = 0; k <= 4; k++) {
+      const [x, y] = at(g, 0.08 + k * 0.09, 0);
       const u = uvAt(x, y);
       if (u) uv.push(u);
       restX = x; restY = y;
@@ -236,8 +236,10 @@ export function install(app) {
     introSeg = k;
     if (p >= n) {
       path = null;
-      // rest the brush at the end of the stripe (a hover, not a press)
-      canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: restX, clientY: restY, pointerType: 'mouse', bubbles: true }));
+      // rest the brush at the end of the stripe (a hover, not a press), on
+      // the event the brush input listens to
+      const type = (brush.inputHandler && brush.inputHandler.eventSource) || 'pointermove';
+      if (!coarse) canvas.dispatchEvent(new PointerEvent(type, { clientX: restX, clientY: restY, pointerType: 'mouse', bubbles: true }));
     }
   }
 

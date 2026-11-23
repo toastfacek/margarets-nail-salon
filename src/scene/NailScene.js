@@ -29,7 +29,11 @@ const HEMI_INTENSITY = 0.85;
 const KEY_INTENSITY = 1.2;
 const RIM_INTENSITY = 0.55;
 // Focused nail: its larger side fills this share of the viewport's short side.
-const FOCUS_FILL = 0.34;
+// A close-up, like the owner's reference (brush plan B6): bigger on touch
+// screens, where the fingertip covers part of the nail.
+const FOCUS_FILL = 0.64;
+const FOCUS_FILL_COARSE = 0.70;
+const COARSE = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 // The idle warm-up of other-tier variants starts this long after load.
 const WARM_DELAY_MS = 3500;
 
@@ -611,7 +615,8 @@ export class NailScene {
         }
         const aspect = this.width / Math.max(1, this.height);
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
-        const d = THREE.MathUtils.clamp(size / (FOCUS_FILL * 2 * tanHalf * Math.min(1, aspect)), 0.18, 1.2);
+        const fill = COARSE ? FOCUS_FILL_COARSE : FOCUS_FILL;
+        const d = THREE.MathUtils.clamp(size / (fill * 2 * tanHalf * Math.min(1, aspect)), 0.18, 1.2);
         // Same viewing direction as always (from above, slightly toward +z).
         const k = d / 0.541;
         this.targetTarget.set(position.x, position.y - 0.03 * k, position.z - 0.03 * k);

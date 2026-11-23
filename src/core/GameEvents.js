@@ -14,6 +14,7 @@ export const EVENTS = Object.freeze({
   BRUSH_STROKE_START: 'brush:strokeStart',
   BRUSH_STROKE: 'brush:stroke',
   BRUSH_STROKE_END: 'brush:strokeEnd',
+  BRUSH_DIP: 'brush:dip', // { color } the brush took fresh polish (re-dip after a lift, or a bottle picked)
   NAIL_COVERAGE: 'nail:coverage',
   NAIL_COVERED: 'nail:covered',
   NAIL_CURED: 'nail:cured',
