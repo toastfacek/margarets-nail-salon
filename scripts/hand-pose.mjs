@@ -30,9 +30,9 @@
 //   P9  desk: no skin vertex below the desk + 0.01 in any library pose
 //   P10 idle cost: 10 s idle on low without ?perf=1 (render on demand): heap
 //       (retained, after a forced GC) <= +0.3 MB, rendered frames <= 21 per second
-//   P11 motion feel (MOTION in src/scene/HandPoses.js): a knuckle step
-//       overshoots >= 5% with the brush up (springy) and <= 1% with the
-//       brush down (firm), settling within 250 ms
+//   P11 motion feel (MOTION in src/scene/HandPoses.js, the chosen preset): a
+//       knuckle step overshoots >= 5% with the brush up and <= 1% with the
+//       brush down, where it also settles faster
 // Exits 1 when a gated check fails.
 import fs from 'fs';
 import path from 'path';
@@ -266,11 +266,12 @@ await settle(page);
     for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
       H.presentFinger(f);
       const t0 = performance.now();
-      let bad = 0, ms = null;
-      while (performance.now() - t0 < 2000) {
+      let bad = 0, ms = null, moving = false;
+      while (performance.now() - t0 < 5000) {
         await new Promise((res) => requestAnimationFrame(res));
         bad = Math.max(bad, __hp.limitsOk().bad);
-        if (H.settled) { ms = performance.now() - t0; break; }
+        if (!H.settled) moving = true;
+        else if (moving) { ms = performance.now() - t0; break; }
       }
       out[f] = { ms: ms === null ? null : Math.round(ms), bad };
     }
@@ -411,12 +412,13 @@ await toFinger(page, 'index');
       const a0 = H.rig.applied[15];
       H.presentFinger('middle', { ms: 0 });
       const t0 = performance.now();
-      let peak = a0, settle = null, a1 = null;
-      while (performance.now() - t0 < 1500) {
+      let peak = a0, settle = null, a1 = null, moving = false;
+      while (performance.now() - t0 < 5000) {
         await new Promise((res) => requestAnimationFrame(res));
         const a = H.rig.applied[15];
         peak = Math.max(peak, a);
-        if (H.settled && settle === null) { settle = performance.now() - t0; a1 = a; }
+        if (!H.settled) moving = true;
+        else if (moving && settle === null) { settle = performance.now() - t0; a1 = a; }
       }
       a1 = H.rig.applied[15];
       H.setStroke(false);
@@ -427,8 +429,9 @@ await toFinger(page, 'index');
     const firm = await step(true);
     return { springy, firm };
   });
-  add('P11', 'springy (brush up): knuckle step overshoot (fraction), settle ms', `${r.springy.overshoot.toFixed(3)}, ${Math.round(r.springy.settle)}`, '>= 0.05', r.springy.overshoot >= 0.05);
-  add('P11', 'firm (brush down): knuckle step overshoot (fraction), settle ms', `${r.firm.overshoot.toFixed(3)}, ${Math.round(r.firm.settle)}`, '<= 0.01, <= 250', r.firm.overshoot <= 0.01 && r.firm.settle !== null && r.firm.settle <= 250);
+  const feel = await page.evaluate(() => app.hand.motion.preset);
+  add('P11', `${feel}, brush up: knuckle step overshoot (fraction), settle ms`, `${r.springy.overshoot.toFixed(3)}, ${Math.round(r.springy.settle)}`, '>= 0.05 (springy)', r.springy.overshoot >= 0.05);
+  add('P11', `${feel}, brush down: knuckle step overshoot (fraction), settle ms`, `${r.firm.overshoot.toFixed(3)}, ${Math.round(r.firm.settle)}`, '<= 0.01, faster than up', r.firm.overshoot <= 0.01 && r.firm.settle !== null && (r.springy.settle === null || r.firm.settle < r.springy.settle));
   await settle(page);
 }
 

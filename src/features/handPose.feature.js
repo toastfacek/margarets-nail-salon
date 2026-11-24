@@ -37,6 +37,11 @@ export function install(app) {
   let reduced = false;
   try { reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { reduced = false; }
   hand.setIdle(reduced ? 0 : 1);
+  // A/B the animation styles: ?handfeel=softpop|snappyjelly|cartoon|jelly
+  try {
+    const feel = new URLSearchParams(window.location.search).get('handfeel');
+    if (feel && hand.motion.presets[feel]) hand.motion.preset = feel;
+  } catch (e) { /* default feel */ }
 
   app.loop.add((dt, time) => {
     if (!framed && hand.rig) {

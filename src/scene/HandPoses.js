@@ -65,11 +65,11 @@ export function clampPose(p) {
 /**
  * The thumb's natural rest (Jesse, B9 review): the file's thumb sticks
  * straight out from the hand. At rest it sits beside the index at about
- * 35 degrees, turned a little toward the palm, both joints a little curled,
+ * 30 degrees (animation-tests/thumb-before-after.png), turned a little toward the palm, both joints a little curled,
  * the nail partly sideways. Every pose starts from it (neutral included).
  * [base flex, base spread, base twist, middle joint flex, last joint flex]
  */
-export const THUMB_REST = Object.freeze([6, 32, 4, 8, 10]);
+export const THUMB_REST = Object.freeze([6, 35, 4, 12, 10]);
 
 function thumb(out, t) {
   const b = fingerBase(0) * 3;
@@ -87,7 +87,7 @@ export const PRESENT = Object.freeze({
   // away from the index with its nail turned up (never hyper-extended); while
   // another finger is presented it tucks a little closer
   thumbActive: Object.freeze([2, 20, 18, 4, 5]),
-  thumbOther: Object.freeze([8, 34, 4, 10, 12]),
+  thumbOther: Object.freeze([8, 36, 4, 14, 12]),
 });
 
 /**
@@ -160,30 +160,39 @@ export function writeNamed(name, out) {
 }
 
 /**
- * Motion feel (B9.5, tunable): every joint follows its target through a
- * damped spring. Two named feels, blended by whether the brush is down:
- *   springy  pans, finger changes, the reveal (jelly / cartoon snap)
- *   firm     the brush is on the nail: nearly stiff, so paint never smears
- * Per feel: stiffness (natural frequency, Hz), overshoot (0..1, the first
- * overshoot of a step as a fraction of it; it sets the damping ratio) or
- * damping (ratio; used when overshoot is null). jointScale scales the
- * stiffness per joint level (knuckle, middle, last; palm and wrist use the
- * knuckle's): lower on the outer joints makes the tips trail (jelly).
- * blendMs: how fast the feel moves between springy and firm.
+ * Motion feel (B9.5): the animation-style dials of the hand animation lab
+ * (animation-tests/anim.js PRESETS), solved the same way (its HandRig.simulate):
+ * every joint angle is a damped spring x'' = k (target - x) - 2 zeta sqrt(k) x'.
+ *   stiff   k (1/s^2) of the knuckles; each joint further out is softer by
+ *           (1 - 0.45 lag)^level, so fingertips trail the knuckles
+ *   bounce  knuckle damping: zeta = max(0.08, 1 - bounce (1 - pa))
+ *   tip     the outer joints' damping, the same way
+ *   firm    while the brush is on the nail, pa = firm: k x (1 + pa) and the
+ *           bounce fades, so the hand firms up and paint lands where it touches
+ *   amp     reaction size (the reveal wiggle, the anticipation dip)
+ *   ant     anticipation: a small dip against a pose change before it goes
+ *   life    idle breathing and drift
+ *   lag     see stiff
+ *   squash, boil, fps  the lab's hand squash / line boil / stepped frames:
+ *           not used in the game (the hand does not translate; no stepping)
+ * Pick a preset with MOTION.preset (or ?handfeel=<name>); tune live through
+ * app.hand.motion.presets.softpop.stiff = ...
  */
 export const MOTION = {
-  springy: { stiffness: 6, overshoot: 0.15, damping: null },
-  firm: { stiffness: 16, overshoot: 0, damping: 1.0 },
-  jointScale: [1.0, 0.92, 0.85],
-  blendMs: { toFirm: 60, toSpringy: 400 },
+  preset: 'softpop', // Jesse's pick (Nov 24): Soft jelly pop
+  presets: {
+    softpop: { name: 'Soft jelly pop', stiff: 190, bounce: 0.55, amp: 1.25, ant: 0.6, squash: 0.45, life: 0.9, lag: 0.7, tip: 0.82, boil: 0, firm: 0.9 },
+    snappyjelly: { name: 'Snappy jelly', stiff: 380, bounce: 0.45, amp: 1.4, ant: 0.95, squash: 0.6, life: 0.8, lag: 0.6, tip: 0.78, boil: 0, firm: 1.0 },
+    cartoon: { name: 'Cartoon snap', stiff: 420, bounce: 0.55, amp: 1.55, ant: 1.0, squash: 1.0, life: 0.4, lag: 0.15, tip: 0.55, boil: 0, firm: 0 },
+    jelly: { name: 'Springy jelly', stiff: 70, bounce: 0.75, amp: 1.15, ant: 0.4, squash: 0.5, life: 0.7, lag: 0.7, tip: 0.75, boil: 0, firm: 0 },
+  },
+  // how fast the brush-down firmness comes and goes (the lab ramps over 0.35 s)
+  blendMs: { toFirm: 60, toSpringy: 350 },
 };
 
-/** Damping ratio of a feel. */
-export function dampingOf(feel) {
-  if (feel.overshoot === null || feel.overshoot === undefined) return feel.damping;
-  const o = Math.min(0.95, Math.max(1e-4, feel.overshoot));
-  const l = Math.log(o);
-  return -l / Math.sqrt(Math.PI * Math.PI + l * l);
+/** The current preset's dials. */
+export function feelOf(motion = MOTION) {
+  return motion.presets[motion.preset] || motion.presets.softpop;
 }
 
 /** One-shot wiggle: a 0.6 s wave of knuckle flex, pinky to index, 6 degrees. */

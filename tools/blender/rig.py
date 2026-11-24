@@ -52,7 +52,7 @@ LIMITS = {
 
 # The thumb's natural rest (src/scene/HandPoses.js THUMB_REST): the file's
 # thumb sticks straight out; every game pose starts from this one.
-THUMB_REST = {'thumb.01': (6, 32, 4), 'thumb.02': (8, 0, 0), 'thumb.03': (10, 0, 0)}
+THUMB_REST = {'thumb.01': (6, 35, 4), 'thumb.02': (12, 0, 0), 'thumb.03': (10, 0, 0)}
 
 
 def with_thumb_rest(pose):

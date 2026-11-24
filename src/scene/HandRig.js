@@ -23,12 +23,14 @@
 import * as THREE from 'three';
 import {
   BONES, NB, N3, FINGER_ORDER, fingerBase, LIMITS, clampPose,
-  writePresent, writePresentS, writeNamed, POSE_NAMES, WIGGLE, MOTION, dampingOf,
+  writePresent, writePresentS, writeNamed, POSE_NAMES, WIGGLE, MOTION, feelOf,
 } from './HandPoses.js';
 
 const DEG = Math.PI / 180;
 const EPS = 1e-4;        // degrees: below this a joint has not moved
 const SETTLE = 0.05;     // degrees: `settled` threshold (plan 5.2)
+const ANT_T = 0.12;      // s at ant = 1: how long the anticipation dip holds
+const ANT_DIP = 0.12;    // the dip, as a fraction of the coming change, at ant = 1, amp = 1
 const EASE_T = 0;        // s: camera-driven base changes jump; the joint springs (MOTION) carry the motion
 
 // Press-give (plan 5.3): a damped spring on the active finger's last joint.
@@ -37,7 +39,9 @@ const EASE_T = 0;        // s: camera-driven base changes jump; the joint spring
 // motion; handPose.feature.js also holds the press steady through a stroke.
 const PRESS = Object.freeze({ hz: 9, damping: 0.5, ext: 1.5, roll: 0.6, knuckle: 0.2 });
 // Idle (plan 5.3).
-const IDLE = Object.freeze({ swayHz: 0.25, swayDeg: 0.4, driftDeg: 0.4, strokeScale: 0.2, downT: 0.15, upT: 0.6 });
+// sway / drift are scaled by the feel's life dial; with the brush down idle
+// drops to the lower of strokeScale and the lab's 1 - 0.85 firm
+const IDLE = Object.freeze({ swayHz: 0.31, swayDeg: 0.6, driftDeg: 0.9, strokeScale: 0.2, downT: 0.15, upT: 0.6 });
 
 const NAIL_NAMES = Object.freeze({ thumb: 'Nail_Thumb', index: 'Nail_Index', middle: 'Nail_Middle', ring: 'Nail_Ring', pinky: 'Nail_Pinky' });
 
@@ -202,7 +206,7 @@ export class HandAnimator {
     this._prevTarget = new Float32Array(N3);
     this._firm = 0;            // 0 springy .. 1 firm (the brush is down)
     this._firmTarget = 0;
-    this.motion = MOTION;      // tunable at runtime (app.hand.motion.springy.stiffness = ...)
+    this.motion = MOTION;      // tunable at run time: app.hand.motion.preset = 'cartoon', ...presets.softpop.stiff = 220
     this._withStack = [new Float32Array(N3), new Float32Array(N3), new Float32Array(N3), new Float32Array(N3)];
     this._withDepth = 0;
     this._withTmp = new Float32Array(N3);
@@ -211,6 +215,7 @@ export class HandAnimator {
     this._manualKey = '';
     this._key = '';
     this._ease = 1;             // 0..1 progress of the base ease
+    this._antLeft = 0;          // s left of the anticipation dip
     this._easeT = EASE_T;
 
     // press-give spring (x = 0..1 of the full give), and the roll side
@@ -398,10 +403,17 @@ export class HandAnimator {
     if (key !== this._key) {
       this._from.set(this._base);
       this._ease = this._key === '' ? 1 : 0;
+      // anticipation (the feel's ant dial): a short dip against the change first
+      // (none while the brush is on the nail: the nail must hold still under it)
+      this._antLeft = this._key === '' || this._firmTarget > 0 ? 0 : ANT_T * (feelOf(this.motion).ant || 0);
       this._key = key;
     }
     const base = this._base;
-    if (this._ease < 1) {
+    if (this._antLeft > 0) {
+      this._antLeft -= dt;
+      const a = ANT_DIP * (feelOf(this.motion).ant || 0) * (feelOf(this.motion).amp ?? 1);
+      for (let k = 0; k < N3; k++) base[k] = this._from[k] - (tg[k] - this._from[k]) * a;
+    } else if (this._ease < 1) {
       this._ease = this._easeT > 0 ? Math.min(1, this._ease + dt / this._easeT) : 1;
       const e = this._ease * this._ease * (3 - 2 * this._ease);
       for (let k = 0; k < N3; k++) base[k] = this._from[k] + (tg[k] - this._from[k]) * e;
@@ -447,7 +459,7 @@ export class HandAnimator {
     clampPose(out);
     const moved = rig.apply(out);
     this.changedThisFrame = moved;
-    this.settled = this._ease >= 1 && !ovBusy && !pressBusy && !shotBusy && !springBusy;
+    this.settled = this._ease >= 1 && this._antLeft <= 0 && !ovBusy && !pressBusy && !shotBusy && !springBusy;
     this.idleRunning = idleOn;
     return moved;
   }
@@ -468,34 +480,36 @@ export class HandAnimator {
       return false;
     }
     const M = this.motion;
-    // feel: toward firm fast, back to springy slowly
+    const F = feelOf(M);
+    // brush-down firmness: toward it fast, back slowly (anim.js paintAmt * firm)
     const T = (this._firmTarget > this._firm ? M.blendMs.toFirm : M.blendMs.toSpringy) / 1000;
     this._firm += (this._firmTarget - this._firm) * Math.min(1, T > 0 ? dt / T : 1);
-    const f = this._firm;
-    const hz = M.springy.stiffness + (M.firm.stiffness - M.springy.stiffness) * f;
-    const zeta = dampingOf(M.springy) + (dampingOf(M.firm) - dampingOf(M.springy)) * f;
-    const js = M.jointScale;
+    const pa = this._firm * (F.firm || 0);
+    const k0 = F.stiff * (1 + pa);
+    const zK = Math.max(0.08, 1 - F.bounce * (1 - pa));
+    const zT = Math.max(0.08, 1 - (F.tip ?? F.bounce) * (1 - pa));
+    const lagK = 1 - 0.45 * F.lag;
     let busy = false;
     for (let b = 0; b < NB; b++) {
       const level = b < 2 ? 0 : (b - 2) % 3;
-      const w = 2 * Math.PI * hz * js[level];
-      const w2 = w * w, c = 2 * zeta * w;
-      for (let k = b * 3; k < b * 3 + 3; k++) {
-        let xi = x[k], vi = v[k];
-        const ti = target[k];
+      const k = k0 * Math.pow(lagK, level);
+      const c = 2 * (level === 0 ? zK : zT) * Math.sqrt(k);
+      for (let q = b * 3; q < b * 3 + 3; q++) {
+        let xi = x[q], vi = v[q];
+        const ti = target[q];
         // the target's own speed (idle drift moves it smoothly): tracking a
         // slowly moving target is not a transition
-        const vt = dt > 0 ? (ti - pt[k]) / dt : 0;
-        pt[k] = ti;
-        if (Math.abs(ti - xi) < 1e-4 && Math.abs(vi) < 1e-3) { x[k] = ti; v[k] = 0; continue; }
+        const vt = dt > 0 ? (ti - pt[q]) / dt : 0;
+        pt[q] = ti;
+        if (Math.abs(ti - xi) < 1e-4 && Math.abs(vi) < 1e-3) { x[q] = ti; v[q] = 0; continue; }
         let t = dt;
         while (t > 1e-6) {
           const h = Math.min(t, 1 / 240);
-          vi += (w2 * (ti - xi) - c * vi) * h;
+          vi += (k * (ti - xi) - c * vi) * h;
           xi += vi * h;
           t -= h;
         }
-        x[k] = xi; v[k] = vi;
+        x[q] = xi; v[q] = vi;
         if (Math.abs(ti - xi) > SETTLE + 0.05 * Math.abs(vt) || Math.abs(vi - vt) > 0.5) busy = true;
       }
     }
@@ -533,7 +547,7 @@ export class HandAnimator {
         if (x <= 0 || x >= 1) continue;
         // the active chain gets a quarter of it
         const k = f === act ? 0.25 : 1;
-        rc[fingerBase(f) * 3] += W.amp * k * Math.sin(Math.PI * x);
+        rc[fingerBase(f) * 3] += W.amp * (feelOf(this.motion).amp ?? 1) * k * Math.sin(Math.PI * x);
       }
       if (s.t >= W.T) s.name = '';
     }
@@ -548,7 +562,7 @@ export class HandAnimator {
     const kt = this._idleKTarget;
     const T = kt < this._idleK ? IDLE.downT : IDLE.upT;
     this._idleK += (kt - this._idleK) * Math.min(1, dt / T * 2.5);
-    const amp = target * this._idleK;
+    const amp = target * this._idleK * (feelOf(this.motion).life ?? 1);
     if (amp <= 1e-4) {
       if (this.idleRunning) id.fill(0);
       return false;
@@ -574,7 +588,7 @@ export class HandAnimator {
 
   /** brush:strokeStart / strokeEnd: idle eases to 20% while the brush is down. */
   setStroke(down) {
-    this._idleKTarget = down ? IDLE.strokeScale : 1;
+    this._idleKTarget = down ? Math.min(IDLE.strokeScale, 1 - 0.85 * (feelOf(this.motion).firm || 0)) : 1;
     // the joints go nearly stiff while the brush is on the nail (MOTION.firm)
     this._firmTarget = down ? 1 : 0;
   }
