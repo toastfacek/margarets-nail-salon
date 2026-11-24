@@ -9,8 +9,11 @@
 //   P1  fuzz: 500 random setFingerPose / setPose / presentFinger / setPress /
 //       play calls (some out of range), frames between: every bone matrix
 //       finite, every joint inside its limits
-//   P2  transitions: presentFinger for each of the five settles within 600 ms
-//       (measured in frames' time), no joint past a limit on the way
+//   P2  transitions: presentFinger for each of the five: the presented chain
+//       (that finger, the palm, the wrist: app.hand.settled) settles within
+//       600 ms (measured in frames' time), no joint past a limit on the way;
+//       the time until every joint is still (the other fingers trail with
+//       the softpop wobble: app.hand.allSettled) is reported
 //   P3  contact at rest: 9 UV probes on the active nail of every finger, both
 //       hands: the probe's world point projected to the screen and raycast
 //       from that pixel gives back its UV within 0.5 paint texel (of 256)
@@ -34,7 +37,8 @@
 //       a finger change are reported
 //   P11 motion feel (MOTION in src/scene/HandPoses.js, the chosen preset): a
 //       knuckle step overshoots >= 5% with the brush up and <= 1% with the
-//       brush down, where it also settles faster
+//       brush down, where it also settles faster; settle = every joint still
+//       (app.hand.allSettled)
 // Exits 1 when a gated check fails.
 import fs from 'fs';
 import path from 'path';
@@ -88,7 +92,7 @@ async function settle(page) {
   await page.evaluate(() => { window.__still = null; });
   await page.waitForFunction(() => {
     const c = app.scene.camera.position; const w = window.__still || (window.__still = { x: 0, y: 0, z: 0, n: 0 });
-    const same = Math.abs(c.x - w.x) + Math.abs(c.y - w.y) + Math.abs(c.z - w.z) < 1e-6 && !app.polishBrush3D.isPainting && !app.scene.isAnimating && app.hand.settled;
+    const same = Math.abs(c.x - w.x) + Math.abs(c.y - w.y) + Math.abs(c.z - w.z) < 1e-6 && !app.polishBrush3D.isPainting && !app.scene.isAnimating && app.hand.allSettled;
     w.x = c.x; w.y = c.y; w.z = c.z; w.n = same ? w.n + 1 : 0;
     return w.n > 8;
   }, null, { timeout: 60000, polling: 50 });
@@ -268,19 +272,21 @@ await settle(page);
     for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
       H.presentFinger(f);
       const t0 = performance.now();
-      let bad = 0, ms = null, moving = false;
+      let bad = 0, ms = null, all = null, moving = false;
       while (performance.now() - t0 < 5000) {
         await new Promise((res) => requestAnimationFrame(res));
         bad = Math.max(bad, __hp.limitsOk().bad);
         if (!H.settled) moving = true;
-        else if (moving) { ms = performance.now() - t0; break; }
+        else if (moving && ms === null) ms = performance.now() - t0;
+        if (ms !== null && H.allSettled) { all = performance.now() - t0; break; }
       }
-      out[f] = { ms: ms === null ? null : Math.round(ms), bad };
+      out[f] = { ms: ms === null ? null : Math.round(ms), all: all === null ? null : Math.round(all), bad };
     }
     H.presentFinger('auto');
     return out;
   });
-  for (const f of FINGERS) add('P2', `presentFinger('${f}'): settled ms, joints past a limit`, `${r[f].ms}, ${r[f].bad}`, '<= 600, 0', r[f].ms !== null && r[f].ms <= 600 && r[f].bad === 0);
+  for (const f of FINGERS) add('P2', `presentFinger('${f}'): presented chain settled ms, joints past a limit`, `${r[f].ms}, ${r[f].bad}`, '<= 600, 0', r[f].ms !== null && r[f].ms <= 600 && r[f].bad === 0);
+  for (const f of FINGERS) add('P2', `presentFinger('${f}'): every joint settled ms (other fingers trail)`, r[f].all, 'info', null);
 }
 await settle(page);
 
@@ -409,7 +415,7 @@ await toFinger(page, 'index');
     const step = async (firm) => {
       H.setStroke(firm);
       H.presentFinger('index', { ms: 0 });
-      while (!H.settled) await new Promise((res) => requestAnimationFrame(res));
+      while (!H.allSettled) await new Promise((res) => requestAnimationFrame(res));
       for (let i = 0; i < 20; i++) await new Promise((res) => requestAnimationFrame(res));
       const a0 = H.rig.applied[15];
       H.presentFinger('middle', { ms: 0 });
@@ -419,7 +425,7 @@ await toFinger(page, 'index');
         await new Promise((res) => requestAnimationFrame(res));
         const a = H.rig.applied[15];
         peak = Math.max(peak, a);
-        if (!H.settled) moving = true;
+        if (!H.allSettled) moving = true;
         else if (moving && settle === null) { settle = performance.now() - t0; a1 = a; }
       }
       a1 = H.rig.applied[15];

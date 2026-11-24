@@ -29,7 +29,8 @@ import {
 const DEG = Math.PI / 180;
 const EPS = 1e-4;        // degrees: below this a joint has not moved
 const SETTLE = 0.05;     // degrees: `settled` threshold (plan 5.2)
-const ACTIVE_ZETA_MIN = 0.75; // damping floor of the presented finger's chain
+const ACTIVE_ZETA_MIN = 1;    // damping floor of the presented finger's chain (critical: no wobble)
+const ACTIVE_STIFF = 2.2;     // its stiffness, times the feel's (it lands in ~0.5 s; the others trail)
 const ANT_T = 0.12;      // s at ant = 1: how long the anticipation dip holds
 const ANT_DIP = 0.12;    // the dip, as a fraction of the coming change, at ant = 1, amp = 1
 const EASE_T = 0;        // s: camera-driven base changes jump; the joint springs (MOTION) carry the motion
@@ -204,6 +205,7 @@ export class HandAnimator {
     this._sx = new Float32Array(N3);
     this._sv = new Float32Array(N3);
     this._springInit = false;
+    this._restBusy = false;     // another finger's chain still moving (trailing)
     this._prevTarget = new Float32Array(N3);
     this._firm = 0;            // 0 springy .. 1 firm (the brush is down)
     this._firmTarget = 0;
@@ -230,8 +232,18 @@ export class HandAnimator {
     this._idleT = 0;
     this._lastIdleInvalidate = -Infinity;
     this.idleRunning = false;
+    // settled: the presented finger, the palm and the wrist are still (zoomed
+    // out, or with no finger presented: every joint). The other fingers may
+    // still trail with the softpop wobble (trailing); render-on-demand tiers
+    // draw that at the idle throttle (handPose.feature.js).
     this.settled = true;
+    this.trailing = false;
     this.changedThisFrame = false;
+  }
+
+  /** Every joint still (settled, and no other finger trailing). */
+  get allSettled() {
+    return this.settled && !this.trailing;
   }
 
   // ------------------------------------------------------------- set up --
@@ -410,10 +422,17 @@ export class HandAnimator {
       this._key = key;
     }
     const base = this._base;
+    const act = this._activeIndex();
     if (this._antLeft > 0) {
       this._antLeft -= dt;
       const a = ANT_DIP * (feelOf(this.motion).ant || 0) * (feelOf(this.motion).amp ?? 1);
       for (let k = 0; k < N3; k++) base[k] = this._from[k] - (tg[k] - this._from[k]) * a;
+      // the presented finger, and the palm and wrist that carry it, go
+      // straight for their pose (no dip away first)
+      if (act >= 0) {
+        for (let k = 0; k < 6; k++) base[k] = tg[k];
+        for (let k = fingerBase(act) * 3, e = k + 9; k < e; k++) base[k] = tg[k];
+      }
     } else if (this._ease < 1) {
       this._ease = this._easeT > 0 ? Math.min(1, this._ease + dt / this._easeT) : 1;
       const e = this._ease * this._ease * (3 - 2 * this._ease);
@@ -435,7 +454,6 @@ export class HandAnimator {
     // ---- one-shots (through the joint springs: they wobble)
     const rc = this._react;
     rc.fill(0);
-    const act = this._activeIndex();
     const shotBusy = this._stepShot(dt, rc, act);
 
     // ---- target, then the joint springs (the bones follow with the current feel)
@@ -461,6 +479,7 @@ export class HandAnimator {
     const moved = rig.apply(out);
     this.changedThisFrame = moved;
     this.settled = this._ease >= 1 && this._antLeft <= 0 && !ovBusy && !pressBusy && !shotBusy && !springBusy;
+    this.trailing = this._restBusy;
     this.idleRunning = idleOn;
     return moved;
   }
@@ -468,7 +487,9 @@ export class HandAnimator {
   /**
    * One damped spring per joint angle toward `target` (MOTION: springy while
    * the hand moves freely, firm while the brush is down). Returns true while
-   * any joint is still moving.
+   * a joint of the presented finger, the palm or the wrist is still moving
+   * (every joint when no finger is presented); this._restBusy says whether
+   * another finger's chain is.
    */
   _stepSprings(dt, target) {
     const x = this._sx, v = this._sv;
@@ -478,6 +499,7 @@ export class HandAnimator {
       v.fill(0);
       pt.set(target);
       this._springInit = true;
+      this._restBusy = false;
       return false;
     }
     const M = this.motion;
@@ -495,12 +517,15 @@ export class HandAnimator {
     // any moment (ACTIVE_ZETA_MIN); the other fingers keep the full feel
     const act = this._activeIndex();
     const a0 = act >= 0 ? fingerBase(act) : -10;
-    let busy = false;
+    let busy = false, rest = false;
     for (let b = 0; b < NB; b++) {
+      const other = act >= 0 && b >= 2 && (b < a0 || b >= a0 + 3);
       const level = b < 2 ? 0 : (b - 2) % 3;
-      const k = k0 * Math.pow(lagK, level);
+      // the presented chain: stiffer, no tip lag, damping floored (it settles
+      // in ~0.5 s; the other fingers trail with the full feel)
+      const k = other || act < 0 ? k0 * Math.pow(lagK, level) : k0 * ACTIVE_STIFF;
       let z = level === 0 ? zK : zT;
-      if (act >= 0 && (b < 2 || (b >= a0 && b < a0 + 3))) z = Math.max(z, ACTIVE_ZETA_MIN);
+      if (act >= 0 && !other) z = Math.max(z, ACTIVE_ZETA_MIN);
       const c = 2 * z * Math.sqrt(k);
       for (let q = b * 3; q < b * 3 + 3; q++) {
         let xi = x[q], vi = v[q];
@@ -518,9 +543,12 @@ export class HandAnimator {
           t -= h;
         }
         x[q] = xi; v[q] = vi;
-        if (Math.abs(ti - xi) > SETTLE + 0.05 * Math.abs(vt) || Math.abs(vi - vt) > 0.5) busy = true;
+        if (Math.abs(ti - xi) > SETTLE + 0.05 * Math.abs(vt) || Math.abs(vi - vt) > 0.5) {
+          if (other) rest = true; else busy = true;
+        }
       }
     }
+    this._restBusy = rest;
     return busy;
   }
 
@@ -602,11 +630,12 @@ export class HandAnimator {
   }
 
   /**
-   * Should the idle layer ask for a render now? Render-on-demand tiers:
-   * at most every `minMs` (low 50, medium 33); high renders every frame.
+   * Should the idle layer (or the other fingers trailing after a finger
+   * change) ask for a render now? Render-on-demand tiers: at most every
+   * `minMs` (low 50, medium 33); high renders every frame.
    */
   idleWantsRender(nowMs, minMs) {
-    if (!this.idleRunning) return false;
+    if (!this.idleRunning && !this.trailing) return false;
     if (nowMs - this._lastIdleInvalidate < minMs) return false;
     this._lastIdleInvalidate = nowMs;
     return true;

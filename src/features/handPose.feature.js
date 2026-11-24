@@ -15,9 +15,11 @@
  * available as app.hand.setPress, not driven by the brush); reveal:start fans
  * the fingers, reveal:flash wiggles them, reveal:done hands the pose back to
  * the camera.
- * Render-on-demand tiers: idle motion asks for a frame at most every 33 ms
- * (medium) or 50 ms (low); pose changes, the press-give and one-shots ask
- * every frame while they run, then stop.
+ * Render-on-demand tiers: idle motion, and the other fingers' trailing wobble
+ * once the presented finger is still, ask for a frame at most every 33 ms
+ * (medium) or 50 ms (low); pose changes of the presented finger, the palm and
+ * the wrist, the press-give and one-shots ask every frame while they run,
+ * then stop.
  */
 import { EVENTS } from '../core/GameEvents.js';
 import { HandAnimator } from '../scene/HandRig.js';
@@ -51,11 +53,13 @@ export function install(app) {
     }
     if (!hand.update(dt)) return;
     const s = app.quality.settings;
-    if (!hand.settled || !hand.idleRunning || !s || !s.renderOnDemand) {
+    if (!hand.settled || (!hand.idleRunning && !hand.trailing) || !s || !s.renderOnDemand) {
       app.invalidate();
       return;
     }
-    // only the idle layer moved: a throttled frame on render-on-demand tiers
+    // only the idle layer moved, or the other fingers trailing after a finger
+    // change (the presented one is still): a throttled frame on
+    // render-on-demand tiers
     if (hand.idleWantsRender(time, app.quality.tier === 'low' ? 50 : 33)) app.invalidate();
   }, 6);
   // any rendered frame (the 250 ms safety net, the UI) also shows the idle pose
