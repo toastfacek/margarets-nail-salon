@@ -32,7 +32,10 @@ const SETTLE = 0.05;     // degrees: `settled` threshold (plan 5.2)
 const EASE_T = 0.35;     // s: base pose changes (entering / leaving the close-up, setPose)
 
 // Press-give (plan 5.3): a damped spring on the active finger's last joint.
-const PRESS = Object.freeze({ hz: 9, damping: 0.5, ext: 2.0, roll: 1.0, knuckle: 0.3 });
+// Smaller than the plan's 2 / 1 / 0.3 degrees: a nail that keeps moving under
+// a stroke shifts the queued pointer samples (cast at the next frame) by the
+// motion; handPose.feature.js also holds the press steady through a stroke.
+const PRESS = Object.freeze({ hz: 9, damping: 0.5, ext: 1.5, roll: 0.6, knuckle: 0.2 });
 // Idle (plan 5.3).
 const IDLE = Object.freeze({ swayHz: 0.25, swayDeg: 0.4, driftDeg: 0.4, strokeScale: 0.2, downT: 0.15, upT: 0.6 });
 

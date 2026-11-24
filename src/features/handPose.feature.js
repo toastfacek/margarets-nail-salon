@@ -11,9 +11,10 @@
  * and the contact shadow measure the hand through app.hand.withPose
  * (NailScene.handPose).
  *
- * Events: brush:strokeStart / strokeEnd damp the idle; brush:stroke drives
- * the press-give; reveal:start fans the fingers, reveal:flash wiggles them,
- * reveal:done hands the pose back to the camera.
+ * Events: brush:strokeStart / strokeEnd damp the idle; the first brush:stroke
+ * of a stroke sets the press-give (held until the lift); reveal:start fans
+ * the fingers, reveal:flash wiggles them, reveal:done hands the pose back to
+ * the camera.
  * Render-on-demand tiers: idle motion asks for a frame at most every 33 ms
  * (medium) or 50 ms (low); pose changes, the press-give and one-shots ask
  * every frame while they run, then stop.
@@ -53,9 +54,19 @@ export function install(app) {
   app.loop.add((dt, time, loop) => { if (loop.renderedThisFrame) hand.noteRendered(time); }, 98);
 
   const ev = app.events;
-  ev.on(EVENTS.BRUSH_STROKE_START, () => hand.setStroke(true));
-  ev.on(EVENTS.BRUSH_STROKE, (p) => hand.setPress(Math.min(1, 0.35 + 0.65 * (p.pressure || 0)), p.u));
-  ev.on(EVENTS.BRUSH_STROKE_END, () => { hand.setStroke(false); hand.setPress(0); });
+  // The press-give is set once per stroke, where the brush first lands (its
+  // side picks the roll), and released on lift: the nail gives as the brush
+  // lands and settles back after, but holds still while the stroke runs (the
+  // pointer samples of a frame are cast at the next one: a nail moving under
+  // a stroke would shift them by its motion).
+  let pressed = false;
+  ev.on(EVENTS.BRUSH_STROKE_START, () => { hand.setStroke(true); pressed = false; });
+  ev.on(EVENTS.BRUSH_STROKE, (p) => {
+    if (pressed) return;
+    pressed = true;
+    hand.setPress(1, p.u);
+  });
+  ev.on(EVENTS.BRUSH_STROKE_END, () => { hand.setStroke(false); hand.setPress(0); pressed = false; });
   ev.on(EVENTS.REVEAL_START, () => hand.setPose('fan'));
   ev.on(EVENTS.REVEAL_FLASH, () => hand.play('wiggle'));
   ev.on(EVENTS.REVEAL_DONE, () => hand.setPose('auto'));
