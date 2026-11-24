@@ -12,10 +12,12 @@
 //   H3  nail UV handedness: on every finger of both hands, seen from the
 //       close-up camera, +u runs to screen right and +v down (a sticker reads
 //       the right way round), same sign on both hands
-//   H4  every nail has a nail mask and a frame (centre, axis, side, half sizes)
+//   H4  every nail has its frame from the file and a nail mask
 //   H5  size: dist/models <= 1,150 KB, dist <= 2.15 MB
 //   H6  no page errors, no external requests
-// With --shots it writes zoomed-out (both hands) and index close-up screenshots.
+//   H7  the skin carries the four colour masks (blush, palm, cavity, thinness)
+// With --shots it writes zoomed-out (both hands) and index close-up screenshots
+// (--fingers: a close-up of every finger too).
 // Exits 1 when a gated check fails.
 import fs from 'fs';
 import path from 'path';
@@ -121,6 +123,7 @@ async function handFacts(page) {
       const M = new Float64Array(9), B = [new Float64Array(3), new Float64Array(3), new Float64Array(3)];
       const v = new V(); const r = [0, 0, 1];
       for (let i = 0; i < pos.count; i++) {
+        if (rec.visible && !rec.visible[i]) continue; // B9: the hidden skirt / lip copy rim UVs
         v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
         r[0] = uv.getX(i); r[1] = uv.getY(i);
         for (let j = 0; j < 3; j++) { B[0][j] += r[j] * v.x; B[1][j] += r[j] * v.y; B[2][j] += r[j] * v.z; for (let k = 0; k < 3; k++) M[j * 3 + k] += r[j] * r[k]; }
@@ -153,6 +156,8 @@ async function handFacts(page) {
         half: [+u.uNailHalf.value.x.toFixed(4), +u.uNailHalf.value.y.toFixed(4)],
         uvAspect: +rec.uvAspect.toFixed(3),
         verts: pos.count,
+        frame: !!rec.frame,
+        skinColor: (() => { let sk = null; model.traverse((o) => { if (o.isSkinnedMesh && !sk) sk = o; }); const c = sk && sk.geometry.attributes.color; return c ? c.itemSize : 0; })(),
       };
     }
     return out;
@@ -173,6 +178,16 @@ if (SHOTS) {
   await page.evaluate(() => { window.__still = null; });
   await settle(page);
   await page.screenshot({ path: path.join(SHOTS, `${PREFIX}-zoomed-out.png`) });
+}
+if (SHOTS && flags.fingers) {
+  for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+    await page.evaluate((x) => app.switchToFinger(x), f);
+    await page.evaluate(() => { window.__still = null; });
+    await settle(page);
+    await page.evaluate(() => app.polishBrush3D.clearNail());
+    await sleep(200);
+    await page.screenshot({ path: path.join(SHOTS, `${PREFIX}-closeup-${f}-${TIER}.png`) });
+  }
 }
 const other = first.hand === 'left' ? 'right' : 'left';
 await showHand(page, other);
@@ -199,6 +214,7 @@ for (const h of ['left', 'right']) {
   add('H2', `${h}: bones`, f.bones.length, '== 17', f.bones.length === 17);
   add('H2', `${h}: skin determinant`, +f.det.toFixed(3), h === 'left' ? '< 0' : '> 0', h === 'left' ? f.det < 0 : f.det > 0);
 }
+add('H7', 'skin vertex colour masks (components)', facts.left.nails.index ? facts.left.nails.index.skinColor : 0, 'info (B9.2)', null);
 add('H2', 'same bone names on both hands', facts.left.bones.join(',') === facts.right.bones.join(','), 'true', facts.left.bones.join(',') === facts.right.bones.join(','));
 for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
   const L = facts.left.nails[f], R = facts.right.nails[f];
@@ -206,6 +222,7 @@ for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
   add('H3', `${f}: handedness L / R`, `${L.handed} / ${R.handed}`, 'equal', L.handed === R.handed);
   const upright = (n) => n.uRight > 0.7 && n.vDown > 0.7;
   add('H3', `${f}: +u right, +v down (L: ${L.uRight},${L.vDown}  R: ${R.uRight},${R.vDown})`, upright(L) && upright(R), UV_GATE ? 'true' : 'info', UV_GATE ? upright(L) && upright(R) : null);
+  add('H4', `${f}: nail frame from the file (L / R)`, `${L.frame} / ${R.frame}`, 'true', L.frame && R.frame);
   add('H4', `${f}: mask cells L / R, half L, uvAspect L, verts`, `${L.mask} / ${R.mask}, ${L.half.join('x')}, ${L.uvAspect}, ${L.verts}`, '> 0', L.mask > 0 && R.mask > 0);
 }
 if (fs.existsSync(DIST)) {

@@ -96,6 +96,7 @@ uniform vec3 uNailCentre;
 uniform vec3 uNailAxis;
 uniform vec3 uNailSide;
 uniform vec2 uNailHalf;
+uniform vec4 uNailAnat;
 uniform float uMetal;
 uniform float uCoat;
 uniform float uRough;
@@ -160,12 +161,27 @@ vec3 B = normalize(vBitW - N * dot(N, vBitW) - T * dot(T, vBitW));
 vec3 rel = vLocal - uNailCentre;
 float s = dot(rel, uNailAxis) / uNailHalf.x;
 float w = dot(rel, uNailSide) / uNailHalf.y;
-vec3 nail = uBaseColor;
-float lun = 1.0 - smoothstep(0.75, 1.0, length(vec2(w * 0.9, (s - 1.05) * 2.1)));
-nail = mix(nail, vec3(0.93, 0.80, 0.76), lun * 0.55);
-float freeEdge = smoothstep(-0.62, -0.86, s);
-nail = mix(nail, vec3(0.97, 0.90, 0.84), freeEdge * 0.85);
-nail *= 0.985 + 0.015 * sin(w * 37.0);
+// Natural nail (B9): the pink bed seen through the plate, a lunula peeking
+// out from under the cuticle, a thin pale cuticle band, a slightly deeper
+// band just before the free edge, the white free edge, faint ridges.
+// uNailAnat: x = s of the line where the plate leaves the fingertip,
+// y / z = cuticle / free-edge arc (s per w^2).
+float w2 = w * w;
+float cutS = 1.0 - uNailAnat.y * w2;
+float smileS = uNailAnat.x + 0.12 * w2;
+float cutE = cutS - s;
+vec3 nail = uBaseColor * 0.93 + 0.055;
+float lun = 1.0 - smoothstep(0.78, 1.0, length(vec2(w / 0.5, cutE / 0.30)));
+nail = mix(nail, vec3(0.95, 0.86, 0.85), lun * 0.5);
+nail = mix(nail, vec3(0.95, 0.83, 0.79), (1.0 - smoothstep(0.0, 0.07, cutE)) * 0.5);
+float fe = smoothstep(smileS + 0.012, smileS - 0.05, s);
+nail *= 1.0 - 0.08 * (1.0 - smoothstep(0.0, 0.07, abs(s - smileS - 0.06))) * (1.0 - fe);
+nail = mix(nail, vec3(0.97, 0.94, 0.90), fe * 0.9);
+nail *= 0.994 + 0.006 * sin(w * 41.0 + sin(w * 13.0) * 1.3);
+// where the plate meets the folds: a soft shade and a 1-2 px contact line
+float eSide = 1.0 - abs(w);
+float ePx = min(eSide / max(fwidth(w), 1e-5), max(cutE, 0.0) / max(fwidth(s), 1e-5));
+float contact = 1.0 - 0.3 * (1.0 - smoothstep(0.0, 2.5, ePx));
 vec3 albedo = mix(nail, uUnderColor, uUnderAmount);
 float cov = uUnderAmount;
 float relief = 0.0;
@@ -265,7 +281,7 @@ float rough = mix(0.16, uRough, cov);
 float sheenK = uSheen * cov;
 vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5);
 vec3 irr = hemi + uLightColor * NdL + uRimColor * pow(1.0 - NdV, 2.0) * max(dot(N, uRimDir), 0.0);
-float ao = 1.0 - 0.38 * smoothstep(0.72, 1.02, s) - 0.28 * smoothstep(0.78, 1.0, abs(w));
+float ao = (1.0 - 0.3 * smoothstep(0.2, 0.0, cutE) - 0.2 * smoothstep(0.16, 0.0, eSide)) * contact;
 vec3 col = albedo * irr * 1.12 * ao * (1.0 - metal);
 col += sheenK * pow(1.0 - NdV, 2.5) * hemi * (0.35 + 0.65 * albedo);
 vec3 tint = mix(vec3(1.0), pigment / max(max(pigment.r, pigment.g), max(pigment.b, 0.02)), 0.88);
@@ -407,6 +423,7 @@ export function createNailUniforms(lighting) {
     uNailAxis: { value: new THREE.Vector3(0, 1, 0) },
     uNailSide: { value: new THREE.Vector3(1, 0, 0) },
     uNailHalf: { value: new THREE.Vector2(1, 1) },
+    uNailAnat: { value: new THREE.Vector4(-0.7, 0.2, 0.2, 0) },
     uMetal: { value: f.metal },
     uCoat: { value: f.coat },
     uRough: { value: f.rough },

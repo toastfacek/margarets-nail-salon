@@ -131,18 +131,24 @@ def verify_export(path, scene, report, check):
             got = np.empty(len(attr.data) * 4, dtype=np.float32)
             attr.data.foreach_get('color', got)
             got = got.reshape(-1, 4)
+            if attr.domain == 'CORNER':
+                lv = np.empty(len(me.loops), dtype=np.int64)
+                me.loops.foreach_get('vertex_index', lv)
+                per = np.zeros((len(me.vertices), 4), dtype=np.float32)
+                per[lv] = got
+                got = per
             # compare per position (the exporter may reorder / split verts)
             gp = world_points(hand)
             kd = KDTree(len(gp))
             for i, p in enumerate(gp):
                 kd.insert(p, i)
             kd.balance()
-            if attr.domain == 'POINT' and want_domain == 'POINT':
-                err = 0.0
-                for i, p in enumerate(want['hand']):
-                    _, j, _ = kd.find(p)
-                    err = max(err, float(np.abs(got[j] - want_colors[i]).max()))
-                ok = err < 2.0 / 255.0
+            err = 0.0
+            for i, p in enumerate(want['hand']):
+                _, j, _ = kd.find(p)
+                err = max(err, float(np.abs(got[j] - want_colors[i]).max()))
+            ok = err < 2.0 / 255.0
+            err = round(err, 5)
         check('vertex colour masks survive the round trip', ok, err, '< 2/255')
     report['reimport'] = {'objects': sorted(names)}
 

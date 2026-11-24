@@ -729,6 +729,7 @@ export class NailScene {
         const half = u.uNailHalf.value;
         // the nail's visual middle along its axis (the frame centre is the
         // vertex mean, which sits nearer the cuticle on most nails): cached
+        if (rec.focusMid === undefined && rec.frame) rec.focusMid = 0; // the frame is the visible plate's centre
         if (rec.focusMid === undefined) {
             const pos = mesh.geometry.attributes.position;
             const ax = u.uNailAxis.value, c0 = u.uNailCentre.value;
@@ -747,10 +748,8 @@ export class NailScene {
         const halfW = f.v.copy(u.uNailSide.value).multiplyScalar(half.y).add(u.uNailCentre.value).applyMatrix4(mesh.matrixWorld).distanceTo(C0);
         const A = f.a.copy(u.uNailAxis.value).transformDirection(mesh.matrixWorld);
         const S = f.s.copy(u.uNailSide.value).transformDirection(mesh.matrixWorld);
-        const N = f.n.crossVectors(A, S);
-        if (N.lengthSq() < 1e-10) N.set(0, 1, 0);
-        N.normalize();
-        if (N.y < 0) N.negate();
+        // the nail's outward normal (local, from its frame), mirrored hands included
+        const N = rec.nailNormal ? f.n.copy(rec.nailNormal).transformDirection(mesh.matrixWorld) : f.n.crossVectors(A, S).normalize();
         // cuticle direction across the view = screen up
         A.addScaledVector(N, -A.dot(N));
         if (A.lengthSq() < 1e-10) A.set(1, 0, 0).addScaledVector(N, -N.x);

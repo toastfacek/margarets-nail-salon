@@ -789,51 +789,63 @@ export class PolishFilm {
     const pos = mesh.geometry.attributes.position;
     const nrm = mesh.geometry.attributes.normal;
     const uv = mesh.geometry.attributes.uv;
-    // The cuticle direction, from the skin right around the nail (the finger
-    // continues past the cuticle, not past the free edge). The skin search is
-    // kept tight (about one nail length): a wide one reaches other fingers.
-    mesh.updateWorldMatrix(true, false);
+    const vis = rec.visible || null; // B9: fit the visible plate only
     const v = new THREE.Vector3();
-    const cW = new THREE.Vector3();
-    const nW = new THREE.Vector3();
-    const n = new THREE.Vector3();
-    const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-    const box = new THREE.Box3();
-    for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-      cW.add(v);
-      box.expandByPoint(v);
-      if (nrm) {
-        n.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
-        if (n.y > 0) nW.add(n);
+    let c, ax, sd;
+    if (rec.frame) {
+      // B9: the canonical frame from the file (no skin search, no world-up test)
+      const u = rec.material.uniforms;
+      c = u.uNailCentre.value.clone();
+      ax = u.uNailAxis.value.clone();
+      sd = u.uNailSide.value.clone();
+    } else {
+      // The cuticle direction, from the skin right around the nail (the finger
+      // continues past the cuticle, not past the free edge). The skin search is
+      // kept tight (about one nail length): a wide one reaches other fingers.
+      mesh.updateWorldMatrix(true, false);
+      const cW = new THREE.Vector3();
+      const nW = new THREE.Vector3();
+      const n = new THREE.Vector3();
+      const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+      const box = new THREE.Box3();
+      const out = rec.nailNormal ? rec.nailNormal.clone().transformDirection(mesh.matrixWorld) : null;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+        cW.add(v);
+        box.expandByPoint(v);
+        if (nrm) {
+          n.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
+          if (out ? n.dot(out) > 0 : n.y > 0) nW.add(n);
+        }
       }
-    }
-    cW.multiplyScalar(1 / Math.max(1, pos.count));
-    if (nW.lengthSq() < 1e-10) nW.set(0, 1, 0);
-    nW.normalize();
-    const reach = box.getSize(new THREE.Vector3()).length() * 0.9;
-    const toBase = new THREE.Vector3();
-    let skin = null;
-    const model = handModel.hands && handModel.hands[hand] && handModel.hands[hand].model;
-    if (model) model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
-    if (skin) {
-      skin.skeleton.update();
-      const sp = skin.geometry.attributes.position;
-      for (let i = 0; i < sp.count; i++) {
-        skin.getVertexPosition(i, v);
-        v.applyMatrix4(skin.matrixWorld).sub(cW);
-        if (v.lengthSq() < reach * reach) toBase.add(v);
+      cW.multiplyScalar(1 / Math.max(1, pos.count));
+      if (nW.lengthSq() < 1e-10) nW.set(0, 1, 0);
+      nW.normalize();
+      const reach = box.getSize(new THREE.Vector3()).length() * 0.9;
+      const toBase = new THREE.Vector3();
+      let skin = null;
+      const model = handModel.hands && handModel.hands[hand] && handModel.hands[hand].model;
+      if (model) model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
+      if (skin) {
+        skin.skeleton.update();
+        const sp = skin.geometry.attributes.position;
+        for (let i = 0; i < sp.count; i++) {
+          skin.getVertexPosition(i, v);
+          v.applyMatrix4(skin.matrixWorld).sub(cW);
+          if (v.lengthSq() < reach * reach) toBase.add(v);
+        }
       }
+      toBase.addScaledVector(nW, -toBase.dot(nW));
+      if (toBase.lengthSq() < 1e-12) toBase.set(1, 0, 0).addScaledVector(nW, -nW.x);
+      const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+      ax = toBase.normalize().clone().transformDirection(inv);
+      c = cW.clone().applyMatrix4(inv);
+      const nL = nW.clone().transformDirection(inv);
+      sd = new THREE.Vector3().crossVectors(nL, ax).normalize();
     }
-    toBase.addScaledVector(nW, -toBase.dot(nW));
-    if (toBase.lengthSq() < 1e-12) toBase.set(1, 0, 0).addScaledVector(nW, -nW.x);
-    const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
-    const ax = toBase.normalize().clone().transformDirection(inv);
-    const c = cW.clone().applyMatrix4(inv);
-    const nL = nW.clone().transformDirection(inv);
-    const sd = new THREE.Vector3().crossVectors(nL, ax).normalize();
     const half = new THREE.Vector2();
     for (let i = 0; i < pos.count; i++) {
+      if (vis && !vis[i]) continue;
       v.fromBufferAttribute(pos, i).sub(c);
       half.x = Math.max(half.x, Math.abs(v.dot(ax)));
       half.y = Math.max(half.y, Math.abs(v.dot(sd)));
@@ -844,6 +856,7 @@ export class PolishFilm {
     const by = new Float64Array(3);
     const r = [0, 0, 1];
     for (let i = 0; i < pos.count; i++) {
+      if (vis && !vis[i]) continue;
       const dx = pos.getX(i) - c.x, dy = pos.getY(i) - c.y, dz = pos.getZ(i) - c.z;
       r[0] = (dx * ax.x + dy * ax.y + dz * ax.z) / half.x;
       r[1] = (dx * sd.x + dy * sd.y + dz * sd.z) / half.y;

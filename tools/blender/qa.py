@@ -149,7 +149,8 @@ def render_all(glb, out_dir, report, only=None):
     # whole hand from the top (fingers to the left, like the game's zoomed-out view)
     shot('rest-top', (mid[0] - 0.1, mid[1] - 0.6, mid[2] + 3.2), (mid[0] - 0.1, mid[1], mid[2]), lens=45, up=(0, 1, 0))
     # from the side (thumb side), low: finger profiles, knuckles, nail free edges
-    shot('rest-side', (mid[0] - 0.3, mid[1] - 2.6, mid[2] + 0.45), (mid[0] - 0.3, mid[1], mid[2] - 0.05), lens=50)
+    palm = Vector(gltfio.bone_world(rig, 'palm')[0])
+    shot('rest-side', palm + Vector((-0.35, -2.4, 0.25)), palm + Vector((-0.35, 0, -0.02)), lens=55)
     # index fingertip macro: face-on (the game's close-up) and oblique from the tip side
     c, x, y, z = nail_frame(bpy.data.objects['Nail_Index'], rig, 'index')
     shot('index-macro', c + z * 0.28 + y * 0.02, c, lens=60, up=y)

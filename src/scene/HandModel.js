@@ -50,6 +50,35 @@ const MASK_RES = 32;
 
 const DEFAULT_SETTINGS = Object.freeze({ decoCanvasRes: 1024, bakedPaintRes: 512 });
 
+const BED_PINK = new THREE.Color('#f2a3ad');
+const WHITE = new THREE.Color(1, 1, 1);
+
+/** Nail-bed colour for a skin tone (linear colours). */
+export function nailBedColor(tone, out = new THREE.Color()) {
+    return out.copy(tone).lerp(BED_PINK, 0.55).lerp(WHITE, 0.16);
+}
+
+/**
+ * 1 for the vertices of the visible plate. The hidden skirt and the
+ * turned-under free edge copy the UV of their rim vertex and sit below it,
+ * so of the vertices sharing one UV the highest (local +Z) is the visible one.
+ * Fits from UV to position use only these.
+ */
+export function visiblePlateMask(geometry) {
+    const pos = geometry.attributes.position;
+    const uv = geometry.attributes.uv;
+    const mask = new Uint8Array(pos.count);
+    if (!uv) { mask.fill(1); return mask; }
+    const best = new Map();
+    for (let i = 0; i < pos.count; i++) {
+        const key = Math.round(uv.getX(i) * 1e5) * 200003 + Math.round(uv.getY(i) * 1e5);
+        const j = best.get(key);
+        if (j === undefined || pos.getZ(i) > pos.getZ(j)) best.set(key, i);
+    }
+    for (const i of best.values()) mask[i] = 1;
+    return mask;
+}
+
 // One file: the right hand. The left hand is its mirror image, made at load
 // (tools/blender/build_hand.py builds the file; the old left GLB was an exact
 // mirror of the right one about this plane, x = 0.7 in the file's space).
@@ -121,6 +150,7 @@ export class HandModel {
 
         // Skin colour and glow, shared by both hands and every tier variant.
         this.skinShared = createSkinShared();
+        this._bedColor = nailBedColor(this.skinShared.uTone.value);
 
         this._clearColor = new THREE.Color();
     }
@@ -194,6 +224,14 @@ export class HandModel {
     /** Skin tone for every hand (uniform/colour writes only). */
     setSkinTone(color) {
         setSkinTone(this.skinShared, color);
+        // The nail bed shows through the plate: derived from the tone, so a
+        // darker client gets a pink-brown bed, a pale one a pink one.
+        const bed = this._bedColor || (this._bedColor = new THREE.Color());
+        nailBedColor(this.skinShared.uTone.value, bed);
+        for (const h of HAND_LIST) {
+            const nails = this.hands[h].nails;
+            for (const f in nails) nails[f].material.uniforms.uBaseColor.value.copy(bed);
+        }
         this._invalidate();
     }
 
@@ -439,8 +477,17 @@ export class HandModel {
 
         const rec = new NailRecord(this, hand, finger, nailMesh, material);
         rec.variants[nailVariantKey(this.settings)] = material;
+        // B9 nail unit: the file carries the canonical frame (+X across, +Y to
+        // the cuticle, +Z out, origin on the plate at its centre) and the
+        // hidden skirt / turned-under free edge copy their rim's UV.
+        const ud = nailMesh.userData || {};
+        if (ud.nailFrame && Array.isArray(ud.nailHalf)) {
+            rec.frame = { half: ud.nailHalf, anat: Array.isArray(ud.nailAnat) ? ud.nailAnat : null };
+            rec.visible = visiblePlateMask(geometry);
+        }
         rec.uvAspect = this._computeUVAspect(geometry);
         material.uniforms.uAspect.value = rec.uvAspect;
+        if (this._bedColor) material.uniforms.uBaseColor.value.copy(this._bedColor);
 
         this.hands[hand].nails[finger] = rec;
     }
@@ -454,6 +501,21 @@ export class HandModel {
      */
     _computeNailFrames(hand, model) {
         const nails = this.hands[hand].nails;
+        let fromFile = 0;
+        for (const f of FINGER_LIST) {
+            const rec = nails[f];
+            if (!rec || !rec.frame) continue;
+            const u = rec.material.uniforms;
+            u.uNailCentre.value.set(0, 0, 0);
+            u.uNailAxis.value.set(0, 1, 0);
+            u.uNailSide.value.set(1, 0, 0);
+            u.uNailHalf.value.set(rec.frame.half[0], rec.frame.half[1]);
+            if (rec.frame.anat) u.uNailAnat.value.fromArray(rec.frame.anat);
+            rec.nailNormal = new THREE.Vector3(0, 0, 1);
+            fromFile++;
+        }
+        if (fromFile === FINGER_LIST.length) return;
+        // Fallback (a hand file without nail frames): search the skin.
         let skin = null;
         model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
         model.updateMatrixWorld(true);
@@ -474,7 +536,7 @@ export class HandModel {
         }
         for (const f of FINGER_LIST) {
             const rec = nails[f];
-            if (!rec) continue;
+            if (!rec || rec.frame) continue;
             const mesh = rec.mesh;
             const geo = mesh.geometry;
             const pos = geo.attributes.position;
@@ -529,6 +591,7 @@ export class HandModel {
                 halfW = Math.max(halfW, Math.abs(v.dot(side)));
             }
             const u = rec.material.uniforms;
+            rec.nailNormal = nLocal.clone().normalize();
             u.uNailCentre.value.copy(cLocal);
             u.uNailAxis.value.copy(axis);
             u.uNailSide.value.copy(side);
@@ -950,6 +1013,10 @@ export class HandModel {
         const nail = this.nails[finger];
         if (!nail || !nail.mesh) return null;
         const mesh = nail.mesh;
+        if (nail.frame) {
+            mesh.updateWorldMatrix(true, false);
+            return target.set(0, 0, 0).applyMatrix4(mesh.matrixWorld);
+        }
         if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
         const bbox = mesh.geometry.boundingBox;
         target.set(

@@ -33,7 +33,9 @@ export const BRUSH_PRESETS = Object.freeze({
     tipW: 0.2,
     dome: 1.0, domeExp: 2,
     stemD: 0.24,
-    bandMin: 0.124, bandPress: 0.198,   // 0.124 .. 0.322 (pressed ~34% on screen)
+    // B9: x1.07 for the B9 nail, whose UV now spans exactly the visible plate
+    // (the old UV ran past it), so the pressed band is ~34% on screen again.
+    bandMin: 0.133, bandPress: 0.212,   // 0.133 .. 0.345 (pressed ~34% on screen)
   }),
   // OPI ProWide / Sally Hansen wide: flat-ish, ~1.4x wider pressed,
   // rounded-square tip, still a third of its width thick at the root.
@@ -47,7 +49,7 @@ export const BRUSH_PRESETS = Object.freeze({
     tipW: 0.28,
     dome: 0.55, domeExp: 4,
     stemD: 0.28,
-    bandMin: 0.174, bandPress: 0.277,   // 0.174 .. 0.451 (1.4x classic)
+    bandMin: 0.186, bandPress: 0.296,   // 0.186 .. 0.482 (1.4x classic)
   }),
 });
 
