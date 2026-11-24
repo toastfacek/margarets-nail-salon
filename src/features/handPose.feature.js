@@ -27,13 +27,19 @@ export function install(app) {
   const hand = new HandAnimator(app.nail, app.scene);
   app.hand = hand;
   app.scene.handPose = (pose, fn) => hand.withPose(pose, fn);
-  app.scene.invalidateRail();
+  // a close-up framed before the rig existed was framed on the rest pose:
+  // re-frame once, as soon as the shown hand's rig is there
+  let framed = false;
 
   let reduced = false;
   try { reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { reduced = false; }
   hand.setIdle(reduced ? 0 : 1);
 
   app.loop.add((dt, time) => {
+    if (!framed && hand.rig) {
+      framed = true;
+      app.scene.reframe();
+    }
     if (!hand.update(dt)) return;
     const s = app.quality.settings;
     if (!hand.settled || !hand.idleRunning || !s || !s.renderOnDemand) {

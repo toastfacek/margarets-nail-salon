@@ -572,9 +572,17 @@ export class NailScene {
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(this.width, this.height);
         // Focus distances depend on the aspect: rebuild the rail on next use.
+        this.reframe();
+    }
+
+    /**
+     * Re-frame the focused nail now (no animation): after a resize, and once
+     * app.hand starts posing the hand (B9: a close-up framed before that was
+     * framed on the rest pose, closer than the present pose wants).
+     */
+    reframe() {
         this._railReady = false;
         if (this.isZoomedIn && this.zoomedFinger && !this.cameraHeld) {
-            // Re-frame the focused nail for the new aspect (no animation).
             this._focusTargets(this._focusPos, this.zoomedFinger);
             if (!this.isAnimating) {
                 this.camera.position.copy(this.targetCameraPos);

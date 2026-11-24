@@ -29,7 +29,7 @@
 //       2 px of where focusPose puts it), the neighbours' nails on screen
 //   P9  desk: no skin vertex below the desk + 0.01 in any library pose
 //   P10 idle cost: 10 s idle on low without ?perf=1 (render on demand): heap
-//       <= +0.3 MB, rendered frames <= 21 per second
+//       (retained, after a forced GC) <= +0.3 MB, rendered frames <= 21 per second
 // Exits 1 when a gated check fails.
 import fs from 'fs';
 import path from 'path';
@@ -62,7 +62,7 @@ function add(id, what, value, gate, ok) {
 }
 
 async function boot({ tier = TIER, perf = true, vw = 1280, vh = 720 } = {}) {
-  const browser = await chromium.launch({ executablePath: CHROME, args: ['--use-angle=swiftshader', '--enable-precise-memory-info'] });
+  const browser = await chromium.launch({ executablePath: CHROME, args: ['--use-angle=swiftshader', '--enable-precise-memory-info', '--js-flags=--expose-gc'] });
   const ctx = await browser.newContext({ viewport: { width: vw, height: vh }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   const errors = [];
@@ -444,16 +444,19 @@ await s.browser.close();
     let rendered = 0, frames = 0;
     const count = () => { frames++; if (app.loop.renderedThisFrame) rendered++; };
     app.loop.add(count, 99);
-    const h0 = performance.memory ? performance.memory.usedJSHeapSize : 0;
+    // retained heap (after a full GC at both ends): garbage from rendering
+    // 19 frames a second is not growth
+    const heap = () => { if (window.gc) window.gc(); return performance.memory ? performance.memory.usedJSHeapSize : 0; };
+    const h0 = heap();
     const t0 = performance.now();
     await new Promise((res) => setTimeout(res, 10000));
     const secs = (performance.now() - t0) / 1000;
-    const h1 = performance.memory ? performance.memory.usedJSHeapSize : 0;
+    const h1 = heap();
     app.loop.remove(count);
     return { perSec: rendered / secs, frames: frames / secs, heapMB: (h1 - h0) / 1e6, idle: app.hand.idleRunning };
   });
   add('P10', 'low, 10 s idle: rendered frames per second (rAF frames)', `${r.perSec.toFixed(1)} (${r.frames.toFixed(1)}), idle ${r.idle}`, '<= 21', r.perSec <= 21);
-  add('P10', 'low, 10 s idle: heap growth (MB)', +r.heapMB.toFixed(3), '<= 0.3', r.heapMB <= 0.3);
+  add('P10', 'low, 10 s idle: retained heap growth after GC (MB)', +r.heapMB.toFixed(3), '<= 0.3', r.heapMB <= 0.3);
   add('P', 'page errors (low)', t.errors.length ? t.errors.slice(0, 3).join(' | ') : 0, '0', t.errors.length === 0);
   await t.browser.close();
 }
