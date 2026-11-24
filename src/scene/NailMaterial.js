@@ -96,6 +96,7 @@ uniform vec3 uNailCentre;
 uniform vec3 uNailAxis;
 uniform vec3 uNailSide;
 uniform vec2 uNailHalf;
+uniform vec4 uNailAnat;
 uniform float uMetal;
 uniform float uCoat;
 uniform float uRough;
@@ -160,12 +161,27 @@ vec3 B = normalize(vBitW - N * dot(N, vBitW) - T * dot(T, vBitW));
 vec3 rel = vLocal - uNailCentre;
 float s = dot(rel, uNailAxis) / uNailHalf.x;
 float w = dot(rel, uNailSide) / uNailHalf.y;
-vec3 nail = uBaseColor;
-float lun = 1.0 - smoothstep(0.75, 1.0, length(vec2(w * 0.9, (s - 1.05) * 2.1)));
-nail = mix(nail, vec3(0.93, 0.80, 0.76), lun * 0.55);
-float freeEdge = smoothstep(-0.62, -0.86, s);
-nail = mix(nail, vec3(0.97, 0.90, 0.84), freeEdge * 0.85);
-nail *= 0.985 + 0.015 * sin(w * 37.0);
+// Natural nail (B9): the pink bed seen through the plate, a lunula peeking
+// out from under the cuticle (mostly on the thumb), a thin soft cuticle line,
+// a faint onychodermal band, a thin translucent whitish free edge, ridges.
+// uNailAnat: x = s of the line where the plate leaves the fingertip,
+// y / z = cuticle / free-edge arc (s per w^2), w = lunula strength.
+float w2 = w * w;
+float cutS = 1.0 - uNailAnat.y * w2;
+float smileS = uNailAnat.x + 0.07 * w2;
+float cutE = cutS - s;
+vec3 nail = uBaseColor * 0.93 + 0.055;
+float lun = (1.0 - smoothstep(0.6, 1.0, length(vec2(w / 0.44, (cutE + 0.05) / 0.27)))) * uNailAnat.w;
+nail = mix(nail, vec3(0.96, 0.89, 0.88), lun * 0.55);
+nail = mix(nail, vec3(0.93, 0.84, 0.81), (1.0 - smoothstep(0.0, 0.035, cutE)) * 0.28);
+float fe = smoothstep(smileS + 0.01, smileS - 0.075, s);
+nail *= 1.0 - 0.05 * (1.0 - smoothstep(0.0, 0.06, abs(s - smileS - 0.05))) * (1.0 - fe);
+nail = mix(nail, mix(vec3(0.88, 0.84, 0.82), vec3(0.97, 0.94, 0.91), smoothstep(smileS, -1.0, s)), fe * 0.6);
+nail *= 0.994 + 0.006 * sin(w * 41.0 + sin(w * 13.0) * 1.3);
+// where the plate meets the folds: a soft shade and a 1-2 px contact line
+float eSide = 1.0 - abs(w);
+float ePx = min(eSide / max(fwidth(w), 1e-5), max(cutE, 0.0) / max(fwidth(s), 1e-5));
+float contact = 1.0 - 0.3 * (1.0 - smoothstep(0.0, 2.5, ePx));
 vec3 albedo = mix(nail, uUnderColor, uUnderAmount);
 float cov = uUnderAmount;
 float relief = 0.0;
@@ -260,12 +276,13 @@ float NdV = clamp(dot(N, V), 0.0, 1.0);
 float NdL = max(dot(N, L), 0.0);
 float F = 0.05 + 0.95 * pow(1.0 - NdV, 5.0);
 float metal = uMetal * cov;
-float coatK = mix(0.7, uCoat, cov);
-float rough = mix(0.16, uRough, cov);
+// bare plate: a soft, broad sheen (rougher, dimmer ring) that fades out on the free edge
+float coatK = mix(0.7 * (1.0 - 0.75 * fe), uCoat, cov);
+float rough = mix(0.34, uRough, cov);
 float sheenK = uSheen * cov;
 vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5);
 vec3 irr = hemi + uLightColor * NdL + uRimColor * pow(1.0 - NdV, 2.0) * max(dot(N, uRimDir), 0.0);
-float ao = 1.0 - 0.38 * smoothstep(0.72, 1.02, s) - 0.28 * smoothstep(0.78, 1.0, abs(w));
+float ao = (1.0 - 0.3 * smoothstep(0.2, 0.0, cutE) - 0.2 * smoothstep(0.16, 0.0, eSide)) * contact;
 vec3 col = albedo * irr * 1.12 * ao * (1.0 - metal);
 col += sheenK * pow(1.0 - NdV, 2.5) * hemi * (0.35 + 0.65 * albedo);
 vec3 tint = mix(vec3(1.0), pigment / max(max(pigment.r, pigment.g), max(pigment.b, 0.02)), 0.88);
@@ -325,7 +342,8 @@ if (coatK > 0.001) {
 float coatRough = mix(rough, 0.0, wetLocal);
 vec3 env = envSample(R, coatRough * uEnvMaxLod);
 float ringBlur = mix(0.012 + rough * 0.3, 0.03, wetLocal);
-float ring = ringLight(R, ringBlur) * uRing.z * mix(1.0, 1.35, wetLocal);
+// bare plate: one soft lobe instead of the ring (a ring on the C-curve reads as two strip lights)
+float ring = mix(pow(max(dot(R, L), 0.0), 12.0) * 5.0, ringLight(R, ringBlur) * uRing.z * mix(1.0, 1.35, wetLocal), cov);
 vec3 coat = (env + ring) * F * coatK * uEnvIntensity;
 col += coat * mix(1.0, ao, 0.5);
 #ifdef WET_NORMAL_TAPS
@@ -407,6 +425,7 @@ export function createNailUniforms(lighting) {
     uNailAxis: { value: new THREE.Vector3(0, 1, 0) },
     uNailSide: { value: new THREE.Vector3(1, 0, 0) },
     uNailHalf: { value: new THREE.Vector2(1, 1) },
+    uNailAnat: { value: new THREE.Vector4(-0.7, 0.2, 0.2, 0) },
     uMetal: { value: f.metal },
     uCoat: { value: f.coat },
     uRough: { value: f.rough },

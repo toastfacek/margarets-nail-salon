@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import glslMinify from './scripts/glsl-minify.mjs';
 
 // Poki serves the build from a sub-path, so every asset URL must be relative.
 export default defineConfig({
@@ -15,4 +16,7 @@ export default defineConfig({
   // short names. `__ready` / `__perf...` (double underscore) and anything
   // accessed by a quoted string are left alone (mangleQuoted is off).
   esbuild: { mangleProps: /^_[a-z]/ },
+  // Build only: GLSL comments, indentation and spaces around operators go
+  // (scripts/glsl-minify.mjs; the shaders' tokens are checked unchanged).
+  plugins: [glslMinify()],
 });

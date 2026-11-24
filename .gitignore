@@ -2,3 +2,5 @@ node_modules/
 dist/
 scripts/shot-*.png
 *.log
+tools/blender/out/
+__pycache__/
