@@ -53,6 +53,96 @@ def export(scene, path):
         export_hierarchy_flatten_bones=False, export_apply=False)
 
 
+def patch_morph_normals(path, scene, report, check):
+    """Write the plates' exact normals into the nails' morph targets.
+
+    Blender exports a shape key's normal delta from its own smooth normals of
+    the keyed shape, which ignore the custom normals (the side walls and the lip
+    come out tilted). Each glTF vertex is matched to its plate vertex by base
+    position, normal and UV; the NORMAL target accessors are dense float VEC3
+    and are rewritten in place (same layout, same size)."""
+    import struct
+    data = scene.get('nail_morph_normals')
+    if not data:
+        return
+    with open(path, 'rb') as fh:
+        b = bytearray(fh.read())
+    jlen = struct.unpack_from('<I', b, 12)[0]
+    J = json.loads(bytes(b[20:20 + jlen]))
+    bin0 = 20 + jlen + 8
+    worst, done, flipped_all = 0.0, 0, 0
+    faces_of = scene['nail_morph_faces']
+
+    def acc(i):
+        a = J['accessors'][i]
+        assert a['componentType'] == 5126 and a['type'] in ('VEC2', 'VEC3') and 'sparse' not in a
+        bv = J['bufferViews'][a['bufferView']]
+        assert bv.get('byteStride') in (None, 4 * (2 if a['type'] == 'VEC2' else 3))
+        n = 2 if a['type'] == 'VEC2' else 3
+        o = bin0 + bv.get('byteOffset', 0) + a.get('byteOffset', 0)
+        return o, a['count'], n
+
+    def read(i):
+        o, c, n = acc(i)
+        return np.frombuffer(bytes(b[o:o + 4 * c * n]), dtype='<f4').reshape(c, n).astype(np.float64)
+
+    for m in J['meshes']:
+        if m['name'] not in data:
+            continue
+        V, UV, N0, Nk = data[m['name']]
+        pr = m['primitives'][0]
+        gp, gn, gu = read(pr['attributes']['POSITION']), read(pr['attributes']['NORMAL']), read(pr['attributes']['TEXCOORD_0'])
+        gu[:, 1] = 1.0 - gu[:, 1]
+        scale = float(np.abs(V).max())
+        A, B = np.hstack([gp / scale, gu]), np.hstack([V / scale, UV])
+        d2 = ((A[:, None, :] - B[None, :, :]) ** 2).sum(-1)
+        # position + UV identify a vertex except where the plate's side wall foot
+        # and the underside's side column meet (same point, same UV, other faces):
+        # those are told apart by the triangles round them
+        cand = [np.flatnonzero(row < 1e-10) for row in d2]
+        worst = max(worst, float(np.sqrt(d2.min(1)).max()))
+        idx = np.full(len(gp), -1)
+        for i, c in enumerate(cand):
+            if len(c) == 1:
+                idx[i] = c[0]
+        ia = pr['indices']
+        o, c, n = (lambda a: (bin0 + J['bufferViews'][a['bufferView']].get('byteOffset', 0) + a.get('byteOffset', 0), a['count'], a['componentType']))(J['accessors'][ia])
+        tri = np.frombuffer(bytes(b[o:o + c * (2 if n == 5123 else 4)]), dtype='<u2' if n == 5123 else '<u4').reshape(-1, 3)
+        mine = {frozenset(t) for t in faces_of[m['name']]}
+        for _ in range(4):
+            for t in tri:
+                for k in range(3):
+                    i, j1, j2 = t[k], t[(k + 1) % 3], t[(k + 2) % 3]
+                    if idx[i] >= 0 or idx[j1] < 0 or idx[j2] < 0:
+                        continue
+                    hit = [a for a in cand[i] if frozenset((a, idx[j1], idx[j2])) in mine]
+                    if len(hit) == 1:
+                        idx[i] = hit[0]
+        if (idx < 0).any() or len(set(idx.tolist())) != len(idx):
+            worst = float('inf')
+        Nb = (N0 / np.linalg.norm(N0, axis=1, keepdims=True))[idx]
+        # Blender's custom normals can come out flipped on the thin side walls:
+        # the base normals are rewritten too
+        o, c, n = acc(pr['attributes']['NORMAL'])
+        flipped = int((np.einsum('ij,ij->i', Nb, gn) < 0.5).sum())
+        b[o:o + 4 * c * n] = Nb.astype('<f4').tobytes()
+        gn = Nb
+        names = (m.get('extras') or {}).get('targetNames', [])
+        for t, Nt in zip(pr['targets'], Nk):
+            o, c, n = acc(t['NORMAL'])
+            Nt = Nt / np.linalg.norm(Nt, axis=1, keepdims=True)
+            delta = (Nt[idx] - gn).astype('<f4')
+            b[o:o + 4 * c * n] = delta.tobytes()
+            done += 1
+        assert len(names) == len(Nk)
+        flipped_all += flipped
+    check('export: nail normals and morph normals are the plate normals (vertex match)', worst < 1e-4, float('%.2e' % worst), 1e-4)
+    report['counts']['nail_normals_fixed'] = flipped_all
+    with open(path, 'wb') as fh:
+        fh.write(bytes(b))
+    report['counts']['morph_normal_targets'] = done
+
+
 def verify(path, scene, report, check):
     from mathutils.kdtree import KDTree
     from rig import world_points
@@ -163,6 +253,7 @@ def main():
     report['counts']['total_verts'] = nv
     report['counts']['nail_verts'] = {f: len(o.data.vertices) for f, o in scene['nails'].items()}
     export(scene, out_glb)
+    patch_morph_normals(out_glb, scene, report, check)
     size = os.path.getsize(out_glb)
     with open(out_glb, 'rb') as fh:
         sha = hashlib.sha256(fh.read()).hexdigest()

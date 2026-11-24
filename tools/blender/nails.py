@@ -77,7 +77,9 @@ class Plate:
         self.sag = P.NAIL_CUTICLE_ARC * W0
 
     def W(self, y):
-        return self.W0 * (1.0 - P.NAIL_SIDE_TAPER * np.clip((self.y_cut - y) / (self.y_cut - self.y_tip), 0, 1))
+        # the taper runs at the same rate at every length (per bed length), so a
+        # longer nail is never wider anywhere than the default one
+        return self.W0 * (1.0 - P.NAIL_SIDE_TAPER * np.clip((self.y_cut - y) / (1.25 * self.bed), 0, 2))
 
     def y_c(self, x):
         return self.y_cut - self.sag * (x / self.W0) ** 2
@@ -371,25 +373,36 @@ def build(scene, report, check, free_len=None, sculpted=False, morph=False):
         keys = None
         var = None
         if morph:
-            L0, L1 = P.NAIL_FREE_RANGE
-            ps, plg = Plate(g, W0, g.y_cut, g.y_h, L0, lift), Plate(g, W0, g.y_cut, g.y_h, L1, lift)
-            vs, uvs, ns, fs = ps.build()
-            vl, _, _, fl = plg.build()
-            assert fs == fl and fs == faces
-            verts, uv, nrm = vs, uvs, ns
-            keys = {'long': vl - off}
-            var = {'L': [L0, L1], 'def': free_len, 'mm': [ps.free / mm, plg.free / mm],
-                   'cy': [(ps.y_cut + ps.y_tip) / 2 - cy, (plg.y_cut + plg.y_tip) / 2 - cy],
-                   'half': [(ps.y_cut - ps.y_tip) / 2, (plg.y_cut - plg.y_tip) / 2],
-                   'hypoY': pl.y_h - cy, 'cutArc': pl.sag, 'freeArc': pl.d_tip}
+            # the viewer's slider: the base is the shortest; one morph target per
+            # stop (exact geometry there, piecewise linear between)
+            stops = P.NAIL_FREE_STOPS
+            pls = [Plate(g, W0, g.y_cut, g.y_h, L, lift) for L in stops]
+            built = [p.build() for p in pls]
+            assert all(b[3] == faces for b in built)
+            verts, uv, nrm = built[0][0], built[0][1], built[0][2]
+            keys = {'L%03d' % round(L * 100): b[0] - off for L, b in zip(stops[1:], built[1:])}
+            var = {'L': list(stops), 'def': free_len, 'mm': [p.free / mm for p in pls],
+                   'cy': [(p.y_cut + p.y_tip) / 2 - cy for p in pls],
+                   'half': [(p.y_cut - p.y_tip) / 2 for p in pls],
+                   'freeArc': [p.d_tip for p in pls],
+                   'hypoY': pl.y_h - cy, 'cutArc': pl.sag}
         obj, M = _write_plate(f, g, rig, verts - off, uv, nrm, faces, origin, keys)
-        chord = float(pl.W(cy))
+        if morph:
+            # Blender derives shape-key normals from its own smooth normals, not the
+            # plate's custom ones; build_hand writes these exact ones into the GLB
+            scene.setdefault('nail_morph_normals', {})[obj.name] = (verts - off, uv, nrm, [b[2] for b in built[1:]])
+            scene.setdefault('nail_morph_faces', {})[obj.name] = faces
+        chord = float(W0)                   # the widest half width: |w| <= 1 on the whole plate
         obj['nailFrame'] = 1
         obj['nailHalf'] = [float(half), chord]
         obj['nailAnat'] = pl.anat(cy, half)
         if var:
             obj['nailVar'] = {k: ([float(x) for x in v] if isinstance(v, list) else float(v)) for k, v in var.items()}
         pl.obj, pl.cy, pl.cz, pl.half = obj, cy, cz, half
+        # the longest stop: the skin is baked once for every length, so it is kept
+        # under this plate's outline too (the plate's z(x, y) is the same at every length)
+        pl.long = Plate(g, W0, g.y_cut, g.y_h, P.NAIL_FREE_STOPS[-1], lift)
+        pl.long.build()
         plates[f] = pl
         scene['nails'][f] = obj
         nv = len(obj.data.vertices)
@@ -513,7 +526,7 @@ def sculpt_skin(scene, plates, report, check):
         z_new = np.where(d < 0, z_in, z_out)
         z_new = lz + (z_new - lz) * top
         # no skin above the plate inside its visible outline (plan 4.7)
-        inside = signed_distance(polys[f], x, y) < 0
+        inside = (signed_distance(polys[f], x, y) < 0) | (signed_distance(outline(pl.long), x, y) < 0)
         z_new = np.where(inside, np.minimum(z_new, zp - P.SKIN_UNDER * mm), z_new)
         new[i] = co[i] + np.outer(z_new - lz, g.Z)
     loc = new @ mwi[:3, :3].T + mwi[:3, 3]
@@ -565,6 +578,17 @@ def nail_checks(scene, plates, info, check):
             hit = bvh.ray_cast(p, -n, 0.05)
             if hit[0] is not None:
                 gaps.append(hit[3] - T)
+        # the longest stop's plate (the slider's far end), from its own analytic surface
+        lp = pl.long
+        lv = lp.build()[0]
+        Ql = pl.g.O + lv @ R.T
+        bad_l = 0
+        for i in np.nonzero(lp.visible_mask())[0]:
+            nv = Vector(R @ pl_normal(lp, i))
+            p = Vector(Ql[i])
+            if bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)[0] is not None:
+                bad_l += 1
+        check(f'{f}: no visible plate vertex under the skin at the longest length', bad_l == 0, bad_l)
         info[f]['under_skin'] = f'{bad}/{tested}'
         info[f]['min_gap_under_mm'] = round(float(min(gaps) / mm), 3) if gaps else None
         check(f'{f}: no visible plate vertex under the skin', bad == 0, f'{bad}/{tested}')

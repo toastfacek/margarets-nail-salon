@@ -195,6 +195,9 @@ float contact = 1.0 - 0.3 * (1.0 - smoothstep(0.0, 2.5, ePx));
 // natural free-edge colour and never paint (NAIL_UNDERSIDE; set from step G1)
 float under = 0.0;
 #ifdef NAIL_UNDERSIDE
+// the free edge meets no fold: no contact shade on its sides and side walls
+contact = mix(contact, 1.0, fe);
+eSide = mix(eSide, 1.0, fe);
 under = 1.0 - smoothstep(-0.35, -0.15, vUnder);
 nail = mix(nail, vec3(0.90, 0.86, 0.83), under);
 #endif

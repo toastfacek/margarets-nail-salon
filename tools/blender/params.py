@@ -92,7 +92,8 @@ FACET_MAX_DEG = 4.0              # index last joint, DIP-to-tip: adjacent face n
 # ---- nail unit v2 (nails.py, plan 4); lengths in mm --------------------------------------
 NAIL_WIDTH_FRAC = 0.80           # visible plate width / finger width at mid-nail
 NAIL_FREE_LEN = 0.25             # free edge length / nail bed length (Jesse is choosing this)
-NAIL_FREE_RANGE = (0.05, 0.90)   # the viewer's slider (the morph's two ends)
+NAIL_FREE_RANGE = (0.05, 0.90)   # the viewer's slider
+NAIL_FREE_STOPS = (0.05, 0.15, 0.25, 0.40, 0.60, 0.90)  # its morph targets (exact geometry at each)
 NAIL_CORNER = 0.8                # the free edge's oval starts at most this far before the hyponychium (mm)
 NAIL_TIP_ROUND = 0.70            # 0 square .. 1 full oval: the free edge outline
 NAIL_SIDE_TAPER = 0.05           # the sides converge this much toward the tip
