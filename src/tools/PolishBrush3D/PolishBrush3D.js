@@ -891,6 +891,10 @@ export class PolishBrush3D {
     }
 
     // direction (updated every DIR_STEP of a nail width) and the axis spring
+    // (hadDir: whether the chain had a direction before this sample; the
+    // first motion's snap below must not be skipped because this very sample
+    // set one)
+    const hadDir = this._hasDir;
     const ddx = qx - this._ancX, ddy = qy - this._ancY;
     const dd = Math.sqrt(ddx * ddx + ddy * ddy);
     if (dd > DIR_STEP * g.widthV) {
@@ -923,10 +927,15 @@ export class PolishBrush3D {
     }
     const ux = dx / l, uy = dy / l;
     this._qx = qx; this._qy = qy;
-    if (!this._hasSeg && !this._hasDir) {
+    if (!this._hasSeg && !hadDir) {
       // The chain's first motion: the paddle lands already across it (the
       // axis spring is for turns; turning from a default axis here would
       // start the band edge-on, pinched, behind a full-width back cap).
+      // B9: a first sample more than DIR_STEP from the press (a slow frame,
+      // or the B9 nail's real UVs: more plane units per pixel) set the
+      // direction first and skipped this, so the axis spring turned the
+      // paddle a quarter turn mid-stroke and the handle whipped round
+      // (brush-feel A11, push strokes, 60-70 deg).
       let a = Math.atan2(uy, ux) + Math.PI * 0.5;
       a -= Math.PI * Math.round((a - this._axA) / Math.PI);
       this._axA = a; this._axV = 0;
