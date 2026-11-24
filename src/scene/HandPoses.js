@@ -5,7 +5,7 @@
  * twist] in degrees, about the bone's own axes (src/scene/HandRig.js):
  *   flex   + curls toward the palm (every finger, the thumb, palm, wrist)
  *   spread + toward the pinky side (fingers); for the thumb + brings it in
- *          beside the index (its rest, THUMB_REST, sits at +32)
+ *          beside the index (its rest, THUMB_REST, sits at +27)
  *   twist  thumb only: + turns its nail up (toward the camera)
  * Tunable without Blender: the asset only has to keep the 17 bone names.
  * The limits are mirrored in tools/blender/rig.py (the pipeline checks the
@@ -33,7 +33,7 @@ export function fingerBase(fingerIndex) {
 // finger knuckle / middle joint flex tightened from the plan's 60 / 70 to 45 / 45: past
 // ~50 linear blend skinning folds the pad (tools/blender/rig.py checks every limit)
 const L_FINGER = [[-15, 45, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 45, 0, 0, -1, 1]];
-// thumb base: spread up to 36 (plan: 30; the natural rest, THUMB_REST, sits at 32),
+// thumb base: spread up to 36 (plan: 30; the natural rest, THUMB_REST, sits at 27),
 // flex up to 25 (plan: 35; flex 35 with spread 36 folds the thenar)
 const L_THUMB = [[-15, 25, -20, 36, -15, 25], [-5, 45, 0, 0, 0, 0], [-10, 55, 0, 0, -1, 1]];
 const L_PALM = [-10, 10, -6, 6, 0, 0];
@@ -69,7 +69,7 @@ export function clampPose(p) {
  * the nail partly sideways. Every pose starts from it (neutral included).
  * [base flex, base spread, base twist, middle joint flex, last joint flex]
  */
-export const THUMB_REST = Object.freeze([6, 35, 4, 12, 10]);
+export const THUMB_REST = Object.freeze([4, 27, 4, 12, 10]);
 
 function thumb(out, t) {
   const b = fingerBase(0) * 3;
@@ -87,7 +87,7 @@ export const PRESENT = Object.freeze({
   // away from the index with its nail turned up (never hyper-extended); while
   // another finger is presented it tucks a little closer
   thumbActive: Object.freeze([2, 20, 18, 4, 5]),
-  thumbOther: Object.freeze([8, 36, 4, 14, 12]),
+  thumbOther: Object.freeze([6, 28, 4, 14, 12]),
 });
 
 /**
