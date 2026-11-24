@@ -32,6 +32,9 @@ const TAP_MS = 400;
 const FLICK_PROJ = 0.2;     // s of the release speed a flick carries on
 const PAGE_PX = 70;         // a drag this long along the row moves at least one finger...
 const FLICK_PX_S = 380;     // ...and so does a flick this fast (px/s)
+const STOP_MS = 60;         // no move for this long before the lift: the finger stopped (no flick)...
+const STOP_FRAMES = 1.5;    // ...or this many recent frame intervals (median), when frames are slower,
+const STOP_MAX_MS = 250;    // but never more: a finger held still this long has stopped
 const RUBBER = 0.3;         // finger units: how far past the end finger the band stretches
 const RUBBER_K = 0.55;      // band stiffness at the start (screen px per px)
 const NEAR_TAP_PX = 36;     // a tap this close to another nail's centre counts as on it
@@ -56,8 +59,28 @@ export function install(app) {
     moved: false, caught: false, sStart: 0, sRaw: 0, sDisp: 0, rate: 1, gx: 0, gy: 0,
     // release speed: a short history of (time, s, px along)
     ht: new Float64Array(8), hs: new Float64Array(8), hn: 0,
+    moveFrame: 0,            // frame count when the last move was handled
   };
   let swallowClick = false;
+
+  // Recent frame intervals (ms) and a frame count. A slow frame holds the
+  // lift back as long as it lasts, so on a slow device (or SwiftShader) a
+  // flick's pointerup can arrive 70-150 ms after its last move although the
+  // finger never stopped: "stopped" needs no move for max(STOP_MS,
+  // STOP_FRAMES x the median of the last few frame intervals) and two frames
+  // after the last move; past STOP_MAX_MS it is stopped whatever the frames.
+  // At 60 fps that is still 60 ms.
+  const frameGaps = new Float64Array(6);
+  let frameN = 0, frameLast = -1;
+  const gapTmp = new Float64Array(6);
+  function stopMs() {
+    const n = Math.min(frameN, frameGaps.length);
+    if (n === 0) return STOP_MS;
+    for (let i = 0; i < n; i++) gapTmp[i] = frameGaps[i];
+    const a = gapTmp.subarray(0, n).sort();
+    const med = n % 2 ? a[(n - 1) >> 1] : 0.5 * (a[n / 2 - 1] + a[n / 2]);
+    return Math.min(STOP_MAX_MS, Math.max(STOP_MS, STOP_FRAMES * med));
+  }
 
   // ------------------------------------------------------------- rules --
   function rounds() {
@@ -178,8 +201,13 @@ export function install(app) {
       if (pan.ht[last] - pan.ht[k] > 90) break;
       first = k;
     }
-    // a finger that stopped before lifting does not flick
-    if (now - pan.ht[last] > 60 || first === last) return out;
+    // a finger that stopped before lifting does not flick: no move for
+    // stopMs(), and at least two frames went by after the last move was
+    // handled (a lift queued behind a slow frame arrives right after the
+    // moves, however long that frame took)
+    if (first === last) return out;
+    if (now - pan.ht[last] > STOP_MAX_MS) return out;
+    if (now - pan.ht[last] > stopMs() && frameN - pan.moveFrame >= 2) return out;
     const dt = (pan.ht[last] - pan.ht[first]) / 1000;
     if (dt <= 0) return out;
     out[0] = (pan.hs[last] - pan.hs[first]) / dt;
@@ -284,9 +312,25 @@ export function install(app) {
 
   function onMove(e) {
     if (e.pointerId !== pan.id) return;
-    const x = e.clientX, y = e.clientY;
+    // Every move the browser coalesced into this event, with its own time:
+    // on a slow frame a whole flick can arrive as one pointermove, and its
+    // first point past the slop would start the pan with nothing after it
+    // (no displacement, no release speed: the flick went nowhere).
+    const list = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+    const n = list && list.length ? list.length : 0;
+    let moved = false;
+    if (n > 0) for (let i = 0; i < n; i++) moved = moveTo(list[i].clientX, list[i].clientY, list[i].timeStamp || e.timeStamp || performance.now()) || moved;
+    else moved = moveTo(e.clientX, e.clientY, e.timeStamp || performance.now());
+    if (moved) {
+      scene.railSet(pan.sDisp);
+      syncDots();
+    }
+  }
+  /** One pointer position of a pan; true when the rail moved. */
+  function moveTo(x, y, t) {
+    pan.moveFrame = frameN;
     if (!pan.moved) {
-      if (Math.hypot(x - pan.x0, y - pan.y0) < SLOP_PX) return;
+      if (Math.hypot(x - pan.x0, y - pan.y0) < SLOP_PX) return false;
       pan.moved = true;
       body.classList.add('fp-panning');
       stow(true);
@@ -299,16 +343,15 @@ export function install(app) {
       if (!scene.pickPanPoint(x - rectL, y - rectT, grip)) grip.copy(scene.controls.target);
       pan.gx = pan.lx = x;
       pan.gy = pan.ly = y;
-      pushHistory(e.timeStamp || performance.now());
-      return;
+      pushHistory(t);
+      return false;
     }
     pan.lx = x;
     pan.ly = y;
     pan.sRaw = solve(x - rectL, y - rectT);
     pan.sDisp = band(pan.sRaw);
-    pushHistory(e.timeStamp || performance.now());
-    scene.railSet(pan.sDisp);
-    syncDots();
+    pushHistory(t);
+    return true;
   }
 
   function onUp(e) {
@@ -376,6 +419,9 @@ export function install(app) {
   // watchdog: a glide cut short by someone else's flight (bowl, reveal)
   // never lands, so the brush comes back as soon as nothing travels
   app.loop.add(() => {
+    const t = performance.now();
+    if (frameLast >= 0) frameGaps[frameN++ % frameGaps.length] = t - frameLast;
+    frameLast = t;
     if (stowed && pan.id < 0 && !scene.isRailGliding()) {
       pendingSelect = -1;
       stow(false);

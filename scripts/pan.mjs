@@ -9,6 +9,8 @@
 //   P1  a drag that starts off the active nail moves to the next finger, which
 //       becomes active; the camera settles exactly on that finger's focus pose
 //   P2  a flick (short, fast) moves one finger
+//   P2b a short fast drag held still 400 ms before the lift does not flick
+//       (the stop test scales with slow frames: fingerPan STOP_MS / STOP_FRAMES)
 //   P3  a tap on a neighbouring nail glides to it (camera parked between two
 //       fingers first, so the neighbour is on screen)
 //   P4  rubber band past the last finger (pinky): the camera gives a little,
@@ -210,6 +212,19 @@ for (const kind of INPUTS) {
     await drag(s, [[p.x, p.y], [p.x - d[0] * 90, p.y - d[1] * 90]], 60, { hold: 20 });
     const q = await settle(s);
     check(kind, 'P2', 'flick (90 px in 60 ms) middle -> ring', `${a.finger}->${q.finger} in ${Date.now() - t0} ms, pose err ${q.poseErr}`, q.finger === 'ring' && +q.poseErr < 1e-5, 'ring');
+  }
+  // P2b: a quick short drag, then the finger held still 400 ms before it
+  // lifts: no flick (the camera springs back to the finger it left)
+  {
+    const a = await st(s);
+    const toF = a.finger === 'pinky' ? 'ring' : 'pinky';
+    const d = await toward(s, toF);
+    const p = await offNail(s, d, 70);
+    const end = await drag(s, [[p.x, p.y], [p.x - d[0] * 50, p.y - d[1] * 50]], 60, { hold: 20, noUp: true });
+    await sleep(400);
+    await s.input.up(end[0], end[1]);
+    const q = await settle(s);
+    check(kind, 'P2b', `hold 400 ms then lift (50 px in 60 ms toward ${toF}): no flick`, `${a.finger}->${q.finger}, pose err ${q.poseErr}`, q.finger === a.finger && +q.poseErr < 1e-5, a.finger);
   }
   // P3: tap a neighbouring nail (camera parked half way to the pinky so it shows)
   {
