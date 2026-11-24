@@ -201,6 +201,8 @@ export class HandAnimator {
     this._idle = new Float32Array(N3);
     this._react = new Float32Array(N3);
     this._final = new Float32Array(N3);
+    /** Read-only: this frame's joint targets (degrees, BONES order) that the springs chase (tests: hand-pose P11). */
+    this.targetPose = this._final;
     this._out = new Float32Array(N3);
     // joint springs (MOTION): position (degrees) and velocity per angle
     this._sx = new Float32Array(N3);

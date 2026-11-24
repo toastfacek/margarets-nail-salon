@@ -37,7 +37,10 @@
 //       a finger change are reported
 //   P11 motion feel (MOTION in src/scene/HandPoses.js, the chosen preset): a
 //       knuckle step overshoots >= 5% with the brush up and <= 1% with the
-//       brush down, where it also settles faster; settle = every joint still
+//       brush down, where it also settles faster. Overshoot = the largest
+//       amount the joint runs past its own target that frame
+//       (app.hand.targetPose), over the step; before B9.7 it was measured
+//       past the final value, so the idle drift on the target counted; settle = every joint still
 //       (app.hand.allSettled)
 // Exits 1 when a gated check fails.
 import fs from 'fs';
@@ -420,18 +423,20 @@ await toFinger(page, 'index');
       const a0 = H.rig.applied[15];
       H.presentFinger('middle', { ms: 0 });
       const t0 = performance.now();
-      let peak = a0, settle = null, a1 = null, moving = false;
+      // overshoot against the joint's own target this frame (H.targetPose):
+      // the idle drift moves that target, and is not the spring overshooting
+      let peak = 0, settle = null, a1 = null, moving = false;
       while (performance.now() - t0 < 5000) {
         await new Promise((res) => requestAnimationFrame(res));
         const a = H.rig.applied[15];
-        peak = Math.max(peak, a);
+        peak = Math.max(peak, a - H.targetPose[15]);
         if (!H.allSettled) moving = true;
         else if (moving && settle === null) { settle = performance.now() - t0; a1 = a; }
       }
       a1 = H.rig.applied[15];
       H.setStroke(false);
       H.presentFinger('auto');
-      return { overshoot: (peak - a1) / Math.max(1e-6, a1 - a0), settle };
+      return { overshoot: peak / Math.max(1e-6, a1 - a0), settle };
     };
     const springy = await step(false);
     const firm = await step(true);
