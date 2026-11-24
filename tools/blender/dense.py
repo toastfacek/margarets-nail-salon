@@ -104,6 +104,20 @@ def build(scene, report, check):
     bpy.ops.object.vertex_group_limit_total(group_select_mode='ALL', limit=4)
     bpy.ops.object.vertex_group_clean(group_select_mode='ALL', limit=1e-4)
     bpy.ops.object.vertex_group_normalize_all(group_select_mode='ALL', lock_active=False)
+    # the rigid nail unit stays rigid: subdivision blends a 1-3% pull of .02
+    # into its border, which flips the folds' squeezed triangles at a DIP flex
+    rig_n = 0
+    for f in FINGERS:
+        g3 = hand.vertex_groups[f + '.03']
+        for v in me.vertices:
+            w = {gg.group: gg.weight for gg in v.groups}
+            if w.get(g3.index, 0.0) >= P.RIGID_SNAP_W and w.get(g3.index, 0.0) < 1.0:
+                for gi_ in list(w):
+                    if gi_ != g3.index:
+                        hand.vertex_groups[gi_].remove([v.index])
+                g3.add([v.index], 1.0, 'REPLACE')
+                rig_n += 1
+    report['counts']['rigid_snapped_verts'] = rig_n
     md = hand.modifiers.new('Armature', 'ARMATURE')
     md.object = scene['rig']
 

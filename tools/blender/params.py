@@ -85,10 +85,11 @@ NOTCH_CAVITY = 0.3               # no forearm vertex with a cavity mask above th
 
 # ---- rig (rig.py, plan 5) -----------------------------------------------------------
 WEIGHT_SMOOTH_PASSES = 4         # Laplacian passes on the finger webs and the thenar web
-FINGER_JOINT_PASSES = 4          # Laplacian passes on the finger joint blends
+FINGER_JOINT_PASSES = 2          # Laplacian passes on the finger joint blends (more flips more DIP slivers)
 THENAR_RINGS = 3                 # the thenar web's weight smoothing reaches this many rings out
 THENAR_SMOOTH_PASSES = 10
 RIGID_BORDER_PASSES = 0          # Laplacian passes on the two rings round the rigid nail unit
+RIGID_SNAP_W = 0.85              # after subdivision, .03 weights this high snap to 1 (the nail unit stays rigid)
 RIGID_RINGS = 2                  # rings of cage faces around the nail bed that ride on .03 only
 VOLUME_MIN = 0.85                # joint cross-section at any limit pose, x rest
 WEB_DIHEDRAL_MAX = 25.0          # max dihedral change across the thenar web at the game's thumb poses (the crease)
