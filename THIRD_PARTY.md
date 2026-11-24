@@ -20,3 +20,8 @@ Notes
 - The build pipeline runs Blender 5.3 as a Python module (GPL) as a tool; no Blender code is
   part of the game, and the files it writes are this project's own output.
 - No CC-BY, non-commercial, share-alike or unknown-licence asset, texture or code is used.
+- V3 skin: the skin's UV layout is the CC0 base mesh's own UVs, repacked by `tools/blender/uv.py`;
+  the detail map (`skin-detail.webp`: knuckle and joint creases, palm creases, unevenness) is
+  painted from this project's own analytic shapes and noise in `tools/blender/maps.py`, and the
+  micro tile (pores, ridges) is generated at run time by `createSkinMicroTile` in
+  `src/scene/SkinMaterial.js`. No photo, scan or third-party texture is used.

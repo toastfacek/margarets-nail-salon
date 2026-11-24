@@ -174,3 +174,15 @@ BED_FLOOR = 0.68                 # ... and never shorter than this x the finger 
 BED_MIN = 0.7                    # a bed patch shorter than this x the finger width runs out to the hyponychium line
 NAIL_ARCH_MIN = 18.0             # the plate's arch along the finger: radius never under this (mm)
 #         # skin edges whose signed distance to the outline (mm) meets this band are cut once
+
+# ---- V3: skin UVs and the detail map (uv.py, maps.py) ----------------------------------
+UV_HAND_FRAC = 0.80              # the hand's island fills [gutter, this] of the UV square
+UV_GUTTER_PX = 6
+MAP_SIZE = 1024
+MAP_GUTTER_PX = 8                # islands dilated this far (mip and bilinear bleed)
+DETAIL_AGE = 0.6                 # every crease's depth x this (a young hand)
+MAP_SLOPE_EPS_MM = 0.08          # finite step for the height's slope
+MAP_NORMAL_SCALE = 2.5           # slopes are stored x this (the shader divides)
+MAP_CAVITY_MM = 0.14             # a groove this deep is full cavity (B)
+MAP_WEBP_QUALITY = 88
+MAP_CAP_KB = 240

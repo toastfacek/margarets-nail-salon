@@ -194,10 +194,18 @@ float contact = 1.0 - 0.3 * (1.0 - smoothstep(0.0, 2.5, ePx));
 // hand v2: the free edge's underside (nail-space normal pointing in) shows the
 // natural free-edge colour and never paint (NAIL_UNDERSIDE; set from step G1)
 float under = 0.0;
+float feThin = 0.0;
+float alphaOut = 1.0;
 #ifdef NAIL_UNDERSIDE
 // the free edge meets no fold: no contact shade on its sides and side walls
 contact = mix(contact, 1.0, fe);
 eSide = mix(eSide, 1.0, fe);
+// the free edge: a denser white band just past the smile line (air under the
+// plate), then thinner and more translucent toward the rim (s in half-lengths)
+float past = max(smileS - s, 0.0);
+float band = 1.0 - smoothstep(0.05, 0.2, past);
+feThin = fe * smoothstep(0.06, 0.7, past);
+nail = mix(nail, mix(vec3(0.86, 0.835, 0.80), vec3(0.95, 0.93, 0.90), band), fe * 0.7);
 under = 1.0 - smoothstep(-0.35, -0.15, vUnder);
 nail = mix(nail, vec3(0.90, 0.86, 0.83), under);
 #endif
@@ -303,6 +311,20 @@ vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5);
 vec3 irr = hemi + uLightColor * NdL + uRimColor * pow(1.0 - NdV, 2.0) * max(dot(N, uRimDir), 0.0);
 float ao = (1.0 - 0.3 * smoothstep(0.2, 0.0, cutE) - 0.2 * smoothstep(0.16, 0.0, eSide)) * contact;
 vec3 col = albedo * irr * 1.12 * ao * (1.0 - metal);
+#ifdef NAIL_UNDERSIDE
+// translucency of the bare free edge: light through it from behind, and the
+// room's light seen through its thin rim (no paint over it)
+{
+float tk = feThin * (1.0 - cov);
+// what lies behind the plate along the view ray, faintly warmed by it
+vec3 through = envSample(-V, 3.0) * vec3(0.98, 0.95, 0.91);
+col = mix(col, through, tk * 0.25);
+// and it lets what is behind it show (the material is blended when NAIL_UNDERSIDE)
+alphaOut = 1.0 - 0.4 * tk;
+// light from behind glows through it; the thin rim is lighter still
+col += uLightColor * tk * (0.5 * pow(clamp(dot(V, -L), 0.0, 1.0), 2.0) + 0.08);
+}
+#endif
 col += sheenK * pow(1.0 - NdV, 2.5) * hemi * (0.35 + 0.65 * albedo);
 vec3 tint = mix(vec3(1.0), pigment / max(max(pigment.r, pigment.g), max(pigment.b, 0.02)), 0.88);
 if (metal > 0.001) {
@@ -383,7 +405,7 @@ vec3 aces = toneMapping(col);
 vec3 hp = col * (toneMapping(vec3(mx)).g / max(mx, 1e-4));
 col = mix(aces, hp, 0.7);
 #endif
-gl_FragColor = vec4(col, 1.0);
+gl_FragColor = vec4(col, alphaOut);
 #include <colorspace_fragment>
 }
 `;
@@ -482,6 +504,8 @@ export function createNailMaterial(settings, lighting, uniforms = null) {
     uniforms: uniforms || createNailUniforms(lighting),
     defines: definesFor(settings),
     side: THREE.FrontSide,
+    // hand v2: the bare free edge is part see-through (alpha < 1 only there)
+    transparent: !!(settings && settings.nailUnderside),
   });
 }
 

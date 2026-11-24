@@ -245,9 +245,11 @@ def main():
     masks.build(scene, report, check)
     if flags.get('blend'):
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out_dir, 'hand-v2.blend'))
-    # export: no skin UVs yet (V3), no materials
-    while me.uv_layers:
-        me.uv_layers.remove(me.uv_layers[0])
+    # V3: the skin's UVs (the base mesh's, repacked) and its detail map
+    import uv as UV
+    import maps as MP
+    UV.build(scene, report, check)
+    MP.build(scene, report, check, out_dir)
     me.materials.clear()
     nv = len(me.vertices) + sum(len(o.data.vertices) for o in scene['nails'].values())
     report['counts']['total_verts'] = nv
