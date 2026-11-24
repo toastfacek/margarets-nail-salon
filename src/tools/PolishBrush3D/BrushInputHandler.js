@@ -92,11 +92,25 @@ const TOUCH_EDGE_STEPS = 3;          // touch at the nail's top edge: 12 px / 8 
 // (brush-feel A1 / A2 / A18 on high-mouse, one run in two). 1/128 px moves no
 // paint visibly and keeps whole- and half-pixel points off such edges.
 const RAY_EPS_PX = 1 / 128;
+// Two crossings in one frame (B9.9): a slow frame can hold both ends of a
+// short trip off the nail (brush-feel B1.leave: out and back within ~40 px).
+// The exit's bisection took the frame's spare casts and the re-entry went
+// with none or one or two: its edge sample sat up to a segment (12-60 px)
+// short of the edge, about one run in three on high-mouse (and now and then
+// on touch). Now a crossing that is not the frame's newest sample leaves
+// CROSS_RESERVE steps for a later one, and every crossing starts from the
+// nail's outline projected on screen (no raycast): two probes EDGE_PROBE_PX
+// either side of it bracket the edge within 2 x EDGE_PROBE_PX; plain
+// bisection takes over where the outline is off (each probe keeps the
+// bracket honest).
+const CROSS_RESERVE = 2;
+const EDGE_PROBE_PX = 0.6;
 const PRESS_START = 0.35;             // pressure on down, ramps to 1 in ~65 ms
 const PRESS_RATE = 10;                // per second
 const RELEASE_RATE = 8;               // per second (old rig height only)
 
 const _corner = new THREE.Vector3();
+const _ov = new THREE.Vector3();
 
 export class BrushInputHandler {
   /**
@@ -173,6 +187,8 @@ export class BrushInputHandler {
     this._row = new Float32Array(SAMPLE_STRIDE);
     this._rowB = new Float32Array(SAMPLE_STRIDE);
     this._rowC = new Float32Array(SAMPLE_STRIDE);
+    this._outline = null;          // the nail sheet's outline edges (crossings)
+    this._outlineDone = null;
     this._rayDir = new THREE.Vector3(0, 0, -1);
     this._toCamera = new THREE.Vector3();
     this._tip = new THREE.Vector3();
@@ -575,9 +591,27 @@ export class BrushInputHandler {
    * `onRow`) and P(sOff) (off it), P(s) = (ax, ay) + ((bx, by) - (ax, ay)) s.
    * Writes the last on-nail hit into `out` and its s into `_bisectS`.
    */
-  _bisect(nailMesh, ax, ay, bx, by, sOn, sOff, onRow, out, steps) {
+  _bisect(nailMesh, ax, ay, bx, by, sOn, sOff, onRow, out, steps, guess = false) {
     out.set(onRow);
     const scratch = this._rowC;
+    // first, two probes either side of where the segment meets the projected
+    // outline (crossings); each keeps the bracket honest if it is off
+    const len = Math.hypot(bx - ax, by - ay);
+    const sg = guess && steps >= 2 && len > 4 * EDGE_PROBE_PX ? this._outlineS(nailMesh, ax, ay, bx, by, sOn, sOff) : -1;
+    if (sg >= 0) {
+      const d = (EDGE_PROBE_PX / len) * (sOff > sOn ? 1 : -1);
+      for (let k = 0; k < 2; k++) {
+        const s = k ? sg + d : sg - d;
+        if ((s - sOn) * (sOff - s) <= 0) continue; // outside the bracket now
+        steps--;
+        if (this._cast(nailMesh, ax + (bx - ax) * s, ay + (by - ay) * s, scratch, null)) {
+          out.set(scratch);
+          sOn = s;
+        } else {
+          sOff = s;
+        }
+      }
+    }
     for (let k = 0; k < steps; k++) {
       const s = (sOn + sOff) * 0.5;
       if (this._cast(nailMesh, ax + (bx - ax) * s, ay + (by - ay) * s, scratch, null)) {
@@ -605,8 +639,23 @@ export class BrushInputHandler {
     // rawOnly: the paint point's last hit is the raw contact; nudgedUnknown:
     // it was tried first and hit, so the nudged point was never cast
     let rawOnly = false, nudgedUnknown = false;
+    // the first two probes either side of the projected outline (as _bisect):
+    // "either on" ends where the later of the raw path's and the nudged
+    // path's outline meetings is (seen from the on-nail side)
+    const len = Math.hypot(bx - ax, by - ay);
+    let sg = -1;
+    if (steps >= 2 && len > 4 * EDGE_PROBE_PX) {
+      const sRaw = this._outlineS(nailMesh, ax, ay, bx, by, sOn, sOff);
+      const sNud = this._outlineS(nailMesh, ax, ay - TOUCH_NUDGE_PX, bx, by - TOUCH_NUDGE_PX, sOn, sOff);
+      sg = sRaw < 0 ? sNud : sNud < 0 ? sRaw : (Math.abs(sRaw - sOn) > Math.abs(sNud - sOn) ? sRaw : sNud);
+    }
+    const d = sg >= 0 ? (EDGE_PROBE_PX / len) * (sOff > sOn ? 1 : -1) : 0;
     for (let k = 0; k < steps; k++) {
-      const s = (sOn + sOff) * 0.5;
+      let s = (sOn + sOff) * 0.5;
+      if (sg >= 0 && k < 2) {
+        const g = k ? sg + d : sg - d;
+        if ((g - sOn) * (sOff - g) > 0) s = g;
+      }
       const px = ax + (bx - ax) * s, py = ay + (by - ay) * s;
       const y1 = rawFirst ? py : py - TOUCH_NUDGE_PX, y2 = rawFirst ? py - TOUCH_NUDGE_PX : py;
       let on = this._cast(nailMesh, px, y1, scratch, null);
@@ -718,7 +767,9 @@ export class BrushInputHandler {
     if (this._prevValid && this._prevOn !== hit) {
       // Crossed the nail outline since the previous sample: find the crossing.
       const reserve = newest || !this.isTouch ? 0 : 1;
-      const steps = Math.max(0, Math.min(BISECT_STEPS, this._extraLeft - reserve));
+      let steps = Math.max(0, Math.min(BISECT_STEPS, this._extraLeft - reserve));
+      // mouse: leave a later crossing in this frame its share (see CROSS_RESERVE)
+      if (!newest) steps = Math.min(steps, Math.max(CROSS_RESERVE, this._extraLeft - reserve - (this.isTouch ? 2 : 1) * CROSS_RESERVE));
       this._extraLeft -= steps;
       const edge = this._rowB;
       const pt = this._prevT;
@@ -750,7 +801,7 @@ export class BrushInputHandler {
       } else if (hit) {
         // entry: this sample is the on-nail side (s = 1)
         if (steps > 0) {
-          this._bisect(nailMesh, this._prevX, this._prevY, x, y, 1, 0, row, edge, steps);
+          this._bisect(nailMesh, this._prevX, this._prevY, x, y, 1, 0, row, edge, steps, true);
           this._emit(edge, pt + (t - pt) * this._bisectS, 1, 1);
           this._emit(row, t, 0, 0);
         } else {
@@ -758,7 +809,7 @@ export class BrushInputHandler {
         }
       } else {
         // exit: the previous sample is the on-nail side (s = 0)
-        this._bisect(nailMesh, this._prevX, this._prevY, x, y, 0, 1, this._prevRow, edge, steps);
+        this._bisect(nailMesh, this._prevX, this._prevY, x, y, 0, 1, this._prevRow, edge, steps, true);
         this._emit(edge, pt + (t - pt) * this._bisectS, 1, -1);
       }
     } else if (hit) {
@@ -841,6 +892,82 @@ export class BrushInputHandler {
   }
 
   /** The nail's projected bounding box on screen (CSS px), into `out`. */
+  /**
+   * The nail sheet's open outline (edges used by one triangle), as vertex
+   * index pairs; cached per geometry and its position version.
+   */
+  _outlineEdges(geo) {
+    const pos = geo.attributes.position;
+    const c = this._outline;
+    if (c && c.geo === geo && c.version === pos.version && c.count === pos.count) return c.edges;
+    // weld by position (UV seams duplicate vertices)
+    const key = new Map();
+    const id = new Int32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) {
+      const k = Math.round(pos.getX(i) * 1e6) + ',' + Math.round(pos.getY(i) * 1e6) + ',' + Math.round(pos.getZ(i) * 1e6);
+      let v = key.get(k);
+      if (v === undefined) { v = i; key.set(k, i); }
+      id[i] = v;
+    }
+    const uses = new Map();
+    const ix = geo.index ? geo.index.array : null;
+    const nt = ix ? ix.length / 3 : pos.count / 3;
+    for (let t = 0; t < nt; t++) {
+      for (let e = 0; e < 3; e++) {
+        const a = id[ix ? ix[t * 3 + e] : t * 3 + e], b = id[ix ? ix[t * 3 + (e + 1) % 3] : t * 3 + (e + 1) % 3];
+        const k = a < b ? a * 65536 + b : b * 65536 + a;
+        uses.set(k, (uses.get(k) || 0) + 1);
+      }
+    }
+    const list = [];
+    for (const [k, n] of uses) if (n === 1) list.push(Math.floor(k / 65536), k % 65536);
+    const edges = Int32Array.from(list);
+    this._outline = { geo, version: pos.version, count: pos.count, edges, scr: new Float32Array(pos.count * 2) };
+    return edges;
+  }
+
+  /**
+   * Where the screen segment P(s) = a + (b - a) s, s between sOn and sOff,
+   * meets the nail's outline projected on screen: the meeting nearest sOn, or
+   * -1 (no geometry, behind the camera, or no meeting). No raycasts.
+   */
+  _outlineS(nailMesh, ax, ay, bx, by, sOn, sOff) {
+    const geo = nailMesh && nailMesh.geometry;
+    if (!geo || !geo.attributes.position || geo.attributes.position.count >= 65536) return -1;
+    const edges = this._outlineEdges(geo);
+    const scr = this._outline.scr;
+    const pos = geo.attributes.position;
+    const mw = nailMesh.matrixWorld;
+    const lo = Math.min(sOn, sOff), hi = Math.max(sOn, sOff);
+    const dx = bx - ax, dy = by - ay;
+    let best = -1, bestD = Infinity;
+    const done = this._outlineDone || (this._outlineDone = new Uint8Array(0));
+    const seen = done.length >= pos.count ? done : (this._outlineDone = new Uint8Array(pos.count));
+    seen.fill(0);
+    for (let e = 0; e < edges.length; e += 2) {
+      for (let k = 0; k < 2; k++) {
+        const v = edges[e + k];
+        if (seen[v]) continue;
+        seen[v] = 1;
+        _ov.fromBufferAttribute(pos, v).applyMatrix4(mw).project(this.camera);
+        if (_ov.z > 1) return -1;
+        scr[v * 2] = this._rectLeft + (_ov.x + 1) * 0.5 * this._rectWidth;
+        scr[v * 2 + 1] = this._rectTop + (1 - _ov.y) * 0.5 * this._rectHeight;
+      }
+      const p = edges[e] * 2, q = edges[e + 1] * 2;
+      const ex = scr[q] - scr[p], ey = scr[q + 1] - scr[p + 1];
+      const den = dx * ey - dy * ex;
+      if (Math.abs(den) < 1e-9) continue;
+      const wx = scr[p] - ax, wy = scr[p + 1] - ay;
+      const s = (wx * ey - wy * ex) / den;   // along the segment
+      const u = (wx * dy - wy * dx) / den;   // along the outline edge
+      if (u < 0 || u > 1 || s < lo || s > hi) continue;
+      const d = Math.abs(s - sOn);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    return best;
+  }
+
   _nailScreenBox(nailMesh, out) {
     out.valid = false;
     if (!nailMesh || !nailMesh.geometry) return;
