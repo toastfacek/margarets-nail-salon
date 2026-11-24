@@ -28,8 +28,10 @@
 //   P8  rail: on every finger the camera is the focus pose (nail centre within
 //       2 px of where focusPose puts it), the neighbours' nails on screen
 //   P9  desk: no skin vertex below the desk + 0.01 in any library pose
-//   P10 idle cost: 10 s idle on low without ?perf=1 (render on demand): heap
-//       (retained, after a forced GC) <= +0.3 MB, rendered frames <= 21 per second
+//   P10 idle cost: 10 s idle without ?perf=1 (render on demand), close-up and
+//       zoomed out, low and medium: heap (retained, after a forced GC) <= +0.3 MB,
+//       rendered frames <= 21 per second on both; frames rendered 1-4 s after
+//       a finger change are reported
 //   P11 motion feel (MOTION in src/scene/HandPoses.js, the chosen preset): a
 //       knuckle step overshoots >= 5% with the brush up and <= 1% with the
 //       brush down, where it also settles faster
@@ -475,11 +477,18 @@ if (SHOTS) {
 add('P', 'page errors', s.errors.length ? s.errors.slice(0, 3).join(' | ') : 0, '0', s.errors.length === 0);
 await s.browser.close();
 
-// P10 idle cost on low, render on demand
-{
-  const t = await boot({ tier: 'low', perf: false });
-  const r = await t.page.evaluate(async () => {
+// P10 idle cost, render on demand (no ?perf=1): close-up and zoomed out, low
+// and medium. Gate, the same for all four: <= 21 rendered frames a second
+// (the low tier's 50 ms idle throttle plus the 250 ms safety net; medium's rAF
+// runs at ~30 a second and its 33 ms throttle renders every other one).
+for (const [tier, view, gate] of [['low', 'close-up', 21], ['low', 'zoomed-out', 21], ['medium', 'zoomed-out', 21], ['medium', 'close-up', 21]]) {
+  const t = await boot({ tier, perf: false });
+  const r = await t.page.evaluate(async (view) => {
     app.switchToFinger('index');
+    if (view === 'zoomed-out') {
+      await new Promise((res) => setTimeout(res, 2500));
+      app.scene.zoomOut();
+    }
     // let the intro, the brush and the film go to sleep (the base game then renders 4 frames a second)
     await new Promise((res) => setTimeout(res, 15000));
     let rendered = 0, frames = 0;
@@ -494,11 +503,21 @@ await s.browser.close();
     const secs = (performance.now() - t0) / 1000;
     const h1 = heap();
     app.loop.remove(count);
-    return { perSec: rendered / secs, frames: frames / secs, heapMB: (h1 - h0) / 1e6, idle: app.hand.idleRunning };
-  });
-  add('P10', 'low, 10 s idle: rendered frames per second (rAF frames)', `${r.perSec.toFixed(1)} (${r.frames.toFixed(1)}), idle ${r.idle}`, '<= 21', r.perSec <= 21);
-  add('P10', 'low, 10 s idle: retained heap growth after GC (MB)', +r.heapMB.toFixed(3), '<= 0.3', r.heapMB <= 0.3);
-  add('P', 'page errors (low)', t.errors.length ? t.errors.slice(0, 3).join(' | ') : 0, '0', t.errors.length === 0);
+    // after a finger change: frames rendered from 1 s to 4 s after it (the
+    // flight lands in 0.5 s; the presented finger settles in ~0.4 s more)
+    app.switchToFinger('middle');
+    await new Promise((res) => setTimeout(res, 1000));
+    let r2 = 0;
+    const c2 = () => { if (app.loop.renderedThisFrame) r2++; };
+    app.loop.add(c2, 99);
+    await new Promise((res) => setTimeout(res, 3000));
+    app.loop.remove(c2);
+    return { perSec: rendered / secs, frames: frames / secs, heapMB: (h1 - h0) / 1e6, idle: app.hand.idleRunning, afterChange: r2 / 3 };
+  }, view);
+  add('P10', `${tier} ${view}, 10 s idle: rendered frames per second (rAF frames)`, `${r.perSec.toFixed(1)} (${r.frames.toFixed(1)}), idle ${r.idle}`, `<= ${gate}`, r.perSec <= gate);
+  add('P10', `${tier} ${view}, 10 s idle: retained heap growth after GC (MB)`, +r.heapMB.toFixed(3), '<= 0.3', r.heapMB <= 0.3);
+  add('P10', `${tier}: rendered frames per second 1-4 s after a finger change`, +r.afterChange.toFixed(1), 'info', null);
+  add('P', `page errors (${tier} ${view})`, t.errors.length ? t.errors.slice(0, 3).join(' | ') : 0, '0', t.errors.length === 0);
   await t.browser.close();
 }
 

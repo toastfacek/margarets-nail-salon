@@ -1046,8 +1046,11 @@ export class PolishBrush3D {
     let changed = false;
 
     // Has the bound nail moved (the posed hand, B9)? Then the cached world
-    // frame follows it (16-float compare, no allocation).
-    if (this._g && refreshNailGeom(this._g)) this._needsPose = true;
+    // frame follows it (16-float compare, no allocation). The rig is re-posed
+    // for it only while painting or with the pointer over the nail: the hand's
+    // idle sway moves the nail every frame zoomed out, and re-posing a parked
+    // brush there would render every frame (app.hand throttles idle frames).
+    if (this._g && refreshNailGeom(this._g) && (this.isPainting || (input && input.hasPointer && (input.onNail || input.tip.hover)))) this._needsPose = true;
 
     // Has the camera moved? (16-float compare, no allocation)
     const camMatrix = this.camera.matrixWorld;
