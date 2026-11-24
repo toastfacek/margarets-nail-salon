@@ -114,6 +114,7 @@ export class RevealDirector {
   /** Finger bones of a hand model (sanitised GLB names: index01, index02...). */
   _findBones(hand) {
     this._bones.length = 0;
+    if (this.app.hand) return; // B9: app.hand owns the bones (reveal:flash plays its wiggle)
     const model = this.app.nail.hands[hand] && this.app.nail.hands[hand].model;
     if (model) {
       model.traverse((o) => {
@@ -196,14 +197,19 @@ export class RevealDirector {
     this._ctl = scene.controls.enabled;
     scene.controls.enabled = false;
 
-    // nails and their sweep order (pinky side first)
-    for (let i = 0; i < 5; i++) {
-      this._has[i] = !!(hm.getNail(this.hand, FINGERS[i]) && hm.getNailWorldPosition(FINGERS[i], this._nails[i]));
-      this._want[i] = this._has[i] && (!fingers || fingers.indexOf(FINGERS[i]) !== -1);
-    }
-    this._cp[0].copy(cam.position);
-    this._lp[0].copy(this._tgt0);
-    this._layout();
+    // nails and their sweep order (pinky side first), measured in the pose the
+    // hand takes for the show (B9: app.hand fans the fingers on reveal:start)
+    const measure = () => {
+      for (let i = 0; i < 5; i++) {
+        this._has[i] = !!(hm.getNail(this.hand, FINGERS[i]) && hm.getNailWorldPosition(FINGERS[i], this._nails[i]));
+        this._want[i] = this._has[i] && (!fingers || fingers.indexOf(FINGERS[i]) !== -1);
+      }
+      this._cp[0].copy(cam.position);
+      this._lp[0].copy(this._tgt0);
+      this._layout();
+    };
+    if (app.hand) app.hand.withPose('fan', measure);
+    else measure();
     const order = [];
     for (let i = 0; i < 5; i++) if (this._want[i]) order.push(i);
     order.sort((a, b) => this._nails[b].dot(this._S) - this._nails[a].dot(this._S));
@@ -305,6 +311,7 @@ export class RevealDirector {
   }
 
   _wiggle(env, t) {
+    if (this.app.hand) return;
     const bones = this._bones;
     if (!bones.length) {
       this.app.nail.getMesh().rotation.z = this._rock + 0.052 * env * Math.sin(t * 13);

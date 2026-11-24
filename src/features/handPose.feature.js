@@ -31,9 +31,7 @@ export function install(app) {
 
   let reduced = false;
   try { reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { reduced = false; }
-  // B9.4: the pose system only; idle life arrives in B9.5
-  hand.setIdle(0);
-  void reduced;
+  hand.setIdle(reduced ? 0 : 1);
 
   app.loop.add((dt, time) => {
     if (!hand.update(dt)) return;
@@ -48,5 +46,11 @@ export function install(app) {
   // any rendered frame (the 250 ms safety net, the UI) also shows the idle pose
   app.loop.add((dt, time, loop) => { if (loop.renderedThisFrame) hand.noteRendered(time); }, 98);
 
-  void EVENTS;
+  const ev = app.events;
+  ev.on(EVENTS.BRUSH_STROKE_START, () => hand.setStroke(true));
+  ev.on(EVENTS.BRUSH_STROKE, (p) => hand.setPress(Math.min(1, 0.35 + 0.65 * (p.pressure || 0)), p.u));
+  ev.on(EVENTS.BRUSH_STROKE_END, () => { hand.setStroke(false); hand.setPress(0); });
+  ev.on(EVENTS.REVEAL_START, () => hand.setPose('fan'));
+  ev.on(EVENTS.REVEAL_FLASH, () => hand.play('wiggle'));
+  ev.on(EVENTS.REVEAL_DONE, () => hand.setPose('auto'));
 }
