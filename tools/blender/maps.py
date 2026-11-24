@@ -53,6 +53,19 @@ def _value_noise(p):
     return out
 
 
+def _catmull(pts, n):
+    """A Catmull-Rom curve through the points (n samples per span)."""
+    P_ = np.vstack([2 * pts[0] - pts[1], pts, 2 * pts[-1] - pts[-2]])
+    out = []
+    for k in range(1, len(P_) - 2):
+        p0, p1, p2, p3 = P_[k - 1], P_[k], P_[k + 1], P_[k + 2]
+        for t in np.linspace(0, 1, n, endpoint=False):
+            out.append(0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t
+                              + (-p0 + 3 * p1 - 3 * p2 + p3) * t ** 3))
+    out.append(pts[-1])
+    return np.array(out)
+
+
 def _groove(x, depth, sigma):
     return -depth * np.exp(-0.5 * (x / sigma) ** 2)
 
@@ -124,7 +137,8 @@ class Field:
             Nn = N[idx]
             hh = np.zeros(len(idx))
             # (joint, kind): the thumb's middle joint is its MCP (thumb.02 head)
-            joints = ((2, 'mid'), (3, 'last'), (1, 'base'))
+            # (the thumb's base joint is its CMC, deep in the hand: no knuckle there)
+            joints = ((2, 'mid'), (3, 'last')) if f == 'thumb' else ((2, 'mid'), (3, 'last'), (1, 'base'))
             for k, kind in joints:
                 a, b, x, rho, nj = self.joint_frame(pw, f, k)
                 # back / palm side by the surface normal against the joint's back
@@ -151,22 +165,25 @@ class Field:
                                          (1.4, 0.16, 1.05), (2.8, 0.09, 0.8)):
                         bow = 0.03 * x * x + 0.18 * np.sin(x * 0.9 + 2.0 * c)
                         ln = np.clip(1.0 - (np.abs(x) / (half * Rf)) ** 2, 0, 1)
-                        hh += wide * ln * near * _groove(a - c - bow, dep * A * 1.6, 0.34)
+                        hh += wide * ln * near * _groove(a - c - bow, dep * A * P.KNUCKLE_GAIN * 1.6, 0.34)
                     for c, dep in ((-0.8, 0.10), (0.8, 0.10)):
                         hh += palm * side * near * _groove(a - c + 0.02 * x * x, dep * A * 1.4, 0.42)
                 elif kind == 'last':
                     for c, dep, half in ((-1.1, 0.08, 0.9), (0.0, 0.12, 1.1), (1.1, 0.07, 0.85)):
                         bow = 0.03 * x * x + 0.12 * np.sin(x * 1.2 + 2.0 * c)
                         ln = np.clip(1.0 - (np.abs(x) / (half * Rf)) ** 2, 0, 1)
-                        hh += wide * ln * near * _groove(a - c - bow, dep * A * 1.6, 0.3)
+                        hh += wide * ln * near * _groove(a - c - bow, dep * A * P.KNUCKLE_GAIN * 1.6, 0.3)
                     hh += palm * side * near * _groove(a - 0.3 + 0.025 * x * x, 0.11 * A * 1.4, 0.45)
                 else:
                     # the knuckle: a soft dimple and two faint arcs on the back;
                     # the finger's base folds on the palm side, out past the web
                     off = 0.0 if f == 'thumb' else 0.38 * np.linalg.norm(self.J[f + '.01'][1] - self.J[f + '.01'][0]) / self.mm
                     hh += back * near * (-0.06 * A * np.exp(-0.5 * ((a / 2.5) ** 2 + (x / 3.0) ** 2)))
-                    for c in (-1.5, 1.5):
-                        hh += back * side * near * _groove(a - c - 0.03 * x * x, 0.05 * A * 1.6, 0.32)
+                    # loose skin over the knuckle: four soft arcs, bowed toward the wrist
+                    for c, dep, half in ((-2.4, 0.06, 0.8), (-0.8, 0.10, 1.0), (0.8, 0.10, 1.0), (2.4, 0.06, 0.8)):
+                        bow = -0.05 * x * x + 0.2 * np.sin(x * 0.7 + 1.7 * c)
+                        ln = np.clip(1.0 - (np.abs(x) / (half * Rf)) ** 2, 0, 1)
+                        hh += wide * ln * near * _groove(a - c - bow, dep * A * P.KNUCKLE_GAIN * 1.6, 0.38)
                     near2 = np.clip(1.0 - np.abs(a - off) / 6.0, 0, 1)
                     for c in (-0.9, 0.9):
                         hh += palm * side * near2 * _groove(a - off - c, 0.09 * A * 1.4, 0.45)
@@ -176,24 +193,62 @@ class Field:
         q = Pw - o
         px, py = (q @ X) / self.mm, (q @ Y) / self.mm
         down = np.clip((-(N @ self.up) - 0.2) / 0.5, 0, 1)
-        on_palm = down * (np.min(dist[:, 1:], 1) > 9.0) * (dist[:, 0] > 9.0)
-        # quadratic curves through three points each (x along the palm, y toward the index side)
+        # (smooth masks: the broad form must not show the mask's edge)
+        def ss(e0, e1, v):
+            t_ = np.clip((v - e0) / (e1 - e0), 0, 1)
+            return t_ * t_ * (3 - 2 * t_)
+        on_palm = down * ss(6.0, 12.0, np.min(dist[:, 1:], 1)) * ss(6.0, 12.0, dist[:, 0])
+        # the palm's creases: soft, wide, shaded folds (a shallow trough with a
+        # faint rounded lip each side), deepest mid-way and fading out at both
+        # ends, along smooth curves through points in palm-length units (x
+        # toward the middle knuckle, y toward the index side). The thenar crease
+        # curves round the thumb's mound; the proximal transverse crease leaves
+        # it from a short shared trunk at the radial border (a Y, not a V); the
+        # distal transverse crease runs from the ulnar border up between the
+        # index and middle fingers.
+        trunk = [(0.80, 0.43), (0.74, 0.40), (0.68, 0.37)]
         curves = (
-            ((0.04 * L, 0.05 * L), (0.45 * L, 0.32 * L), (0.78 * L, 0.38 * L), 0.12),     # thenar crease
-            ((0.70 * L, -0.48 * L), (0.80 * L, -0.05 * L), (0.86 * L, 0.20 * L), 0.10),    # distal transverse
-            ((0.80 * L, 0.42 * L), (0.66 * L, 0.10 * L), (0.62 * L, -0.25 * L), 0.09),     # proximal transverse
+            (trunk + [(0.57, 0.30), (0.46, 0.25), (0.34, 0.22), (0.22, 0.22), (0.11, 0.25), (0.03, 0.29)], 0.13, 1.0),
+            ([(0.68, 0.37), (0.66, 0.29), (0.64, 0.17), (0.62, 0.03), (0.60, -0.12), (0.57, -0.27)], 0.10, 0.95),
+            ([(0.69, -0.49), (0.73, -0.36), (0.77, -0.20), (0.80, -0.05), (0.84, 0.08), (0.88, 0.17)], 0.11, 0.95),
         )
-        for p0, p1, p2, dep in curves:
-            t = np.linspace(0, 1, 40)[:, None]
-            pts = (1 - t) ** 2 * np.array(p0) + 2 * (1 - t) * t * np.array(p1) + t * t * np.array(p2)
+        for pts0, dep, sig in curves:
+            pts = _catmull(np.array(pts0) * L, 12)
+            # arc length along the curve, and the nearest point's parameter
+            seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+            cum = np.concatenate([[0.0], np.cumsum(seg)])
             dmin = np.full(len(px), np.inf)
+            tpar = np.zeros(len(px))
             for k in range(len(pts) - 1):
                 a_, b_ = pts[k], pts[k + 1]
                 ab = b_ - a_
                 u = np.clip(((px - a_[0]) * ab[0] + (py - a_[1]) * ab[1]) / (ab @ ab), 0, 1)
                 dd = np.hypot(px - (a_[0] + u * ab[0]), py - (a_[1] + u * ab[1]))
-                dmin = np.minimum(dmin, dd)
-            h += on_palm * _groove(dmin, dep * A * 1.3, 0.8)
+                better = dd < dmin
+                dmin = np.where(better, dd, dmin)
+                tpar = np.where(better, (cum[k] + u * seg[k]) / cum[-1], tpar)
+            # depth along the crease: fades in and out, with a slow wander
+            prof = np.sin(np.pi * np.clip(tpar, 0, 1)) ** 0.8 * (0.8 + 0.2 * np.sin(tpar * 9.0 + dep * 40.0))
+            d_ = dep * A * 1.8 * prof
+            fold = _groove(dmin, d_, sig) + 0.22 * d_ * np.exp(-0.5 * ((dmin - 2.3 * sig) / (0.9 * sig)) ** 2)
+            h += on_palm * fold
+        # the palm's form, for its shading: the central hollow, the thumb's mound
+        # (thenar) and the little finger's (hypothenar). Broad: kept out of the
+        # cavity term
+        def bump(cx, cy, sx, sy, amp):
+            return amp * np.exp(-0.5 * (((px - cx * L) / (sx * L)) ** 2 + ((py - cy * L) / (sy * L)) ** 2))
+        broad = on_palm * ss(0.06 * L, 0.22 * L, px) * (bump(0.55, 0.0, 0.2, 0.22, -P.PALM_FORM_MM) + bump(0.28, 0.40, 0.16, 0.13, 0.6 * P.PALM_FORM_MM)
+                           + bump(0.38, -0.40, 0.24, 0.11, 0.5 * P.PALM_FORM_MM))
+        # the back of the hand and the fingers: a faint, young skin texture (two
+        # crossing families of soft shallow lines, ~2 mm apart, wandering)
+        upf = np.clip(((N @ self.up) - 0.2) / 0.5, 0, 1)
+        wn = (_value_noise(Pw / self.mm / 3.0) - 0.5) * 1.6
+        u1 = (px * 0.82 + py * 0.57) / 2.1 + wn
+        u2 = (px * 0.82 - py * 0.57) / 2.5 - wn
+        tex = (np.abs(np.sin(np.pi * u1)) ** 6 + np.abs(np.sin(np.pi * u2)) ** 6) - 0.62
+        h += upf * P.DORSAL_TEX_MM * A * tex
+        h += broad
+        self.broad_last = broad
         # the wrist crease (palm side, about the wrist joint)
         h += down * np.clip(1.0 - np.abs(py) / (0.45 * L), 0, 1) * _groove(px + 1.5, 0.06 * A * 1.4, 0.6)
         # broad unevenness
@@ -303,6 +358,7 @@ def build(scene, report, check, out_dir):
     Bn = _unit(dPdv - N * np.sum(dPdv * N, 1, keepdims=True))
     eps = P.MAP_SLOPE_EPS_MM * field.mm
     h0 = field.height(Pw, N)
+    hb = field.broad_last
     gT = (field.height(Pw + Tn * eps, N) - field.height(Pw - Tn * eps, N)) / (2 * P.MAP_SLOPE_EPS_MM)
     gB = (field.height(Pw + Bn * eps, N) - field.height(Pw - Bn * eps, N)) / (2 * P.MAP_SLOPE_EPS_MM)
     # the tangential gradient g = gT* T + gB* B in the (non-orthogonal) T, B basis:
@@ -320,7 +376,7 @@ def build(scene, report, check, out_dir):
     img[..., 0] = 0.5
     img[..., 1] = 0.5
     img[..., 3] = 1.0
-    cav = np.clip(-h0 / P.MAP_CAVITY_MM, 0, 1)
+    cav = np.clip(-(h0 - hb) / P.MAP_CAVITY_MM, 0, 1)
     vals = np.stack([np.clip(nx * k * 0.5 + 0.5, 0, 1), np.clip(ny * k * 0.5 + 0.5, 0, 1), cav, np.ones(len(cav))], 1)
     img[pix[:, 1], pix[:, 0]] = vals
     valid = np.zeros((size, size), dtype=bool)

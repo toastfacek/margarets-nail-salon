@@ -115,6 +115,13 @@ class Plate:
         # NAIL_C_TIGHTEN_LEN to the edge)
         tight = P.NAIL_C_TIGHTEN * smoothstep(-P.NAIL_C_TIGHTEN_LEN * mm, 2.0 * mm, yh - y)
         z = g.zbed(x, yb, tight)
+        # the free edge's corners: past NAIL_CORNER_RELAX[0] mm of overhang the
+        # C-curve's sides relax back toward the centre line by up to
+        # NAIL_CORNER_RELAX[2] (filed corners do not hang down past the fingertip
+        # like a claw; the free edge's start keeps the full curve)
+        r0, r1, k = P.NAIL_CORNER_RELAX
+        relax = k * smoothstep(r0 * mm, r1 * mm, yh - y)
+        z = z + relax * (g.zbed(np.zeros_like(x), yb, tight) - z)
         eps = 1e-4
         dzdy = (g.zbed(x, yh + eps) - g.zbed(x, yh - eps)) / (2 * eps)
         z = z + P.NAIL_FREE_SLOPE * dzdy * past - P.NAIL_DROOP * (past / mm) ** 2 * mm
@@ -531,6 +538,22 @@ def sculpt_skin(scene, plates, report, check):
     co = np.empty(len(me.vertices) * 3)
     me.vertices.foreach_get('co', co)
     co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    # the fingertip's pulp reaches a little forward under the free edge (the base
+    # mesh's tip ends at the hyponychium, so a C-curved free edge hung in front of
+    # it with the background showing between): below the plate, near and past the
+    # hyponychium, the skin moves forward along the nail by up to PULP_FORWARD_MM
+    moved = 0
+    for f, pl in plates.items():
+        g = pl.g
+        L = g.local(co)
+        x, y, lz = L[:, 0], L[:, 1], L[:, 2]
+        depth = pl.z(x, np.maximum(y, pl.y_tip)) - lz
+        a = (smoothstep(pl.y_h + 7.0 * mm, pl.y_h + 0.5 * mm, y)
+             * smoothstep(1.0 * mm, 3.0 * mm, depth) * (1.0 - smoothstep(9.0 * mm, 13.0 * mm, depth))
+             * (1.0 - smoothstep(0.9 * pl.W0, 1.6 * pl.W0, np.abs(x))) * (Wd[f] > 0.5))
+        co = co - np.outer(a * P.PULP_FORWARD_MM * mm, g.Y)
+        moved += int((a > 0.05).sum())
+    report['pulp_forward_verts'] = moved
     new = co.copy()
     dist_out = np.full(len(co), np.inf)
     capped = np.zeros(len(co), dtype=bool)

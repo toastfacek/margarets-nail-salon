@@ -103,6 +103,7 @@ uniform vec3 uNailAxis;
 uniform vec3 uNailSide;
 uniform vec2 uNailHalf;
 uniform vec4 uNailAnat;
+uniform float uFreeTipS;
 uniform float uMetal;
 uniform float uCoat;
 uniform float uRough;
@@ -198,16 +199,20 @@ float feThin = 0.0;
 float alphaOut = 1.0;
 #ifdef NAIL_UNDERSIDE
 // the free edge meets no fold: no contact shade on its sides and side walls
+float eSide0 = eSide;
 contact = mix(contact, 1.0, fe);
 eSide = mix(eSide, 1.0, fe);
-// the free edge: a denser white band just past the smile line (air under the
-// plate), then thinner and more translucent toward the rim (s in half-lengths)
+// the free edge (keratin): a denser white band just past the smile line (air
+// under the plate), then ivory and mostly opaque; only the last fraction of a
+// millimetre at its rim (tip and sides) is thin enough to let light through.
+// uFreeTipS: s of the plate's tip at the current length (the viewer sets it)
 float past = max(smileS - s, 0.0);
 float band = 1.0 - smoothstep(0.05, 0.2, past);
-feThin = fe * smoothstep(0.06, 0.7, past);
-nail = mix(nail, mix(vec3(0.86, 0.835, 0.80), vec3(0.95, 0.93, 0.90), band), fe * 0.7);
+float rim = max(1.0 - smoothstep(0.0, 0.07, s - uFreeTipS), 1.0 - smoothstep(0.0, 0.07, eSide0));
+feThin = fe * rim * smoothstep(0.02, 0.12, past);
+nail = mix(nail, mix(vec3(0.91, 0.885, 0.835), vec3(0.95, 0.935, 0.90), band), fe * 0.8);
 under = 1.0 - smoothstep(-0.35, -0.15, vUnder);
-nail = mix(nail, vec3(0.90, 0.86, 0.83), under);
+nail = mix(nail, vec3(0.93, 0.87, 0.79), under);
 #endif
 vec3 albedo = mix(nail, uUnderColor, uUnderAmount * (1.0 - under));
 float cov = uUnderAmount * (1.0 - under);
@@ -316,13 +321,15 @@ vec3 col = albedo * irr * 1.12 * ao * (1.0 - metal);
 // room's light seen through its thin rim (no paint over it)
 {
 float tk = feThin * (1.0 - cov);
-// what lies behind the plate along the view ray, faintly warmed by it
+// the rim: what lies behind it faintly through, and light from behind glows in it
 vec3 through = envSample(-V, 3.0) * vec3(0.98, 0.95, 0.91);
-col = mix(col, through, tk * 0.25);
-// and it lets what is behind it show (the material is blended when NAIL_UNDERSIDE)
-alphaOut = 1.0 - 0.4 * tk;
-// light from behind glows through it; the thin rim is lighter still
-col += uLightColor * tk * (0.5 * pow(clamp(dot(V, -L), 0.0, 1.0), 2.0) + 0.08);
+col = mix(col, through, tk * 0.3);
+alphaOut = 1.0 - 0.3 * tk;
+col += uLightColor * tk * (0.45 * pow(clamp(dot(V, -L), 0.0, 1.0), 2.0) + 0.05);
+// the underside and the cut walls face the fingertip or the desk: in its shade,
+// not lit like the top (seen edge-on they read as white slivers otherwise)
+float wall = (1.0 - smoothstep(0.25, 0.6, abs(vUnder))) * fe;
+col *= 1.0 - 0.3 * under - 0.2 * wall * (1.0 - under);
 }
 #endif
 col += sheenK * pow(1.0 - NdV, 2.5) * hemi * (0.35 + 0.65 * albedo);
@@ -468,6 +475,8 @@ export function createNailUniforms(lighting) {
     uNailSide: { value: new THREE.Vector3(1, 0, 0) },
     uNailHalf: { value: new THREE.Vector2(1, 1) },
     uNailAnat: { value: new THREE.Vector4(-0.7, 0.2, 0.2, 0) },
+    // s of the free edge's tip (only NAIL_UNDERSIDE reads it; the viewer sets it per length)
+    uFreeTipS: { value: -100 },
     uMetal: { value: f.metal },
     uCoat: { value: f.coat },
     uRough: { value: f.rough },

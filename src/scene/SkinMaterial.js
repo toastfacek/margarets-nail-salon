@@ -78,6 +78,8 @@ const detailChunk = /* glsl */ `
 uniform sampler2D uDetailMap;
 uniform float uDetailScale;
 uniform vec3 uWrap;
+uniform vec3 uFillDir;
+uniform vec3 uFillColor;
 #ifdef SKIN_MICRO
 uniform sampler2D uMicroMap;
 uniform float uMicroRepeat;
@@ -124,6 +126,9 @@ vec3 diff = clamp((vec3(nr, ng, nb) + w) / (1.0 + w), 0.0, 1.0);
 float ndv = clamp(dot(Nd, V), 0.0, 1.0);
 vec3 amb = mix(uGround, uSky, Nd.y * 0.5 + 0.5) * (1.0 - 0.3 * cav) * mix(vec3(1.0), vec3(1.0, 0.86, 0.82), cav);
 vec3 col = t.rgb * (amb + uKeyColor * diff);
+// an optional soft fill (zero unless the host sets it): gives the side away from
+// the key its form (the palm seen from below)
+col += t.rgb * uFillColor * clamp((dot(Nd, uFillDir) + 0.25) / 1.25, 0.0, 1.0) * (1.0 - 0.4 * cav);
 // the terminator's warm scatter (as v2), the transmission through thin parts
 col += uGlow * (0.7 + 0.6 * thin) * ((diff.r - max(nb, 0.0)) * 0.6 + pow(1.0 - ndv, 3.0) * 0.45);
 float tr = pow(clamp(dot(V, -normalize(L + Ng * 0.35)), 0.0, 1.0), 3.0);
@@ -263,6 +268,8 @@ export function createSkinMaterials(shared, detail = null) {
       uDetailMap: { value: detail.map },
       uDetailScale: { value: detail.scale || 2.5 },
       uWrap: { value: new THREE.Vector3(0.5, 0.26, 0.12) },
+      uFillDir: { value: new THREE.Vector3(0, -1, 0) },
+      uFillColor: { value: new THREE.Color(0, 0, 0) },
       uMicroMap: { value: detail.micro || null },
       uMicroRepeat: { value: detail.repeat || 34 },
     });
