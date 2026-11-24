@@ -52,7 +52,8 @@ BED_DEPTH = 0.06                 # nail bed below the plate, x half width
 HYPO_GAP = 0.10                  # extra gap under the free edge per unit of overhang (x overhang length)
 FOLD_SIDE_END = (0.30, 0.75)     # the lateral folds fade out toward the free edge over [y_hypo - a, y_hypo + b] x half length
                                  # (a long, soft ramp: no notch where they end)
-RIGID_REACH = 1.3                # skin within this many nail half lengths of the plate rides on .03 only
+RIGID_REACH = 0.6                # skin within this many nail half lengths of the plate rides on .03 only
+                                 # (covers the folds, 0.42 half widths; 1.3 reached past the last joint and froze it)
 
 # ---- skin shape (sculpt.py) -------------------------------------------------------
 # Forearm: mostly under the towel and the arm rest. Faces whose vertices are all
@@ -77,3 +78,10 @@ KNUCKLE_RADIUS = 0.085
 # ---- skin colour masks (masks.py): R blush, G palm side, B cavity, A thinness ----
 MASK_SMOOTH_PASSES = 3
 CAVITY_CURV = (0.04, 0.30)       # Laplacian concavity (x mean edge length) -> cavity 0..1
+
+# ---- rig (rig.py) -------------------------------------------------------------------
+JOINT_BACK = 0.15                # joint centre moved toward the back of the finger, x local radius
+JOINT_WIN_BACK = 0.9             # blend window across a joint on the back (crisp knuckle), x finger radius
+JOINT_WIN_PAD = 2.2              # ... and on the pad side (soft fold)
+VOLUME_MIN = 0.85                # joint cross-section at any limit pose, x rest
+KNUCKLE_SMOOTH_PASSES = 3        # Laplacian passes over the knuckle / webbing weights

@@ -157,4 +157,16 @@ def render_all(glb, out_dir, report, only=None):
     shot('index-oblique', c + z * 0.16 - y * 0.16 + x * 0.10, c - y * 0.01, lens=60, up=z)
     c, x, y, z = nail_frame(bpy.data.objects['Nail_Thumb'], rig, 'thumb')
     shot('thumb-macro', c + z * 0.28 + y * 0.02, c, lens=60, up=y)
+    # posed (the rig's local axes: X flex, Z spread, Y twist), from the side and from the top
+    import rig as RG
+    poses = RG.limit_poses()
+    side_eye, side_at = palm + Vector((-0.35, -2.4, 0.25)), palm + Vector((-0.35, 0, -0.02))
+    top_eye, top_at = (mid[0] - 0.1, mid[1] - 0.6, mid[2] + 3.2), (mid[0] - 0.1, mid[1], mid[2])
+    for name, pose in (('relaxed', poses['relaxed']), ('limit', poses['curl']), ('thumb', poses['thumb-limit'])):
+        if only and 'pose-' + name not in only:
+            continue
+        RG.set_pose(rig, pose)
+        shot('pose-' + name, side_eye, side_at, lens=55)
+        shot('pose-' + name + '-top', top_eye, top_at, lens=45, up=(0, 1, 0))
+    RG.set_pose(rig, {})
     report['qa_renders'] = renders

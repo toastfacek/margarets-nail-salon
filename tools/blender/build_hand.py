@@ -3,7 +3,7 @@
 Run (Blender 5.3 as a Python module, headless):
     /home/claude/bpyenv/bin/python tools/blender/build_hand.py [--steps=nails,sculpt,masks] [--qa]
 
-Pipeline: import -> sculpt -> nails -> masks -> export -> checks (-> QA renders).
+Pipeline: import -> sculpt -> nails -> rig -> masks -> export -> checks (-> QA renders).
 Nothing is edited by hand; every number lives in params.py; no randomness, so
 two runs give the same file (checked: report.json carries the sha256).
 
@@ -26,7 +26,7 @@ import params as P  # noqa: E402
 import gltfio  # noqa: E402
 
 # The steps, in order (each is a module here with build(scene, report, check)).
-ALL_STEPS = [s for s in ('sculpt', 'nails', 'masks') if os.path.exists(os.path.join(HERE, s + '.py'))]
+ALL_STEPS = [s for s in ('sculpt', 'nails', 'rig', 'masks') if os.path.exists(os.path.join(HERE, s + '.py'))]
 
 
 def parse_args(argv):
@@ -65,6 +65,9 @@ def main():
     if 'nails' in steps:
         import nails as N
         N.build(scene, report, check)
+    if 'rig' in steps:
+        import rig as RG
+        RG.build(scene, report, check)
     if 'masks' in steps:
         import masks as M
         M.build(scene, report, check)
