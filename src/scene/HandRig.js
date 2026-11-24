@@ -23,13 +23,13 @@
 import * as THREE from 'three';
 import {
   BONES, NB, N3, FINGER_ORDER, fingerBase, LIMITS, clampPose,
-  writePresent, writePresentS, writeNamed, POSE_NAMES, WIGGLE,
+  writePresent, writePresentS, writeNamed, POSE_NAMES, WIGGLE, MOTION, dampingOf,
 } from './HandPoses.js';
 
 const DEG = Math.PI / 180;
 const EPS = 1e-4;        // degrees: below this a joint has not moved
 const SETTLE = 0.05;     // degrees: `settled` threshold (plan 5.2)
-const EASE_T = 0.35;     // s: base pose changes (entering / leaving the close-up, setPose)
+const EASE_T = 0;        // s: camera-driven base changes jump; the joint springs (MOTION) carry the motion
 
 // Press-give (plan 5.3): a damped spring on the active finger's last joint.
 // Smaller than the plan's 2 / 1 / 0.3 degrees: a nail that keeps moving under
@@ -194,6 +194,15 @@ export class HandAnimator {
     this._idle = new Float32Array(N3);
     this._react = new Float32Array(N3);
     this._final = new Float32Array(N3);
+    this._out = new Float32Array(N3);
+    // joint springs (MOTION): position (degrees) and velocity per angle
+    this._sx = new Float32Array(N3);
+    this._sv = new Float32Array(N3);
+    this._springInit = false;
+    this._prevTarget = new Float32Array(N3);
+    this._firm = 0;            // 0 springy .. 1 firm (the brush is down)
+    this._firmTarget = 0;
+    this.motion = MOTION;      // tunable at runtime (app.hand.motion.springy.stiffness = ...)
     this._withStack = [new Float32Array(N3), new Float32Array(N3), new Float32Array(N3), new Float32Array(N3)];
     this._withDepth = 0;
     this._withTmp = new Float32Array(N3);
@@ -243,25 +252,27 @@ export class HandAnimator {
    * presentFinger(null) = neutral. presentFinger('auto') = follow the camera
    * again (the default: the close-up presents the finger on screen).
    */
-  presentFinger(finger, { ms = 350 } = {}) {
+  presentFinger(finger, { ms = 0 } = {}) {
     if (finger === 'auto') { this._mode = 'auto'; return; }
     const i = FINGER_ORDER.indexOf(finger);
     if (i >= 0) writePresent(i, this._manual);
-    else this._manual.fill(0);
+    else writeNamed('neutral', this._manual);
     this._setManual('f:' + finger, ms);
   }
 
   /** Named pose ('neutral' | 'relaxed' | 'fan'); setPose('auto') follows the camera again. */
-  setPose(name, { ms = 350 } = {}) {
+  setPose(name, { ms = 0 } = {}) {
     if (name === 'auto') { this._mode = 'auto'; return; }
     writeNamed(POSE_NAMES.includes(name) ? name : 'neutral', this._manual);
     this._setManual('n:' + name, ms);
   }
 
+  // ms > 0 eases the target over that time (on top of the joint springs,
+  // which carry the motion by default: MOTION in HandPoses.js)
   _setManual(key, ms) {
     this._mode = 'manual';
     this._manualKey = key;
-    this._easeT = Math.max(0.001, ms / 1000);
+    this._easeT = Math.max(0, ms / 1000);
   }
 
   /**
@@ -319,7 +330,7 @@ export class HandAnimator {
       if (i >= 0) writePresent(i, p);
       else writeNamed(poseOrFinger, p);
     } else if (poseOrFinger && poseOrFinger.length === N3) p.set(poseOrFinger);
-    else p.fill(0);
+    else writeNamed('neutral', p);
     clampPose(p);
     rig.apply(p, true);
     try {
@@ -343,10 +354,10 @@ export class HandAnimator {
       const s = sc.railS >= 0 ? sc.railS : FINGER_ORDER.indexOf(sc.zoomedFinger);
       if (s >= 0) {
         writePresentS(s, out);
-        return 'p';
+        return sc.railS >= 0 ? 'p' : 'p' + s;
       }
     }
-    out.fill(0);
+    writeNamed('neutral', out);
     return 'n';
   }
 
@@ -391,7 +402,7 @@ export class HandAnimator {
     }
     const base = this._base;
     if (this._ease < 1) {
-      this._ease = Math.min(1, this._ease + dt / this._easeT);
+      this._ease = this._easeT > 0 ? Math.min(1, this._ease + dt / this._easeT) : 1;
       const e = this._ease * this._ease * (3 - 2 * this._ease);
       for (let k = 0; k < N3; k++) base[k] = this._from[k] + (tg[k] - this._from[k]) * e;
     } else base.set(tg);
@@ -408,31 +419,87 @@ export class HandAnimator {
     // ---- idle (B9.5)
     const idleOn = this._stepIdle(dt);
 
-    // ---- reaction: press-give + one-shots
+    // ---- one-shots (through the joint springs: they wobble)
     const rc = this._react;
     rc.fill(0);
-    const pressBusy = this._stepPress(dt);
     const act = this._activeIndex();
-    if (act >= 0 && (this.press.x !== 0 || pressBusy)) {
-      const b = fingerBase(act) * 3;
-      const x = this.press.x;
-      rc[b + 6] -= PRESS.ext * x;                       // last joint: extension
-      rc[b + 8] += PRESS.roll * x * this.press.side;     // last joint: roll toward the brush side
-      rc[b] -= PRESS.knuckle * x;                        // knuckle
-    }
     const shotBusy = this._stepShot(dt, rc, act);
 
-    // ---- final
+    // ---- target, then the joint springs (the bones follow with the current feel)
     const fin = this._final;
     for (let k = 0; k < N3; k++) fin[k] = base[k] + ov[k] + this._idle[k];
     clampPose(fin);
     for (let k = 0; k < N3; k++) fin[k] += rc[k];
     clampPose(fin);
-    const moved = rig.apply(fin);
+    const springBusy = this._stepSprings(dt, fin);
+
+    // ---- press-give: its own spring, added after the joint springs
+    const out = this._out;
+    out.set(this._sx);
+    const pressBusy = this._stepPress(dt);
+    if (act >= 0 && (this.press.x !== 0 || pressBusy)) {
+      const b = fingerBase(act) * 3;
+      const x = this.press.x;
+      out[b + 6] -= PRESS.ext * x;                       // last joint: extension
+      out[b + 8] += PRESS.roll * x * this.press.side;     // last joint: roll toward the brush side
+      out[b] -= PRESS.knuckle * x;                        // knuckle
+    }
+    clampPose(out);
+    const moved = rig.apply(out);
     this.changedThisFrame = moved;
-    this.settled = this._ease >= 1 && !ovBusy && !pressBusy && !shotBusy;
+    this.settled = this._ease >= 1 && !ovBusy && !pressBusy && !shotBusy && !springBusy;
     this.idleRunning = idleOn;
     return moved;
+  }
+
+  /**
+   * One damped spring per joint angle toward `target` (MOTION: springy while
+   * the hand moves freely, firm while the brush is down). Returns true while
+   * any joint is still moving.
+   */
+  _stepSprings(dt, target) {
+    const x = this._sx, v = this._sv;
+    const pt = this._prevTarget;
+    if (!this._springInit) {
+      x.set(target);
+      v.fill(0);
+      pt.set(target);
+      this._springInit = true;
+      return false;
+    }
+    const M = this.motion;
+    // feel: toward firm fast, back to springy slowly
+    const T = (this._firmTarget > this._firm ? M.blendMs.toFirm : M.blendMs.toSpringy) / 1000;
+    this._firm += (this._firmTarget - this._firm) * Math.min(1, T > 0 ? dt / T : 1);
+    const f = this._firm;
+    const hz = M.springy.stiffness + (M.firm.stiffness - M.springy.stiffness) * f;
+    const zeta = dampingOf(M.springy) + (dampingOf(M.firm) - dampingOf(M.springy)) * f;
+    const js = M.jointScale;
+    let busy = false;
+    for (let b = 0; b < NB; b++) {
+      const level = b < 2 ? 0 : (b - 2) % 3;
+      const w = 2 * Math.PI * hz * js[level];
+      const w2 = w * w, c = 2 * zeta * w;
+      for (let k = b * 3; k < b * 3 + 3; k++) {
+        let xi = x[k], vi = v[k];
+        const ti = target[k];
+        // the target's own speed (idle drift moves it smoothly): tracking a
+        // slowly moving target is not a transition
+        const vt = dt > 0 ? (ti - pt[k]) / dt : 0;
+        pt[k] = ti;
+        if (Math.abs(ti - xi) < 1e-4 && Math.abs(vi) < 1e-3) { x[k] = ti; v[k] = 0; continue; }
+        let t = dt;
+        while (t > 1e-6) {
+          const h = Math.min(t, 1 / 240);
+          vi += (w2 * (ti - xi) - c * vi) * h;
+          xi += vi * h;
+          t -= h;
+        }
+        x[k] = xi; v[k] = vi;
+        if (Math.abs(ti - xi) > SETTLE + 0.05 * Math.abs(vt) || Math.abs(vi - vt) > 0.5) busy = true;
+      }
+    }
+    return busy;
   }
 
   _stepPress(dt) {
@@ -508,6 +575,8 @@ export class HandAnimator {
   /** brush:strokeStart / strokeEnd: idle eases to 20% while the brush is down. */
   setStroke(down) {
     this._idleKTarget = down ? IDLE.strokeScale : 1;
+    // the joints go nearly stiff while the brush is on the nail (MOTION.firm)
+    this._firmTarget = down ? 1 : 0;
   }
 
   /**

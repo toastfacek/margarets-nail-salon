@@ -11,8 +11,8 @@
  * and the contact shadow measure the hand through app.hand.withPose
  * (NailScene.handPose).
  *
- * Events: brush:strokeStart / strokeEnd damp the idle; the first brush:stroke
- * of a stroke sets the press-give (held until the lift); reveal:start fans
+ * Events: brush:strokeStart / strokeEnd damp the idle (the press-give is
+ * available as app.hand.setPress, not driven by the brush); reveal:start fans
  * the fingers, reveal:flash wiggles them, reveal:done hands the pose back to
  * the camera.
  * Render-on-demand tiers: idle motion asks for a frame at most every 33 ms
@@ -28,8 +28,10 @@ export function install(app) {
   const hand = new HandAnimator(app.nail, app.scene);
   app.hand = hand;
   app.scene.handPose = (pose, fn) => hand.withPose(pose, fn);
-  // a close-up framed before the rig existed was framed on the rest pose:
-  // re-frame once, as soon as the shown hand's rig is there
+  // a close-up framed before the rig existed was framed on the file's rest
+  // pose, and the contact shadow baked on it (the thumb sticking out): bake
+  // and re-frame once, as soon as the shown hand's rig is there (switching
+  // hands re-bakes through HandModel.onHandShown, by then through withPose)
   let framed = false;
 
   let reduced = false;
@@ -39,6 +41,7 @@ export function install(app) {
   app.loop.add((dt, time) => {
     if (!framed && hand.rig) {
       framed = true;
+      app.scene.rebakeHand();
       app.scene.reframe();
     }
     if (!hand.update(dt)) return;
@@ -54,19 +57,12 @@ export function install(app) {
   app.loop.add((dt, time, loop) => { if (loop.renderedThisFrame) hand.noteRendered(time); }, 98);
 
   const ev = app.events;
-  // The press-give is set once per stroke, where the brush first lands (its
-  // side picks the roll), and released on lift: the nail gives as the brush
-  // lands and settles back after, but holds still while the stroke runs (the
-  // pointer samples of a frame are cast at the next one: a nail moving under
-  // a stroke would shift them by its motion).
-  let pressed = false;
-  ev.on(EVENTS.BRUSH_STROKE_START, () => { hand.setStroke(true); pressed = false; });
-  ev.on(EVENTS.BRUSH_STROKE, (p) => {
-    if (pressed) return;
-    pressed = true;
-    hand.setPress(1, p.u);
-  });
-  ev.on(EVENTS.BRUSH_STROKE_END, () => { hand.setStroke(false); hand.setPress(0); pressed = false; });
+  // The press-give (app.hand.setPress) is not driven by the brush by default:
+  // any motion of the active nail under a stroke shifts the pointer samples
+  // that are cast at the next frame (brush-feel A3 / A6 regress with it).
+  // Game code can still call setPress; the brush damps the idle.
+  ev.on(EVENTS.BRUSH_STROKE_START, () => hand.setStroke(true));
+  ev.on(EVENTS.BRUSH_STROKE_END, () => { hand.setStroke(false); hand.setPress(0); });
   ev.on(EVENTS.REVEAL_START, () => hand.setPose('fan'));
   ev.on(EVENTS.REVEAL_FLASH, () => hand.play('wiggle'));
   ev.on(EVENTS.REVEAL_DONE, () => hand.setPose('auto'));

@@ -4,8 +4,8 @@
  * A pose is a Float32Array(17 * 3): per bone (BONES order) [flex, spread,
  * twist] in degrees, about the bone's own axes (src/scene/HandRig.js):
  *   flex   + curls toward the palm (every finger, the thumb, palm, wrist)
- *   spread + toward the pinky side (fingers); for the thumb + lifts its tip
- *          away from the desk (palmar abduction)
+ *   spread + toward the pinky side (fingers); for the thumb + brings it in
+ *          beside the index (its rest, THUMB_REST, sits at +32)
  *   twist  thumb only: + turns its nail up (toward the camera)
  * Tunable without Blender: the asset only has to keep the 17 bone names.
  * The limits are mirrored in tools/blender/rig.py (the pipeline checks the
@@ -33,7 +33,9 @@ export function fingerBase(fingerIndex) {
 // finger knuckle / middle joint flex tightened from the plan's 60 / 70 to 45 / 45: past
 // ~50 linear blend skinning folds the pad (tools/blender/rig.py checks every limit)
 const L_FINGER = [[-15, 45, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 45, 0, 0, -1, 1]];
-const L_THUMB = [[-15, 35, -20, 30, -15, 25], [-5, 45, 0, 0, 0, 0], [-10, 55, 0, 0, -1, 1]];
+// thumb base: spread up to 36 (plan: 30; the natural rest, THUMB_REST, sits at 32),
+// flex up to 25 (plan: 35; flex 35 with spread 36 folds the thenar)
+const L_THUMB = [[-15, 25, -20, 36, -15, 25], [-5, 45, 0, 0, 0, 0], [-10, 55, 0, 0, -1, 1]];
 const L_PALM = [-10, 10, -6, 6, 0, 0];
 const L_WRIST = [-10, 10, -8, 8, 0, 0];
 
@@ -60,16 +62,32 @@ export function clampPose(p) {
   return p;
 }
 
+/**
+ * The thumb's natural rest (Jesse, B9 review): the file's thumb sticks
+ * straight out from the hand. At rest it sits beside the index at about
+ * 35 degrees, turned a little toward the palm, both joints a little curled,
+ * the nail partly sideways. Every pose starts from it (neutral included).
+ * [base flex, base spread, base twist, middle joint flex, last joint flex]
+ */
+export const THUMB_REST = Object.freeze([6, 32, 4, 8, 10]);
+
+function thumb(out, t) {
+  const b = fingerBase(0) * 3;
+  out[b] = t[0]; out[b + 1] = t[1]; out[b + 2] = t[2]; out[b + 3] = t[3]; out[b + 6] = t[4];
+  return out;
+}
+
 // The present pose (plan 5.3): the active finger lifts its tip toward the
 // camera, the others relax out of the way and spread a little away from it.
 export const PRESENT = Object.freeze({
   active: [-8, 4, 4],          // knuckle, middle joint, last joint (flex)
   other: [8, 10, 5],
-  // the thumb hangs close to the desk: it never curls toward it, it lifts a little
-  thumbOther: [0, 0, 0],
-  thumbOtherLift: 4,
   spreadAway: 3,
-  thumbActive: { flex: [-6, 4, 4], spread: 15, twist: 20 },
+  // the thumb, in THUMB_REST's terms: presented it comes forward a little
+  // away from the index with its nail turned up (never hyper-extended); while
+  // another finger is presented it tucks a little closer
+  thumbActive: Object.freeze([2, 20, 18, 4, 5]),
+  thumbOther: Object.freeze([8, 34, 4, 10, 12]),
 });
 
 /**
@@ -79,20 +97,16 @@ export function writePresent(i, out) {
   out.fill(0);
   for (let f = 0; f < 5; f++) {
     const b = fingerBase(f) * 3;
-    if (f === i) {
-      const a = f === 0 ? PRESENT.thumbActive.flex : PRESENT.active;
+    if (f === 0) {
+      thumb(out, i === 0 ? PRESENT.thumbActive : PRESENT.thumbOther);
+    } else if (f === i) {
+      const a = PRESENT.active;
       out[b] = a[0]; out[b + 3] = a[1]; out[b + 6] = a[2];
-      if (f === 0) {
-        out[b + 1] = PRESENT.thumbActive.spread;
-        out[b + 2] = PRESENT.thumbActive.twist;
-      }
     } else {
-      const o = f === 0 ? PRESENT.thumbOther : PRESENT.other;
+      const o = PRESENT.other;
       out[b] = o[0]; out[b + 3] = o[1]; out[b + 6] = o[2];
-      // spread away from the active finger: the thumb's spread lifts it,
-      // the fingers spread toward the pinky when on its side
-      if (f > 0) out[b + 1] = f > i ? PRESENT.spreadAway : -PRESENT.spreadAway;
-      else out[b + 1] = PRESENT.thumbOtherLift;
+      // spread away from the active finger (toward the pinky when on its side)
+      out[b + 1] = f > i ? PRESENT.spreadAway : -PRESENT.spreadAway;
     }
   }
   return out;
@@ -120,7 +134,7 @@ export function writePresentS(s, out) {
 }
 
 function fingers(out, flex, spread) {
-  for (let f = 0; f < 5; f++) {
+  for (let f = 1; f < 5; f++) {
     const b = fingerBase(f) * 3;
     out[b] = flex[f][0]; out[b + 3] = flex[f][1]; out[b + 6] = flex[f][2];
     out[b + 1] = spread[f];
@@ -128,19 +142,48 @@ function fingers(out, flex, spread) {
   return out;
 }
 
-/** Named poses. 'neutral' is the file's rest pose. */
+/** Named poses. 'neutral' is the file's rest pose with the thumb at THUMB_REST. */
 export const POSE_NAMES = Object.freeze(['neutral', 'relaxed', 'fan']);
 
 export function writeNamed(name, out) {
   out.fill(0);
   if (name === 'relaxed') {
-    return fingers(out, [[0, 0, 0], [6, 10, 5], [6, 10, 5], [6, 10, 5], [6, 10, 5]], [4, -1, 0, 1, 2]);
+    thumb(out, [8, 34, 4, 10, 12]);
+    return fingers(out, [null, [6, 10, 5], [6, 10, 5], [6, 10, 5], [6, 10, 5]], [0, -1, 0, 1, 2]);
   }
   if (name === 'fan') {
-    // the show-off: fingers spread 8-10 degrees, tips a little up
-    return fingers(out, [[-4, 2, 2], [-5, 0, 0], [-5, 0, 0], [-5, 0, 0], [-4, 0, 0]], [10, -9, -2, 5, 10]);
+    // the show-off: fingers spread 8-10 degrees, tips a little up, the thumb opens
+    thumb(out, [0, 18, 10, 2, 2]);
+    return fingers(out, [null, [-5, 0, 0], [-5, 0, 0], [-5, 0, 0], [-4, 0, 0]], [0, -9, -2, 5, 10]);
   }
-  return out;
+  return thumb(out, THUMB_REST);
+}
+
+/**
+ * Motion feel (B9.5, tunable): every joint follows its target through a
+ * damped spring. Two named feels, blended by whether the brush is down:
+ *   springy  pans, finger changes, the reveal (jelly / cartoon snap)
+ *   firm     the brush is on the nail: nearly stiff, so paint never smears
+ * Per feel: stiffness (natural frequency, Hz), overshoot (0..1, the first
+ * overshoot of a step as a fraction of it; it sets the damping ratio) or
+ * damping (ratio; used when overshoot is null). jointScale scales the
+ * stiffness per joint level (knuckle, middle, last; palm and wrist use the
+ * knuckle's): lower on the outer joints makes the tips trail (jelly).
+ * blendMs: how fast the feel moves between springy and firm.
+ */
+export const MOTION = {
+  springy: { stiffness: 6, overshoot: 0.15, damping: null },
+  firm: { stiffness: 16, overshoot: 0, damping: 1.0 },
+  jointScale: [1.0, 0.92, 0.85],
+  blendMs: { toFirm: 60, toSpringy: 400 },
+};
+
+/** Damping ratio of a feel. */
+export function dampingOf(feel) {
+  if (feel.overshoot === null || feel.overshoot === undefined) return feel.damping;
+  const o = Math.min(0.95, Math.max(1e-4, feel.overshoot));
+  const l = Math.log(o);
+  return -l / Math.sqrt(Math.PI * Math.PI + l * l);
 }
 
 /** One-shot wiggle: a 0.6 s wave of knuckle flex, pinky to index, 6 degrees. */

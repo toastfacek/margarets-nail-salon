@@ -42,12 +42,23 @@ LIMITS = {
     'finger.01': ((-15, 45), (-12, 12), (0, 0)),
     'finger.02': ((0, 45), (0, 0), (0, 0)),
     'finger.03': ((-5, 45), (0, 0), (0, 0)),
-    'thumb.01': ((-15, 35), (-20, 30), (-15, 25)),
+    'thumb.01': ((-15, 25), (-20, 36), (-15, 25)),
     'thumb.02': ((-5, 45), (0, 0), (0, 0)),
     'thumb.03': ((-10, 55), (0, 0), (0, 0)),
     'palm': ((-10, 10), (-6, 6), (0, 0)),
     'wrist': ((-10, 10), (-8, 8), (0, 0)),
 }
+
+
+# The thumb's natural rest (src/scene/HandPoses.js THUMB_REST): the file's
+# thumb sticks straight out; every game pose starts from this one.
+THUMB_REST = {'thumb.01': (6, 32, 4), 'thumb.02': (8, 0, 0), 'thumb.03': (10, 0, 0)}
+
+
+def with_thumb_rest(pose):
+    out = dict(THUMB_REST)
+    out.update(pose)
+    return out
 
 
 def limits_of(name):
@@ -257,10 +268,34 @@ def _axes(rig):
     return out
 
 
+def _semantic_signs(rig):
+    """The game's sign conventions (src/scene/HandRig.js computeRigAxes):
+    spread + toward the pinky (fingers, palm, wrist); for the thumb, spread
+    and twist + when they lift its local -X toward world up."""
+    m = np.array(rig.matrix_world)[:3, :3]
+    ph = gltfio.bone_world(rig, 'pinky.01')[0]
+    ih = gltfio.bone_world(rig, 'index.01')[0]
+    P = (ph - ih) / np.linalg.norm(ph - ih)
+    up = np.array([0.0, 0.0, 1.0])
+    out = {}
+    for b in rig.data.bones:
+        X = m @ np.array(b.matrix_local.to_3x3().col[0])
+        if b.name.startswith('thumb'):
+            sg = 1.0 if -X @ up > 0 else -1.0
+            out[b.name] = (sg, sg)
+        else:
+            out[b.name] = (1.0 if -X @ P > 0 else -1.0, 1.0)
+    return out
+
+
 def set_pose(rig, pose):
-    """pose: {bone: (flex, spread, twist) degrees} about each bone's local X, Z, Y."""
+    """pose: {bone: (flex, spread, twist) degrees} about each bone's local X, Z,
+    Y, with the game's signs (spread + toward the pinky; thumb + inward)."""
+    signs = _semantic_signs(rig)
     for pb in rig.pose.bones:
         fl, sp, tw = pose.get(pb.name, (0.0, 0.0, 0.0))
+        ss, st = signs.get(pb.name, (1.0, 1.0))
+        sp, tw = sp * ss, tw * st
         q = Quaternion((1, 0, 0), math.radians(fl)) @ Quaternion((0, 0, 1), math.radians(sp)) @ Quaternion((0, 1, 0), math.radians(tw))
         pb.rotation_mode = 'QUATERNION'
         pb.rotation_quaternion = q
@@ -297,6 +332,8 @@ def limit_poses():
     out['thumb-limit'] = {'thumb.01': (t[0][1], t[1][1], t[2][1])}
     out['thumb-limit2'] = {'thumb.01': (t[0][0], t[1][0], t[2][0])}
     out['wrist-limit'] = {'wrist': (10, 8, 0), 'palm': (10, 6, 0)}
+    out['natural-rest'] = {}
+    out = {k: with_thumb_rest(v) for k, v in out.items()}
     import os
     if os.environ.get('RIG_DIAG'):
         for f in fingers + ('thumb',):

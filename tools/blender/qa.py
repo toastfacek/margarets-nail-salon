@@ -162,7 +162,7 @@ def render_all(glb, out_dir, report, only=None):
     poses = RG.limit_poses()
     side_eye, side_at = palm + Vector((-0.35, -2.4, 0.25)), palm + Vector((-0.35, 0, -0.02))
     top_eye, top_at = (mid[0] - 0.1, mid[1] - 0.6, mid[2] + 3.2), (mid[0] - 0.1, mid[1], mid[2])
-    for name, pose in (('relaxed', poses['relaxed']), ('limit', poses['curl']), ('thumb', poses['thumb-limit'])):
+    for name, pose in (('natural-rest', poses['natural-rest']), ('relaxed', poses['relaxed']), ('limit', poses['curl']), ('thumb', poses['thumb-limit'])):
         if only and 'pose-' + name not in only:
             continue
         RG.set_pose(rig, pose)

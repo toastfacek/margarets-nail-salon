@@ -17,10 +17,10 @@
 //   P4  contact while moving: the same mid-transition, at full press-give and
 //       while idle runs
 //   P5  end to end, every finger of both hands: a real mouse dab at the screen
-//       point of UV (0.5, 0.5) while the press-give animates and idle runs;
-//       the dab's centre (paint read back from the GPU) is within 2 texels of
-//       the same dab on a still hand (idle off), and both within 6 texels of
-//       (0.5, 0.5) (the brush's own print is not centred on its tip)
+//       point of UV (0.5, 0.5) with idle running; the dab's centre (paint read
+//       back from the GPU) is within 2 texels of (0.5, 0.5) (plan 7). The same
+//       dab on a still hand (idle off) is reported beside it. (Dab centres
+//       vary by ~1-2 texels run to run with the brush's own physics.)
 //   P6  active nail steady: 3 s in the close-up with idle on: active nail
 //       centre moves <= 0.5 px; with full press <= 3 px; the neighbours move
 //       >= 1 px (idle runs)
@@ -30,6 +30,9 @@
 //   P9  desk: no skin vertex below the desk + 0.01 in any library pose
 //   P10 idle cost: 10 s idle on low without ?perf=1 (render on demand): heap
 //       (retained, after a forced GC) <= +0.3 MB, rendered frames <= 21 per second
+//   P11 motion feel (MOTION in src/scene/HandPoses.js): a knuckle step
+//       overshoots >= 5% with the brush up (springy) and <= 1% with the
+//       brush down (firm), settling within 250 ms
 // Exits 1 when a gated check fails.
 import fs from 'fs';
 import path from 'path';
@@ -343,8 +346,9 @@ for (const hand of ['left', 'right']) {
     e2e.push({ hand, f, still, live });
     const ok = still && live;
     const dLive = ok ? Math.hypot(live.x - still.x, live.y - still.y) : Infinity;
-    const dTarget = ok ? Math.max(Math.hypot(still.x - 128, still.y - 128), Math.hypot(live.x - 128, live.y - 128)) : Infinity;
-    add('P5', `${hand} ${f}: dab centre, live vs still / vs uv (0.5,0.5) (texels)`, `${dLive.toFixed(2)} / ${dTarget.toFixed(2)}`, '<= 2 / <= 6', dLive <= 2 && dTarget <= 6);
+    const dTarget = ok ? Math.hypot(live.x - 128, live.y - 128) : Infinity;
+    const dStill = ok ? Math.hypot(still.x - 128, still.y - 128) : Infinity;
+    add('P5', `${hand} ${f}: live dab centre vs uv (0.5,0.5) (texels); still hand, live vs still`, `${dTarget.toFixed(2)}; ${dStill.toFixed(2)}, ${dLive.toFixed(2)}`, '<= 2 (plan 7)', dTarget <= 2);
     if (SHOTS && hand === 'right') {
       await page.evaluate(() => app.polishBrush3D.clearNail());
       await settle(page);
@@ -392,6 +396,40 @@ await toFinger(page, 'index');
   add('P6', 'active nail centre, full press (px)', +r.press.index.toFixed(3), '<= 3', r.press.index <= 3);
   add('P6', 'neighbours move with idle on (max px)', +freeNb.toFixed(2), '>= 1', freeNb >= 1);
   add('P7', 'idle with the brush down vs free (neighbours, ratio)', +(dampNb / Math.max(freeNb, 1e-6)).toFixed(3), '<= 0.25', dampNb <= 0.25 * freeNb);
+}
+
+// P11 motion feel: joint springs, springy free, nearly stiff with the brush down
+{
+  const r = await page.evaluate(async () => {
+    const H = app.hand;
+    // index knuckle (bone 5, flex): presented (-8) -> as another finger (+8) and back
+    const step = async (firm) => {
+      H.setStroke(firm);
+      H.presentFinger('index', { ms: 0 });
+      while (!H.settled) await new Promise((res) => requestAnimationFrame(res));
+      for (let i = 0; i < 20; i++) await new Promise((res) => requestAnimationFrame(res));
+      const a0 = H.rig.applied[15];
+      H.presentFinger('middle', { ms: 0 });
+      const t0 = performance.now();
+      let peak = a0, settle = null, a1 = null;
+      while (performance.now() - t0 < 1500) {
+        await new Promise((res) => requestAnimationFrame(res));
+        const a = H.rig.applied[15];
+        peak = Math.max(peak, a);
+        if (H.settled && settle === null) { settle = performance.now() - t0; a1 = a; }
+      }
+      a1 = H.rig.applied[15];
+      H.setStroke(false);
+      H.presentFinger('auto');
+      return { overshoot: (peak - a1) / Math.max(1e-6, a1 - a0), settle };
+    };
+    const springy = await step(false);
+    const firm = await step(true);
+    return { springy, firm };
+  });
+  add('P11', 'springy (brush up): knuckle step overshoot (fraction), settle ms', `${r.springy.overshoot.toFixed(3)}, ${Math.round(r.springy.settle)}`, '>= 0.05', r.springy.overshoot >= 0.05);
+  add('P11', 'firm (brush down): knuckle step overshoot (fraction), settle ms', `${r.firm.overshoot.toFixed(3)}, ${Math.round(r.firm.settle)}`, '<= 0.01, <= 250', r.firm.overshoot <= 0.01 && r.firm.settle !== null && r.firm.settle <= 250);
+  await settle(page);
 }
 
 // P9 desk

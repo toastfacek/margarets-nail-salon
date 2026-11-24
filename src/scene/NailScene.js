@@ -363,6 +363,11 @@ export class NailScene {
         handModel.onHandShown = () => this._bakeHand();
     }
 
+    /** Bake the shown hand's contact shadow and desk again (app.hand's rest pose changed). */
+    rebakeHand() {
+        this._bakeHand();
+    }
+
     _bakeHand() {
         // B9: one bake per hand, in the file's rest pose (the pose moves the
         // fingertips by a few percent of the hand; the shadow does not follow)
