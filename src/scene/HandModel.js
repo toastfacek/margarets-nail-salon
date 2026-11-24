@@ -51,6 +51,7 @@ const MASK_RES = 32;
 const DEFAULT_SETTINGS = Object.freeze({ decoCanvasRes: 1024, bakedPaintRes: 512 });
 
 const BED_PINK = new THREE.Color('#f2a3ad');
+const LUNULA = Object.freeze({ thumb: 1.0, index: 0.35, middle: 0.25, ring: 0.12, pinky: 0.0 });
 const WHITE = new THREE.Color(1, 1, 1);
 
 /** Nail-bed colour for a skin tone (linear colours). */
@@ -511,6 +512,8 @@ export class HandModel {
             u.uNailSide.value.set(1, 0, 0);
             u.uNailHalf.value.set(rec.frame.half[0], rec.frame.half[1]);
             if (rec.frame.anat) u.uNailAnat.value.fromArray(rec.frame.anat);
+            // lunula: a clear half-moon on the thumb, faint or hidden on the others
+            u.uNailAnat.value.w = LUNULA[f];
             rec.nailNormal = new THREE.Vector3(0, 0, 1);
             fromFile++;
         }

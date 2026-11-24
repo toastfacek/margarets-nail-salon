@@ -22,11 +22,29 @@ const DEFAULT_TONE = '#efb7a2';
 const GLOW_COLOR = '#ff6a5a';
 const PALM_PINK = new THREE.Color('#f6c6bd');
 
-const lightingChunk = /* glsl */ `
+// m = skin masks (vertex colour, B9): r blush, g palm side, b cavity, a thinness.
+// Every colour is derived from uTone (setSkinTone), so any client tone works.
+// The masks are smooth per-vertex data: the tone mix is done per vertex on
+// every tier (the full variant passes it on), so the per-pixel cost is the
+// same as the plain one-tone skin.
+const toneChunk = /* glsl */ `
 uniform vec3 uTone;
 uniform vec3 uBlush;
 uniform vec3 uPalm;
 uniform vec3 uCavity;
+uniform float uSheenK;
+// rgb = albedo, a = thinness
+vec4 skinTone(vec4 m) {
+vec3 tone = mix(uTone, uPalm, m.g * 0.75);
+tone = mix(tone, uBlush, m.r * 0.55);
+tone *= mix(vec3(1.0), uCavity, m.b * 0.7);
+return vec4(tone, m.a);
+}
+// sheen damped in cavities and on the blushed nail folds, and on darker tones
+// (uSheenK): a white sheen on dark skin read as a pale ridge on the nail fold
+float skinSheen(vec4 m) { return (1.0 - 0.6 * m.b) * (1.0 - 0.5 * m.r) * uSheenK; }
+`;
+const lightingChunk = /* glsl */ `
 uniform vec3 uGlow;
 uniform vec3 uKeyDir;
 uniform vec3 uKeyColor;
@@ -35,17 +53,12 @@ uniform vec3 uGround;
 uniform vec3 uRimDir;
 uniform vec3 uRimColor;
 uniform float uDim;
-// m = skin masks (vertex colour, B9): r blush, g palm side, b cavity, a thinness.
-// Every colour is derived from uTone (setSkinTone), so any client tone works.
-vec3 skinShade(vec3 N, vec3 V, float sheen, vec4 m) {
+vec3 skinShade(vec3 N, vec3 V, float sheen, vec4 t) {
 float ndl = dot(N, uKeyDir);
-float wrap = max((ndl + 0.35 + 0.12 * m.a) / (1.35 + 0.12 * m.a), 0.0);
+float wrap = max((ndl + 0.35 + 0.12 * t.a) / (1.35 + 0.12 * t.a), 0.0);
 float ndv = clamp(dot(N, V), 0.0, 1.0);
-vec3 tone = mix(uTone, uPalm, m.g * 0.75);
-tone = mix(tone, uBlush, m.r * 0.55);
-tone *= mix(vec3(1.0), uCavity, m.b * 0.7);
-vec3 col = tone * (mix(uGround, uSky, N.y * 0.5 + 0.5) + uKeyColor * wrap);
-col += uGlow * (0.7 + 0.6 * m.a) * ((wrap - max(ndl, 0.0)) * 0.9 + pow(1.0 - ndv, 3.0) * 0.55);
+vec3 col = t.rgb * (mix(uGround, uSky, N.y * 0.5 + 0.5) + uKeyColor * wrap);
+col += uGlow * (0.7 + 0.6 * t.a) * ((wrap - max(ndl, 0.0)) * 0.9 + pow(1.0 - ndv, 3.0) * 0.55);
 col += uRimColor * pow(1.0 - ndv, 2.0) * max(dot(N, uRimDir), 0.0);
 col += uKeyColor * pow(max(dot(N, normalize(uKeyDir + V)), 0.0), 28.0) * 0.07 * sheen;
 return col * uDim;
@@ -55,6 +68,7 @@ return col * uDim;
 const skinVertexHead = /* glsl */ `
 #include <common>
 #include <skinning_pars_vertex>
+${toneChunk}
 vec4 skinMask() {
 #if defined(USE_COLOR_ALPHA)
 return color;
@@ -78,23 +92,24 @@ gl_Position = projectionMatrix * viewMatrix * wp;
 
 const fullVertex = /* glsl */ `
 ${skinVertexHead}
-varying vec3 vN;
+varying vec4 vN;
 varying vec3 vP;
-varying vec4 vM;
+varying vec4 vT;
 void main() {
 ${skinVertexBody}
-vN = nW;
+vec4 m = skinMask();
+vN = vec4(nW, skinSheen(m));
 vP = wp.xyz;
-vM = skinMask();
+vT = skinTone(m);
 }
 `;
 const fullFragment = /* glsl */ `
 ${lightingChunk}
-varying vec3 vN;
+varying vec4 vN;
 varying vec3 vP;
-varying vec4 vM;
+varying vec4 vT;
 void main() {
-gl_FragColor = vec4(skinShade(normalize(vN), normalize(cameraPosition - vP), 1.0 - 0.6 * vM.b, vM), 1.0);
+gl_FragColor = vec4(skinShade(normalize(vN.xyz), normalize(cameraPosition - vP), vN.w, vT), 1.0);
 #include <tonemapping_fragment>
 #include <colorspace_fragment>
 }
@@ -109,7 +124,7 @@ void main() {
 ${skinVertexBody}
 const mat3 IN = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
 const mat3 OUT = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
-vec3 v = IN * (skinShade(nW, normalize(cameraPosition - wp.xyz), 0.0, skinMask()) * 2.0);
+vec3 v = IN * (skinShade(nW, normalize(cameraPosition - wp.xyz), 0.0, skinTone(skinMask())) * 2.0);
 v = (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
 vC = pow(clamp(OUT * v, 0.0, 1.0), vec3(1.0 / 2.2));
 }
@@ -126,6 +141,7 @@ export function createSkinShared() {
     uBlush: { value: new THREE.Color() },
     uPalm: { value: new THREE.Color() },
     uCavity: { value: new THREE.Color() },
+    uSheenK: { value: 1 },
     uGlow: { value: new THREE.Color() },
     uKeyDir: { value: RIG.keyDir.clone() },
     uKeyColor: { value: new THREE.Color(1.0, 0.93, 0.86).multiplyScalar(0.62) },
@@ -170,7 +186,11 @@ export function createSkinMaterials(shared) {
 export function setSkinTone(shared, tone) {
   shared.uTone.value.set(tone);
   // Subsurface glow: a warmer, deeper version of the tone.
-  shared.uGlow.value.set(GLOW_COLOR).lerp(shared.uTone.value, 0.3).multiplyScalar(0.16);
+  // Darker tones get less of it (melanin absorbs it; at full strength it read
+  // as a pale rim on the nail folds of the darkest tone).
+  const lum = shared.uTone.value.r * 0.3 + shared.uTone.value.g * 0.59 + shared.uTone.value.b * 0.11;
+  shared.uGlow.value.set(GLOW_COLOR).lerp(shared.uTone.value, 0.3).multiplyScalar(0.16 * Math.min(1, 0.35 + lum * 1.3));
+  shared.uSheenK.value = Math.min(1, 0.25 + lum * 1.4);
   // B9 masks, relative to the tone: blush redder, palm lighter and pinker
   // (most visible on darker tones), cavity a warm red-brown (never grey).
   const t = shared.uTone.value;

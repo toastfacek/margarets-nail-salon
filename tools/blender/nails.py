@@ -128,7 +128,7 @@ class Plate:
         T = P.NAIL_THICKNESS * Wv
         # folds cover the side skirt only up to the hyponychium; past it the
         # side skirt turns straight down into the free edge's thickness
-        fold_w = smoothstep(self.y_hypo - 0.1 * Lv, self.y_hypo + 0.2 * Lv, Yg[1:NV + 1, 1])
+        fold_w = smoothstep(self.y_hypo - P.FOLD_SIDE_END[0] * Lv, self.y_hypo + 0.2 * Lv, Yg[1:NV + 1, 1])
         ls = P.NAIL_SKIRT_SIDE * 2 * Wv
         for side, col, rim in ((-1, 0, 1), (1, NI - 1, NI - 2)):
             a_rim = A[1:NV + 1, rim]
@@ -358,7 +358,7 @@ def build(scene, report, check):
         # (the bed), and under the free edge into a growing gap.
         prox = smoothstep(0.35 * Lv, 0.85 * Lv, ly)
         h = (P.FOLD_HEIGHT_PROX * prox + P.FOLD_HEIGHT_SIDE * (1 - prox)) * Wv
-        fold_on = smoothstep(plate.y_hypo - 0.15 * Lv, plate.y_hypo + 0.45 * Lv, ly)
+        fold_on = smoothstep(plate.y_hypo - P.FOLD_SIDE_END[0] * Lv, plate.y_hypo + P.FOLD_SIDE_END[1] * Lv, ly)
         over = np.clip((plate.y_hypo - ly) / max(1e-6, plate.y_hypo + Lv), 0, None)
         floor = -P.BED_DEPTH * Wv - P.HYPO_GAP * over * 2 * Lv
         edge = h * P.FOLD_EDGE
