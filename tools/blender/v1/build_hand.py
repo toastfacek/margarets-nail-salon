@@ -1,7 +1,11 @@
-"""Build public/models/hand.glb from tools/blender/src/hand-right.glb.
+"""Build public/models/hand.glb (v1, B9) from tools/blender/src/hand-right.glb.
+
+The v1 pipeline, kept runnable (the game loads its output until hand v2's
+step G1; G3 deletes it). Moved here from tools/blender/ when the v2 pipeline
+(hand-v2-plan.md) took over the module names.
 
 Run (Blender 5.3 as a Python module, headless):
-    /home/claude/bpyenv/bin/python tools/blender/build_hand.py [--steps=nails,sculpt,masks] [--qa]
+    /home/claude/bpyenv/bin/python tools/blender/v1/build_hand.py [--steps=nails,sculpt,masks] [--qa]
 
 Pipeline: import -> sculpt -> nails -> rig -> masks -> export -> checks (-> QA renders).
 Nothing is edited by hand; every number lives in params.py; no randomness, so
@@ -18,7 +22,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+ROOT = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
 
 import bpy  # noqa: E402
 
@@ -41,7 +45,7 @@ def parse_args(argv):
 def main():
     flags = parse_args(sys.argv[1:])
     steps = ALL_STEPS if 'steps' not in flags else [s for s in str(flags['steps']).split(',') if s]
-    src = os.path.join(HERE, 'src', 'hand-right.glb')
+    src = os.path.join(HERE, '..', 'src', 'hand-right.glb')
     out_glb = flags.get('out') or os.path.join(ROOT, 'public', 'models', 'hand.glb')
     out_dir = os.path.join(HERE, 'out')
     os.makedirs(out_dir, exist_ok=True)

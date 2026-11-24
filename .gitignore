@@ -4,3 +4,4 @@ scripts/shot-*.png
 *.log
 tools/blender/out/
 __pycache__/
+tools/blender/v1/out/
