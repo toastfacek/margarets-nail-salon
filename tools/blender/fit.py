@@ -254,8 +254,11 @@ def build(cage, report, check):
           all(abs(r - 1) <= P.ANTHRO_BAND for r in ratios.values()), ratios, P.ANTHRO_BAND)
     hand_len = a['hand_length']
 
-    sk = Skeleton(cage)
     E = cage.edges()
+    # the thumb chain's proportions (Jesse, after V2), in the source pose
+    import thumb as TH
+    TH.proportions(cage, rep, bake_weights, E)
+    sk = Skeleton(cage)
     T0 = sk.transforms({})
     cur = {}
     for f in ('index', 'middle', 'ring', 'pinky'):
@@ -404,7 +407,19 @@ def build(cage, report, check):
         cmc, mcp, ip, tip = pt('thumb.01', 'h'), pt('thumb.02', 'h'), pt('thumb.03', 'h'), pt('thumb.03', 't')
         pitch = lambda a, b: math.degrees(math.asin(np.clip(unit(b - a) @ up, -1, 1)))  # noqa: E731
         ih = 0.5 * (pt('index.03', 'h') + pt('index.03', 't')) @ up - desk
-        return {'pitch_meta': pitch(cmc, mcp), 'pitch_prox': pitch(mcp, ip), 'pitch_dist': pitch(ip, tip),
+        flat = lambda v: v - up * (v @ up)  # noqa: E731
+        im, ip2 = pt('index.01', 'h'), pt('index.02', 'h')
+        wr = pt('palm', 'h')
+        # the second metacarpal runs about parallel to the third (wrist to middle MCP)
+        mc_top = math.degrees(math.acos(np.clip(unit(flat(mcp - cmc)) @ unit(flat(pt('middle.01', 'h') - wr)), -1, 1)))
+        ax = flat(ip2 - im)
+        reach = float(flat(tip - im) @ ax / (ax @ ax))
+        # seen from above: + = the phalanges turn from the metacarpal toward the index
+        a_, b_ = unit(flat(mcp - cmc)), unit(flat(tip - mcp))
+        toward = np.cross(a_, unit(flat(im - mcp))) @ up
+        top_bend = math.degrees(math.atan2(np.cross(a_, b_) @ up, a_ @ b_)) * (1.0 if toward >= 0 else -1.0)
+        return {'mc_top_deg': mc_top, 'tip_reach_index_pp': reach, 'digit_vs_mc_top_deg': top_bend,
+                'pitch_meta': pitch(cmc, mcp), 'pitch_prox': pitch(mcp, ip), 'pitch_dist': pitch(ip, tip),
                 'pitch_phal': pitch(mcp, tip), 'tip_h': float(tip @ up - desk), 'ip_h': float(ip @ up - desk),
                 'mcp_h': float(mcp @ up - desk), 'index_axis_h': float(ih)}
 
@@ -421,8 +436,8 @@ def build(cage, report, check):
             # little below it; it never hooks down to the desk, and clears it.
             # The base keeps near its stage-1 place and the nail near v1's facing
             gm = thumb_geom(T)
-            curl = [max(gm['pitch_meta'] - gm['pitch_prox'] - P.THUMB_SIDE_CURL_MAX, 0.0),
-                    max(gm['pitch_prox'] - gm['pitch_dist'] - P.THUMB_SIDE_CURL_MAX, 0.0)]
+            curl = [max(abs(gm['pitch_meta'] - gm['pitch_prox']) - P.THUMB_SIDE_CURL_MAX, 0.0),
+                    max(abs(gm['pitch_prox'] - gm['pitch_dist']) - P.THUMB_SIDE_CURL_MAX, 0.0)]
             meta = gm['pitch_meta'] - P.THUMB_META_PITCH
             level = max(gm['tip_h'] - (gm['index_axis_h'] - P.THUMB_BELOW_INDEX_MM), 0.0) * P.THUMB_LEVEL_W
             low1 = float((sk.skin(cage.V[th_base], cage.W[th_base], T) @ up).min()) - desk
@@ -433,10 +448,13 @@ def build(cage, report, check):
             dv = (cg[:2] - np.array(P.V1_NAIL_CENTRE['thumb'][:2])) / sc
             # the nail faces up-and-out like v1's (its tilt from up, not its heading)
             e_n = [(math.degrees(math.acos(np.clip(unit(ng) @ unit(Rc @ up), -1, 1))) - P.THUMB_NAIL_TILT) * P.THUMB_NAIL_TILT_W]
-            out = max(dv @ side0 - 0.0, 0.0) * P.THUMB_OUT_W
+            out = 0.0   # (the anatomy targets below place it; v1's nail position no longer does)
             prior = np.concatenate([(np.asarray(x[:3]) - x1[:3]) * P.THUMB_STAGE2_BASE_W,
                                     (np.asarray(x[3:]) - th2[3:]) * P.THUMB_STRAIGHT_PRIOR_W])
-            return np.concatenate([np.array(curl) * P.THUMB_CURL_W, [meta * P.THUMB_META_W, level, rest, out], e_n, prior])
+            mc_ang = (gm['mc_top_deg'] - P.THUMB_MC_ANGLE) * P.THUMB_MC_ANGLE_W
+            curl.append(max(gm['digit_vs_mc_top_deg'] - P.THUMB_TOP_BEND[1], 0.0) + max(P.THUMB_TOP_BEND[0] - gm['digit_vs_mc_top_deg'], 0.0))
+            reach = (gm['tip_reach_index_pp'] - P.THUMB_REACH) * P.THUMB_REACH_W
+            return np.concatenate([np.array(curl) * P.THUMB_CURL_W, [meta * P.THUMB_META_W, level, rest, out, mc_ang, reach], e_n, prior])
         M, tt = T['thumb.03']
         cg = sc * Rc @ (M @ cage.nail_centre('thumb') + tt) + tc
         ng = Rc @ (M @ cage.nail_normal('thumb'))
@@ -518,6 +536,20 @@ def build(cage, report, check):
     check('fit: thumb from the side: no joint bends down more than %g deg (no hook)' % (P.THUMB_SIDE_CURL_MAX + 2),
           max(bends) <= P.THUMB_SIDE_CURL_MAX + 2, [round(b, 1) for b in bends], P.THUMB_SIDE_CURL_MAX + 2)
     check('fit: thumb clears the desk', rep['thumb_low_vs_desk_mm'] >= 0.0, rep['thumb_low_vs_desk_mm'], '>= 0 mm')
+    # the thumb chain's anatomy (thumb.py, Jesse after V2): the first metacarpal
+    # 30-45 deg from the hand's metacarpals seen from above; the phalanges shorter
+    # than the index's digit
+    J0 = {k: v for k, v in cage.joints.items()}
+    tl = [np.linalg.norm(J0['thumb.%d' % (k + 1)] - J0['thumb.%d' % k]) for k in (1, 2, 3)]
+    il = sum(np.linalg.norm(J0['index.%d' % (k + 1)] - J0['index.%d' % k]) for k in (1, 2, 3))
+    digit = (tl[1] + tl[2]) / il
+    rep['thumb_anatomy'] = {'mc_vs_hand_metacarpals_top_deg': round(gm['mc_top_deg'], 1), 'digit_over_index_digit': round(float(digit), 3),
+                            'tip_reach_index_pp (info: 0 = MCP, 1 = PIP)': round(gm['tip_reach_index_pp'], 2),
+                            'phalanges_turn_toward_index_top_deg': round(gm['digit_vs_mc_top_deg'], 1)}
+    check('fit: thumb metacarpal 30-45 deg from the hand\'s metacarpals (from above)', 30.0 <= gm['mc_top_deg'] <= 45.0,
+          round(gm['mc_top_deg'], 1), [30, 45])
+    check('fit: thumb phalanges / index digit 0.65-0.80 (shorter, stockier than a finger)', 0.65 <= digit <= 0.80,
+          round(float(digit), 3), [0.65, 0.8])
     rep['thumb'] = {'pose': [round(float(v), 2) for v in x], 'centre_mm': round(dmm, 2), 'normal_deg': round(ddeg, 2),
                     'along_index_mm': round(along, 2), 'out_of_hand_mm': round(out, 2)}
     # Jesse (after V2) re-set the thumb's target: straight and level from the side.
@@ -560,6 +592,7 @@ def build(cage, report, check):
         mask[np.unique(cage.F[np.concatenate([cage.nails[f]] + list(cage.folds[f]))])] = 0.0
     cage.V = taubin(cage.V, E, mask, P.WEB_RELAX_ITERS, P.WEB_RELAX_LAMBDA, P.WEB_RELAX_MU)
     rep['relaxed_verts'] = int((mask > 0).sum())
+    TH.volume(cage, rep, E, up)
     rep['bake_shift_max_mm'] = round(float(np.linalg.norm(cage.V - V0, axis=1).max()), 2)
 
     # desk checks (before placement, in mm): pads on the desk, no skin below it
