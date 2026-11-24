@@ -14,7 +14,7 @@
  * Events: brush:strokeStart / strokeEnd damp the idle (the press-give is
  * available as app.hand.setPress, not driven by the brush); reveal:start fans
  * the fingers, reveal:flash wiggles them, reveal:done hands the pose back to
- * the camera.
+ * the camera at once (no spring: the camera cuts back too).
  * Render-on-demand tiers: idle motion, and the other fingers' trailing wobble
  * once the presented finger is still, ask for a frame at most every 33 ms
  * (medium) or 50 ms (low); pose changes of the presented finger, the palm and
@@ -74,5 +74,8 @@ export function install(app) {
   ev.on(EVENTS.BRUSH_STROKE_END, () => { hand.setStroke(false); hand.setPress(0); });
   ev.on(EVENTS.REVEAL_START, () => hand.setPose('fan'));
   ev.on(EVENTS.REVEAL_FLASH, () => hand.play('wiggle'));
-  ev.on(EVENTS.REVEAL_DONE, () => hand.setPose('auto'));
+  // the camera cuts straight back to the close-up: the hand jumps to the
+  // presented pose with it (springing there from the fan would leave the nail
+  // drifting under a still camera for a second or more)
+  ev.on(EVENTS.REVEAL_DONE, () => { hand.setPose('auto'); hand.snapToTarget(); });
 }

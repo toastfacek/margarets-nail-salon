@@ -34,6 +34,7 @@ const ACTIVE_STIFF = 2.2;     // its stiffness, times the feel's (it lands in ~0
 const ANT_T = 0.12;      // s at ant = 1: how long the anticipation dip holds
 const ANT_DIP = 0.12;    // the dip, as a fraction of the coming change, at ant = 1, amp = 1
 const EASE_T = 0;        // s: camera-driven base changes jump; the joint springs (MOTION) carry the motion
+const P_KEYS = FINGER_ORDER.map((f, i) => 'p' + i); // base keys of the close-up off the rail (no per-frame strings)
 
 // Press-give (plan 5.3): a damped spring on the active finger's last joint.
 // Smaller than the plan's 2 / 1 / 0.3 degrees: a nail that keeps moving under
@@ -214,8 +215,11 @@ export class HandAnimator {
     this._withDepth = 0;
     this._withTmp = new Float32Array(N3);
 
+    this._badModel = {};        // hand -> a model the rig could not bind to
     this._mode = 'auto';        // 'auto' (follows the camera) | 'manual' (setPose / presentFinger)
-    this._manualKey = '';
+    this._manualKey = '';       // 'm' + 'f:index' | 'm' + 'n:fan' (built once, in _setManual)
+    this._manualActive = -1;    // the presented finger in manual mode (-1 none)
+    this._snap = false;         // jump to the target on the next update (snapToTarget)
     this._key = '';
     this._ease = 1;             // 0..1 progress of the base ease
     this._antLeft = 0;          // s left of the anticipation dip
@@ -254,13 +258,18 @@ export class HandAnimator {
   }
 
   _rigFor(hand) {
-    let r = this.rigs[hand];
+    const r = this.rigs[hand];
     if (r) return r;
     const h = this.hm.hands[hand];
     if (!h || !h.model || !this.hm.sourceModel) return null;
+    // a model the rig could not bind to is not tried again every frame, but a
+    // new model for that hand is (a broken rig is never cached)
+    if (this._badModel[hand] === h.model) return null;
     if (!this._axes) this._axes = computeRigAxes(this.hm.sourceModel).axes;
-    r = this.rigs[hand] = new HandRig(h.model, this._axes);
-    return r.ok ? r : null;
+    const nr = new HandRig(h.model, this._axes);
+    if (!nr.ok) { this._badModel[hand] = h.model; return null; }
+    this.rigs[hand] = nr;
+    return nr;
   }
 
   // ----------------------------------------------------------- the API --
@@ -289,8 +298,20 @@ export class HandAnimator {
   // which carry the motion by default: MOTION in HandPoses.js)
   _setManual(key, ms) {
     this._mode = 'manual';
-    this._manualKey = key;
+    // the base key and the active finger, worked out here once (update runs
+    // every frame and allocates nothing)
+    this._manualKey = 'm' + key;
+    this._manualActive = key.startsWith('f:') ? FINGER_ORDER.indexOf(key.slice(2)) : -1;
     this._easeT = Math.max(0, ms / 1000);
+  }
+
+  /**
+   * Jump to the current target on the next frame: no ease, no anticipation,
+   * no spring (reveal:done, where the camera cuts back to the close-up and
+   * the presented nail must be where the camera expects it at once).
+   */
+  snapToTarget() {
+    this._snap = true;
   }
 
   /**
@@ -372,7 +393,7 @@ export class HandAnimator {
       const s = sc.railS >= 0 ? sc.railS : FINGER_ORDER.indexOf(sc.zoomedFinger);
       if (s >= 0) {
         writePresentS(s, out);
-        return sc.railS >= 0 ? 'p' : 'p' + s;
+        return sc.railS >= 0 ? 'p' : P_KEYS[s];
       }
     }
     writeNamed('neutral', out);
@@ -382,10 +403,7 @@ export class HandAnimator {
   /** Is finger i the active (presented) one? -1 when none. */
   _activeIndex() {
     const sc = this.scene;
-    if (this._mode === 'manual') {
-      const k = this._manualKey;
-      return k.startsWith('f:') ? FINGER_ORDER.indexOf(k.slice(2)) : -1;
-    }
+    if (this._mode === 'manual') return this._manualActive;
     if (sc && sc.isZoomedIn && sc.zoomedFinger) {
       if (sc.railS >= 0) return Math.round(sc.railS);
       return FINGER_ORDER.indexOf(sc.zoomedFinger);
@@ -408,7 +426,7 @@ export class HandAnimator {
     let key;
     if (this._mode === 'manual') {
       tg.set(this._manual);
-      key = 'm' + this._manualKey;
+      key = this._manualKey;
     } else {
       key = this._autoTarget(tg);
       if (key !== this._key) this._easeT = EASE_T;
@@ -422,6 +440,8 @@ export class HandAnimator {
       this._key = key;
     }
     const base = this._base;
+    const snap = this._snap;
+    if (snap) { this._ease = 1; this._antLeft = 0; }
     const act = this._activeIndex();
     if (this._antLeft > 0) {
       this._antLeft -= dt;
@@ -462,6 +482,7 @@ export class HandAnimator {
     clampPose(fin);
     for (let k = 0; k < N3; k++) fin[k] += rc[k];
     clampPose(fin);
+    if (snap) { this._snap = false; this._springInit = false; }
     const springBusy = this._stepSprings(dt, fin);
 
     // ---- press-give: its own spring, added after the joint springs
