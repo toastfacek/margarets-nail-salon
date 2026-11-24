@@ -18,6 +18,14 @@ analytic finger weights, and the checks at the joint limits.
   The finger's share of each vertex (against the palm, the wrist and the
   neighbours, i.e. the knuckle and webbing blend) is today's, smoothed;
   the nail unit stays rigid on .03 (nails.py's region).
+* The thumb's bind (B9.8, _rebind_thumb): the source thumb sticks straight
+  out, the game rests it beside the index. The rig poses it there, bakes the
+  skinned shape into the mesh, makes that pose the rest, re-rolls the thumb
+  bones from the moved nail and smooths the thenar web (Taubin), so the
+  resting thumb is the modelled shape instead of a 27 degree linear blend
+  skinning bend (which creased the web). Its weights to the palm get a wider,
+  softer falloff first. The game's thumb poses are re-derived about the new
+  bind (GAME_THUMB_POSES) and checked to put the thumb where they used to.
 * Checks at every limit pose (the same table as src/scene/HandPoses.js):
   joint cross-sections keep >= VOLUME_MIN of their rest size, no triangle
   flips, weights sum to one, max 4 influences.
@@ -42,17 +50,38 @@ LIMITS = {
     'finger.01': ((-15, 45), (-12, 12), (0, 0)),
     'finger.02': ((0, 45), (0, 0), (0, 0)),
     'finger.03': ((-5, 45), (0, 0), (0, 0)),
-    'thumb.01': ((-15, 25), (-20, 36), (-15, 25)),
-    'thumb.02': ((-5, 45), (0, 0), (0, 0)),
-    'thumb.03': ((-10, 55), (0, 0), (0, 0)),
+    # the thumb's, about its bind (B9.8; before: (-15, 25), (-20, 36), (-15, 25) /
+    # (-5, 45) / (-10, 55) about the old file's straight-out thumb)
+    'thumb.01': ((-19, 21), (-47, 9), (-9, 21)),
+    'thumb.02': ((-17, 33), (0, 0), (0, 0)),
+    'thumb.03': ((-20, 45), (0, 0), (0, 0)),
     'palm': ((-10, 10), (-6, 6), (0, 0)),
     'wrist': ((-10, 10), (-8, 8), (0, 0)),
 }
 
 
-# The thumb's natural rest (src/scene/HandPoses.js THUMB_REST): the file's
-# thumb sticks straight out; every game pose starts from this one.
-THUMB_REST = {'thumb.01': (4, 27, 4), 'thumb.02': (12, 0, 0), 'thumb.03': (10, 0, 0)}
+# The thumb's bind (B9.8): the source file's thumb sticks straight out; the
+# game rests it beside the index (Jesse, B9 review), which it used to reach
+# with a pose of 27 degrees of spread on the thumb base (THUMB_REST then):
+# linear blend skinning folded the thenar web into a crease there. Now the
+# rig re-poses the thumb to that rest here, bakes it into the mesh, smooths the
+# web and makes it the bind pose (_rebind_thumb): the rest IS the model.
+THUMB_BIND = {'thumb.01': (4, 27, 4), 'thumb.02': (12, 0, 0), 'thumb.03': (10, 0, 0)}
+# The thumb's natural rest (src/scene/HandPoses.js THUMB_REST), now the bind pose.
+THUMB_REST = {'thumb.01': (0, 0, 0), 'thumb.02': (0, 0, 0), 'thumb.03': (0, 0, 0)}
+
+# The game's thumb poses (src/scene/HandPoses.js), [base flex, spread, twist,
+# middle flex, last flex]: before the rebind (about the old file's thumb)
+# and after it (about the new bind). The pipeline re-derives the second from
+# the first and checks both the numbers and where the thumb ends up.
+GAME_THUMB_POSES = {
+    'rest': ((4, 27, 4, 12, 10), (0, 0, 0, 0, 0)),
+    'present-thumb': ((2, 20, 18, 4, 5), (-1.2, -7.1, 14.9, -8, -5)),
+    'present-other': ((6, 28, 4, 14, 12), (1.7, 1.2, -0.9, 2, 2)),
+    'relaxed': ((8, 34, 4, 10, 12), (2.6, 7.3, -1.9, -2, 2)),
+    'fan': ((0, 18, 10, 2, 2), (-2.9, -9.3, 7.8, -10, -8)),
+    'qa-relaxed': ((8, 6, 0, 10, 12), (6.4, -20.4, -6.3, -2, 2)),
+}
 
 
 def with_thumb_rest(pose):
@@ -221,6 +250,25 @@ def _finger_weights(scene, report):
         avg = acc / np.maximum(cnt, 1)[:, None]
         Wn[grow] = 0.5 * Wn[grow] + 0.5 * avg[grow]
     report.setdefault('rig', {})['knuckle_smoothed'] = int(grow.sum())
+    # the thumb web (B9.8): thumb.01 (the metacarpal, inside the thenar) met
+    # the palm over a narrow, noisy band, and that edge creased when the thumb
+    # spread. More passes over a wider ring: a broad, soft falloff.
+    t1 = gi['thumb.01']
+    web = (Wn[:, t1] > 0.01) & (Wn[:, hub].sum(1) > 0.01)
+    for _ in range(P.THUMB_WEB_GROW):
+        g2 = web.copy()
+        np.logical_or.at(g2, E[:, 0], web[E[:, 1]])
+        np.logical_or.at(g2, E[:, 1], web[E[:, 0]])
+        web = g2
+    # not into the thumb's own shaft (its joints keep their crisp windows)
+    web &= Wn[:, [gi['thumb.02'], gi['thumb.03']]].sum(1) < 0.5
+    for _ in range(P.THUMB_WEB_SMOOTH_PASSES):
+        acc = np.zeros_like(Wn)
+        np.add.at(acc, E[:, 0], Wn[E[:, 1]])
+        np.add.at(acc, E[:, 1], Wn[E[:, 0]])
+        avg = acc / np.maximum(cnt, 1)[:, None]
+        Wn[web] = 0.5 * Wn[web] + 0.5 * avg[web]
+    report.setdefault('rig', {})['thumb_web_smoothed'] = int(web.sum())
     # rigid nail units (nails.py): skin within RIGID_REACH of a plate rides on .03 only
     rigid = np.full(n, -1)
     for f, pl in plates.items():
@@ -319,14 +367,16 @@ def limit_poses():
             ext[f + '.0%d' % k] = (lim[0][0], 0, 0)
         out['flex-limit-0%d' % k] = flex
         out['ext-limit-0%d' % k] = ext
-    out['curl'] = {f + '.0%d' % k: (v, 0, 0) for f in fingers + ('thumb',) for k, v in ((1, 35), (2, 45), (3, 25))}
+    # (clamped to each joint's limits, as the game clamps it)
+    out['curl'] = {f + '.0%d' % k: (min(v, limits_of(f + '.0%d' % k)[0][1]), 0, 0)
+                   for f in fingers + ('thumb',) for k, v in ((1, 35), (2, 45), (3, 25))}
     spread = {}
     for f in fingers:
         s = limits_of(f + '.01')[1]
         spread[f + '.01'] = (0, s[1] if f in ('ring', 'pinky') else s[0], 0)
     out['spread'] = spread
     relaxed = {f + '.0%d' % k: (v, 0, 0) for f in fingers for k, v in ((1, 18), (2, 25), (3, 12))}
-    relaxed.update({'thumb.01': (8, 6, 0), 'thumb.02': (10, 0, 0), 'thumb.03': (12, 0, 0)})
+    relaxed.update(_pose_dict(GAME_THUMB_POSES['qa-relaxed'][1]))
     out['relaxed'] = relaxed
     t = limits_of('thumb.01')
     out['thumb-limit'] = {'thumb.01': (t[0][1], t[1][1], t[2][1])}
@@ -427,6 +477,9 @@ def _checks(scene, report, check, Wn):
             if a < worst_area:
                 worst_area, worst_name = a, f'{jn} @ {name}'
         report.setdefault('rig', {}).setdefault('poses', {})[name] = {'flipped_tris': bad}
+        if bad:
+            fi = np.nonzero((n1 * n0r).sum(1) < -0.2)[0]
+            report['rig']['poses'][name]['at'] = [[round(float(x), 3) for x in rest[tris[t]].mean(0)] + [names[dom[tris[t][0]]]] for t in fi[:6]]
     set_pose(rig, {})
     check(f'rig: joint cross-sections >= {P.VOLUME_MIN:.0%} of rest at every limit pose', worst_area >= P.VOLUME_MIN,
           f'{worst_area:.3f} ({worst_name})', P.VOLUME_MIN)
@@ -444,7 +497,166 @@ def _checks(scene, report, check, Wn):
     check('rig: +X flex on every .02 curls the fingertip toward the palm', all(ok), ok)
 
 
+THUMB_BONES = ('thumb.01', 'thumb.02', 'thumb.03')
+
+
+def _pose_dict(t):
+    """[base flex, spread, twist, middle flex, last flex] -> set_pose's dict."""
+    return {'thumb.01': tuple(t[:3]), 'thumb.02': (t[3], 0, 0), 'thumb.03': (t[4], 0, 0)}
+
+
+def _thumb_world(rig):
+    """World positions of the thumb bones' tails (the tip last), as posed now."""
+    return np.array([tuple(rig.matrix_world @ rig.pose.bones[b].tail) for b in THUMB_BONES])
+
+
+def _thumb_pose_mats(rig):
+    """Armature-space rotations of the thumb bones, as posed now."""
+    return {b: rig.pose.bones[b].matrix.to_3x3() for b in THUMB_BONES}
+
+
+def _thumb_reroll(scene):
+    """Thumb bones' rolls from the (moved) thumb nail, as _edit_bones does:
+    the game derives each bone's axes from the file the same way."""
+    rig = scene['rig']
+    mwi = np.linalg.inv(np.array(rig.matrix_world))
+    n = _nail_normal(scene, 'thumb')
+    nails_mw = {f: o.matrix_world.copy() for f, o in scene['nails'].items()}
+    bpy.ops.object.select_all(action='DESELECT')
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    for name in THUMB_BONES:
+        b = rig.data.edit_bones[name]
+        nA = mwi[:3, :3] @ n
+        d = np.array(b.tail - b.head)
+        d /= np.linalg.norm(d)
+        palm_side = -(nA - d * (nA @ d))
+        b.align_roll(Vector(palm_side / np.linalg.norm(palm_side)))
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for f, o in scene['nails'].items():
+        o.matrix_world = nails_mw[f]
+    bpy.context.view_layer.update()
+
+
+def _rebind_thumb(scene, report, check, Wn):
+    """Make the thumb's natural rest the bind pose (B9.8).
+
+    1. pose the thumb at THUMB_BIND (with this build's weights) and bake the
+       skinned shape into the mesh; the thumb nail rides along on thumb.03;
+    2. apply that pose as the armature's rest, re-roll the thumb bones from
+       the moved nail (the game's axes), move the nail plate's frame;
+    3. smooth the thenar web where the bake stretched it (Taubin: no shrink);
+    4. re-derive the game's thumb poses about the new bind and check them.
+    """
+    hand, rig = scene['hand'], scene['rig']
+    me = hand.data
+    assert me.shape_keys is None, 'shape keys: the bake would not carry them'
+    _ensure_armature_modifier(hand, rig)
+    _, gi = _weights(hand)
+    # where each game thumb pose puts the thumb, about the old file
+    before, before_m = {}, {}
+    for name, (old, _) in GAME_THUMB_POSES.items():
+        set_pose(rig, _pose_dict(old))
+        before[name] = _thumb_world(rig)
+        before_m[name] = _thumb_pose_mats(rig)
+    # 1. bake
+    set_pose(rig, THUMB_BIND)
+    co = _deformed(hand)
+    pb3 = rig.pose.bones['thumb.03']
+    D3 = np.array(rig.matrix_world @ pb3.matrix @ pb3.bone.matrix_local.inverted() @ rig.matrix_world.inverted())
+    nails_mw = {f: o.matrix_world.copy() for f, o in scene['nails'].items()}
+    # 2. the pose becomes the rest
+    bpy.ops.object.select_all(action='DESELECT')
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='POSE')
+    bpy.ops.pose.armature_apply(selected=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    set_pose(rig, {})
+    for f, o in scene['nails'].items():
+        o.matrix_world = nails_mw[f]
+    pl = scene.get('plates', {}).get('thumb')
+    if pl is not None:
+        R3 = D3[:3, :3]
+        pl.centre = R3 @ np.asarray(pl.centre) + D3[:3, 3]
+        pl.x, pl.y, pl.z = R3 @ np.asarray(pl.x), R3 @ np.asarray(pl.y), R3 @ np.asarray(pl.z)
+    restA = {b.name: Matrix(b.matrix_local).to_3x3() for b in rig.data.bones}
+    _thumb_reroll(scene)
+    # 3. the thenar web: the thumb.01 / palm / wrist blend, a few rings out, fading
+    n = len(me.vertices)
+    E = np.array([e.vertices[:] for e in me.edges])
+    hub = Wn[:, [gi['palm'], gi['wrist']]].sum(1)
+    w1 = Wn[:, gi['thumb.01']]
+    core = (w1 > 0.02) & (Wn[:, [gi['thumb.02'], gi['thumb.03']]].sum(1) < 0.5)
+    ring = np.where(core, 0, -1)
+    cur = core.copy()
+    for k in range(1, P.THENAR_GROW + 1):
+        g2 = cur.copy()
+        np.logical_or.at(g2, E[:, 0], cur[E[:, 1]])
+        np.logical_or.at(g2, E[:, 1], cur[E[:, 0]])
+        ring[g2 & (ring < 0)] = k
+        cur = g2
+    fall = np.where(ring < 0, 0.0, 1.0 - np.maximum(ring, 0) / (P.THENAR_GROW + 1.0))
+    moved = np.linalg.norm(co - gltfio.world_points(hand), axis=1)
+    a = fall
+    cnt = np.zeros(n)
+    np.add.at(cnt, E[:, 0], 1)
+    np.add.at(cnt, E[:, 1], 1)
+    X = co.copy()
+    for _ in range(P.THENAR_SMOOTH_ITERS):
+        for lam in (P.THENAR_SMOOTH_LAMBDA, P.THENAR_SMOOTH_MU):
+            acc = np.zeros_like(X)
+            np.add.at(acc, E[:, 0], X[E[:, 1]])
+            np.add.at(acc, E[:, 1], X[E[:, 0]])
+            L = acc / np.maximum(cnt, 1)[:, None] - X
+            X = X + (lam * a)[:, None] * L
+    m = np.array(hand.matrix_world)
+    loc = (X - m[:3, 3]) @ np.linalg.inv(m[:3, :3]).T
+    me.vertices.foreach_set('co', loc.reshape(-1))
+    me.update()
+    rep = report.setdefault('rig', {}).setdefault('thumb_rebind', {})
+    rep['web_vertices'] = int((a > 0).sum())
+    rep['smooth_shift_max'] = round(float(np.linalg.norm(X - co, axis=1).max()), 5)
+    rep['bake_shift_max'] = round(float(moved.max()), 5)
+    # 4. the game's poses about the new bind. A bone's skinning transform
+    # (posed x rest^-1) must stay the old one, relative to the bind's: with the
+    # new rest = (old bind pose) x roll, the posed bone must be (old posed) x roll.
+    signs1 = _semantic_signs(rig)
+    A1 = {b.name: Matrix(b.matrix_local).to_3x3() for b in rig.data.bones}
+    par = {b.name: b.parent.name for b in rig.data.bones if b.parent}
+    derived, worst_deg, worst_tip, worst_tab = {}, 0.0, 0.0, 0.0
+    for name, (old, new) in GAME_THUMB_POSES.items():
+        M1 = {par['thumb.01']: A1[par['thumb.01']]}
+        out = []
+        for b in THUMB_BONES:
+            M1[b] = before_m[name][b] @ (restA[b].inverted() @ A1[b])
+            Q = (M1[par[b]] @ A1[par[b]].inverted() @ A1[b]).inverted() @ M1[b]
+            e = Q.to_euler('YZX')  # matrix = Rx(e.x) Rz(e.z) Ry(e.y)
+            out.append((math.degrees(e.x), math.degrees(e.z) / signs1[b][0], math.degrees(e.y) / signs1[b][1]))
+        exact = (out[0][0], out[0][1], out[0][2], out[1][0], out[2][0])
+        resid = max(abs(out[1][1]), abs(out[1][2]), abs(out[2][1]), abs(out[2][2]))
+        worst_deg = max(worst_deg, resid)
+        derived[name] = [round(v, 3) for v in exact]
+        use = new if new is not None else tuple(round(v, 1) for v in exact)
+        worst_tab = max(worst_tab, max(abs(u - v) for u, v in zip(use, exact)))
+        set_pose(rig, _pose_dict(use))
+        after = _thumb_world(rig)
+        tip = float(np.linalg.norm(after - before[name], axis=1).max())
+        worst_tip = max(worst_tip, tip)
+    set_pose(rig, {})
+    rep['game_poses'] = derived
+    rep['tip_shift_max'] = round(worst_tip, 5)
+    # the thumb's length (for the tip tolerance): 0.5 degree at the tip
+    tlen = sum(rig.data.bones[b].length for b in THUMB_BONES) * float(rig.matrix_world.to_scale()[0])
+    check('rig: the thumb rest is the bind pose (game thumb poses re-derived about it)',
+          worst_deg < 0.5 and worst_tab <= 0.051 and worst_tip < tlen * math.radians(1.0),
+          {'off_axis_deg': round(worst_deg, 3), 'table_vs_exact_deg': round(worst_tab, 3),
+           'tip_shift': round(worst_tip, 5)}, '< 0.5 deg / <= 0.05 deg / < 1 deg of thumb length')
+
+
 def build(scene, report, check):
     _edit_bones(scene, report)
     Wn = _finger_weights(scene, report)
+    _rebind_thumb(scene, report, check, Wn)
     _checks(scene, report, check, Wn)

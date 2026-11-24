@@ -5,7 +5,7 @@
  * twist] in degrees, about the bone's own axes (src/scene/HandRig.js):
  *   flex   + curls toward the palm (every finger, the thumb, palm, wrist)
  *   spread + toward the pinky side (fingers); for the thumb + brings it in
- *          beside the index (its rest, THUMB_REST, sits at +27)
+ *          beside the index (its rest, THUMB_REST, is the file's bind: 0)
  *   twist  thumb only: + turns its nail up (toward the camera)
  * Tunable without Blender: the asset only has to keep the 17 bone names.
  * The limits are mirrored in tools/blender/rig.py (the pipeline checks the
@@ -33,9 +33,10 @@ export function fingerBase(fingerIndex) {
 // finger knuckle / middle joint flex tightened from the plan's 60 / 70 to 45 / 45: past
 // ~50 linear blend skinning folds the pad (tools/blender/rig.py checks every limit)
 const L_FINGER = [[-15, 45, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 45, 0, 0, -1, 1]];
-// thumb base: spread up to 36 (plan: 30; the natural rest, THUMB_REST, sits at 27),
-// flex up to 25 (plan: 35; flex 35 with spread 36 folds the thenar)
-const L_THUMB = [[-15, 25, -20, 36, -15, 25], [-5, 45, 0, 0, 0, 0], [-10, 55, 0, 0, -1, 1]];
+// the thumb's, about its bind (B9.8: the file's thumb now rests beside the index;
+// before, about a thumb sticking straight out: base flex -15..25, spread -20..36,
+// twist -15..25, middle -5..45, last -10..55; tools/blender/rig.py re-derives them)
+const L_THUMB = [[-19, 21, -47, 9, -9, 21], [-17, 33, 0, 0, 0, 0], [-20, 45, 0, 0, -1, 1]];
 const L_PALM = [-10, 10, -6, 6, 0, 0];
 const L_WRIST = [-10, 10, -8, 8, 0, 0];
 
@@ -63,13 +64,15 @@ export function clampPose(p) {
 }
 
 /**
- * The thumb's natural rest (Jesse, B9 review): the file's thumb sticks
- * straight out from the hand. At rest it sits beside the index at about
- * 30 degrees (animation-tests/thumb-before-after.png), turned a little toward the palm, both joints a little curled,
- * the nail partly sideways. Every pose starts from it (neutral included).
+ * The thumb's natural rest (Jesse, B9 review): beside the index at about 30
+ * degrees, turned a little toward the palm, both joints a little curled, the
+ * nail partly sideways. Since B9.8 that is the file's own bind pose (the
+ * pipeline poses the thumb there in Blender and smooths the thenar web, which
+ * linear blend skinning used to crease), so the rest is all zeros. Every pose
+ * starts from it (neutral included); the thumb values below are about it.
  * [base flex, base spread, base twist, middle joint flex, last joint flex]
  */
-export const THUMB_REST = Object.freeze([4, 27, 4, 12, 10]);
+export const THUMB_REST = Object.freeze([0, 0, 0, 0, 0]);
 
 function thumb(out, t) {
   const b = fingerBase(0) * 3;
@@ -83,11 +86,13 @@ export const PRESENT = Object.freeze({
   active: [-8, 4, 4],          // knuckle, middle joint, last joint (flex)
   other: [8, 10, 5],
   spreadAway: 3,
-  // the thumb, in THUMB_REST's terms: presented it comes forward a little
-  // away from the index with its nail turned up (never hyper-extended); while
-  // another finger is presented it tucks a little closer
-  thumbActive: Object.freeze([2, 20, 18, 4, 5]),
-  thumbOther: Object.freeze([6, 28, 4, 14, 12]),
+  // the thumb, about THUMB_REST: presented it comes forward a little away
+  // from the index with its nail turned up (its joints straighten toward the
+  // file's old straight thumb, never hyper-extended); while another finger is
+  // presented it tucks a little closer
+  // (before B9.8, about the straight-out thumb: [2, 20, 18, 4, 5] / [6, 28, 4, 14, 12])
+  thumbActive: Object.freeze([-1.2, -7.1, 14.9, -8, -5]),
+  thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
 });
 
 /**
@@ -148,12 +153,12 @@ export const POSE_NAMES = Object.freeze(['neutral', 'relaxed', 'fan']);
 export function writeNamed(name, out) {
   out.fill(0);
   if (name === 'relaxed') {
-    thumb(out, [8, 34, 4, 10, 12]);
+    thumb(out, [2.6, 7.3, -1.9, -2, 2]); // before B9.8: [8, 34, 4, 10, 12]
     return fingers(out, [null, [6, 10, 5], [6, 10, 5], [6, 10, 5], [6, 10, 5]], [0, -1, 0, 1, 2]);
   }
   if (name === 'fan') {
     // the show-off: fingers spread 8-10 degrees, tips a little up, the thumb opens
-    thumb(out, [0, 18, 10, 2, 2]);
+    thumb(out, [-2.9, -9.3, 7.8, -10, -8]); // before B9.8: [0, 18, 10, 2, 2]
     return fingers(out, [null, [-5, 0, 0], [-5, 0, 0], [-5, 0, 0], [-4, 0, 0]], [0, -9, -2, 5, 10]);
   }
   return thumb(out, THUMB_REST);

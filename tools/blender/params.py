@@ -85,3 +85,14 @@ JOINT_WIN_BACK = 0.9             # blend window across a joint on the back (cris
 JOINT_WIN_PAD = 2.2              # ... and on the pad side (soft fold)
 VOLUME_MIN = 0.85                # joint cross-section at any limit pose, x rest
 KNUCKLE_SMOOTH_PASSES = 3        # Laplacian passes over the knuckle / webbing weights
+# The thumb web (B9.8): the file's thumb sticks straight out; the game rests it
+# beside the index. The rig re-poses the thumb to that rest in Blender, bakes
+# it into the mesh and makes it the bind pose (rig.py _rebind_thumb), then
+# smooths the thenar web there, so the thumb at rest is the modelled shape and
+# not linear blend skinning 27 degrees away from it.
+THUMB_WEB_GROW = 4               # rings around the thumb.01 / palm / wrist blend
+THUMB_WEB_SMOOTH_PASSES = 12     # extra Laplacian weight passes there (a wider, softer falloff)
+THENAR_GROW = 4                  # rings around thumb.01's skin that the surface smoothing reaches (fading out)
+THENAR_SMOOTH_ITERS = 30         # Taubin passes on the rebound thenar web
+THENAR_SMOOTH_LAMBDA = 0.5
+THENAR_SMOOTH_MU = -0.53
