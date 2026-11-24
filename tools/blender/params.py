@@ -29,6 +29,8 @@ ANTHRO_BAND = 0.12
 REST_FLEX = (0.0, 6.0, 4.0)
 REST_KNUCKLE_RANGE = (-6.0, 14.0)
 DESK_PAD_TOL_MM = 1.5            # finger pads' lowest point vs the desk plane
+BAKE_SOFT_RINGS = 4              # the re-pose bake uses weights diffused over the webs, thenar, wrist + this many rings
+BAKE_SOFT_PASSES = 30
 WEB_RELAX_ITERS = 10             # Taubin passes on the webs and the thenar after the re-pose
 WEB_RELAX_LAMBDA = 0.5
 WEB_RELAX_MU = -0.53
@@ -69,13 +71,18 @@ HEADING_ITERS = 2                # spread the fingers to v1's headings, re-place
 NOTCH_CAVITY = 0.3               # no forearm vertex with a cavity mask above this
 
 # ---- rig (rig.py, plan 5) -----------------------------------------------------------
-WEIGHT_SMOOTH_PASSES = 2         # Laplacian passes on the finger webs and the thenar web
+WEIGHT_SMOOTH_PASSES = 4         # Laplacian passes on the finger webs and the thenar web
+FINGER_JOINT_PASSES = 4          # Laplacian passes on the finger joint blends
+THENAR_RINGS = 3                 # the thenar web's weight smoothing reaches this many rings out
+THENAR_SMOOTH_PASSES = 10
 RIGID_RINGS = 2                  # rings of cage faces around the nail bed that ride on .03 only
 VOLUME_MIN = 0.85                # joint cross-section at any limit pose, x rest
 WEB_DIHEDRAL_MAX = 25.0          # max dihedral change across the thenar web at the game's thumb poses (the crease)
 
 # ---- density (dense.py, plan 3.4) ---------------------------------------------------
-DENSE_TIP_W = 0.5                # faces with this much .03 weight (grown one ring) get level 2
+DENSE_TIP_W = 0.5                # faces with this much .03 weight (grown one ring) get level 2 ...
+DENSE_TIP_HALF = 0.5             # ... on the back, and on the pad past this fraction of the last bone
+DENSE_PAD_KEEP = 0.35            # 'back' reaches this far round the sides (x the local radius)
 LIMIT_LEVELS = 3                 # the limit surface proxy every vertex is snapped to
 CAP_SKIN_VERTS = 14000           # after UV seam splits
 CAP_SKIN_TRIS = 27500
