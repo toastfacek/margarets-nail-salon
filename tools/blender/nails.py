@@ -57,9 +57,26 @@ class Groove:
         M = np.stack([np.ones_like(x), x, y, x * x, y * y, x * y], 1)
         self.c = np.linalg.lstsq(M, z, rcond=None)[0]
 
-    def zbed(self, x, y):
+    R_c = None      # the plate's transverse radius (a circular C-curve), set for the sculpted nails
+
+    def csag(self, x, tight=0.0):
+        """The C-curve across: how far below the centre line the plate is at x
+        (a circle of radius R_c, tightened by the factor 1 + tight toward the free
+        edge); the fitted quadric's own x^2 term when no radius is set."""
+        if self.R_c is None:
+            return -self.c[3] * x * x / P.NAIL_C_CURVE * (1.0 + tight)
+        R = self.R_c / (1.0 + tight)
+        # a circle across the plate; beyond its sides (where only the folds and
+        # the skin round them read it) it goes on along the edge's tangent
+        xe = np.minimum(self.W_c, 0.95 * R)
+        ax = np.abs(x)
+        xx = np.minimum(ax, xe)
+        sag = R - np.sqrt(R * R - xx * xx)
+        return sag + np.maximum(ax - xe, 0.0) * xe / np.sqrt(R * R - xe * xe)
+
+    def zbed(self, x, y, tight=0.0):
         c = self.c
-        return c[0] + c[1] * x + c[2] * y + c[3] * x * x / P.NAIL_C_CURVE + c[4] * y * y + c[5] * x * y
+        return c[0] + c[1] * x + c[2] * y - self.csag(x, tight) + c[4] * y * y + c[5] * x * y
 
 
 class Plate:
@@ -94,11 +111,13 @@ class Plate:
         yh = self.y_h
         past = np.minimum(y - yh, 0.0)              # <= 0 past the hyponychium
         yb = np.maximum(y, yh)
-        z = g.zbed(x, yb)
+        # the C-curve tightens a little toward the free edge (from the bed's last
+        # NAIL_C_TIGHTEN_LEN to the edge)
+        tight = P.NAIL_C_TIGHTEN * smoothstep(-P.NAIL_C_TIGHTEN_LEN * mm, 2.0 * mm, yh - y)
+        z = g.zbed(x, yb, tight)
         eps = 1e-4
         dzdy = (g.zbed(x, yh + eps) - g.zbed(x, yh - eps)) / (2 * eps)
         z = z + P.NAIL_FREE_SLOPE * dzdy * past - P.NAIL_DROOP * (past / mm) ** 2 * mm
-        z = z + g.c[3] / P.NAIL_C_CURVE * P.NAIL_C_TIGHTEN * x * x * smoothstep(0, 2.0 * mm, -past)
         return z + self.lift
 
     def normal(self, x, y):
@@ -360,6 +379,11 @@ def build(scene, report, check, free_len=None, sculpted=False, morph=False):
             g.y_h = min(g.y_h, g.y_cut - P.BED_FLOOR * 2 * g.finger_half_w)
             # a nail's arch along the finger is gentle: never tighter than NAIL_ARCH_MIN
             g.c[4] = max(g.c[4], -1.0 / (2.0 * P.NAIL_ARCH_MIN * mm))
+            # a real C-curve across (Jesse, after V2: the plates read flat): a
+            # circular arc of NAIL_ARC_DEG over the visible plate's width
+            arc_fit = 2.0 * math.degrees(math.atan(2.0 * abs(g.c[3]) / P.NAIL_C_CURVE * W0))
+            g.R_c = W0 / math.sin(math.radians(P.NAIL_ARC_DEG[f]) / 2.0)
+            g.W_c = W0
         else:
             W0, lift = g.bed_half_w, P.NAIL_LIFT * mm
         pl = Plate(g, W0, g.y_cut, g.y_h, free_len, lift)
@@ -411,6 +435,18 @@ def build(scene, report, check, free_len=None, sculpted=False, morph=False):
                    'width_frac': round(W0 / g.finger_half_w, 3), 'finger_w_mm': round(2 * g.finger_half_w / mm, 2),
                    'aspect': round(half / chord, 3), 'corner_r_over_half_w': round(pl.d_tip / W0, 3),
                    'hypo_moved_mm': round((getattr(g, 'y_h_patch', g.y_h) - g.y_h) / mm, 2)}
+        if g.R_c is not None:
+            # the C-curve as built: the angle between the plate's normals at its two
+            # sides, mid-bed and at the free edge's start
+            def arc_at(y):
+                w = float(pl.W(y)) * (1.0 - 1e-3)
+                a, b = pl.normal(np.array([-w]), np.array([y]))[0], pl.normal(np.array([w]), np.array([y]))[0]
+                return math.degrees(math.acos(np.clip(a @ b, -1, 1)))
+            info[f]['arc_deg'] = {'mid_bed': round(arc_at((pl.y_cut + pl.y_h) / 2), 1), 'free_edge': round(arc_at(pl.y_h - 1.0 * mm), 1),
+                                  'before (fitted)': round(arc_fit, 1)}
+            check(f'{f}: C-curve across the plate {P.NAIL_ARC_DEG[f]:g} +- 8 deg (mid-bed), tighter at the free edge',
+                  abs(info[f]['arc_deg']['mid_bed'] - P.NAIL_ARC_DEG[f]) <= 8 and info[f]['arc_deg']['free_edge'] > info[f]['arc_deg']['mid_bed'],
+                  info[f]['arc_deg'], P.NAIL_ARC_DEG[f])
         check(f'{f}: plate verts <= {P.CAP_NAIL_VERTS}', nv <= P.CAP_NAIL_VERTS, nv, P.CAP_NAIL_VERTS)
         err = float(np.abs(np.array(obj.matrix_world) - np.array(M)).max())
         R = np.array(M)[:3, :3]
@@ -496,6 +532,9 @@ def sculpt_skin(scene, plates, report, check):
     me.vertices.foreach_get('co', co)
     co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
     new = co.copy()
+    dist_out = np.full(len(co), np.inf)
+    capped = np.zeros(len(co), dtype=bool)
+    zdir = np.zeros((len(co), 3))
     for f, pl in plates.items():
         g = pl.g
         fw = Wd[f] > 0.5
@@ -522,13 +561,49 @@ def sculpt_skin(scene, plates, report, check):
         f_in = np.maximum(fold_on * (edge + slope * d) + (1 - fold_on) * floor, floor)
         z_in = np.where(f_in > floor + 1e-12, zp + f_in, np.minimum(lz, zp + floor))
         wb = (1.0 - smoothstep(0.35, 1.0, t)) * fold_on
-        z_out = lz + (zp + f_out - lz) * wb
+        # outside the outline the folds only ever lift the skin: where the plate's
+        # C-curve dives under the side folds the skin stays where it is
+        z_out = lz + np.maximum(zp + f_out - lz, P.FOLD_PULL_DOWN * (zp + f_out - lz)) * wb
         z_new = np.where(d < 0, z_in, z_out)
         z_new = lz + (z_new - lz) * top
         # no skin above the plate inside its visible outline (plan 4.7)
         inside = (signed_distance(polys[f], x, y) < 0) | (signed_distance(outline(pl.long), x, y) < 0)
+        # past the hyponychium the free edge's sides curl down (the C-curve): beside
+        # them the fingertip's skin stays under a soft ramp that rises outward from
+        # just under the plate's side edge (and fades out back over the bed)
+        sdl = np.minimum(signed_distance(polys[f], x, y), signed_distance(outline(pl.long), x, y))
+        xe = np.clip(x, -pl.W(y), pl.W(y))
+        cap = pl.z(xe, y) - P.FREE_SIDE_DROP * mm + P.FREE_SIDE_RAMP * np.maximum(sdl, 0.0) \
+            + 10.0 * mm * smoothstep(pl.y_h + 0.3 * mm, pl.y_h + 2.3 * mm, y)
+        capped[i] |= (sdl >= 0) & (cap < z_new)
+        z_new = np.where(sdl >= 0, np.minimum(z_new, cap), z_new)
         z_new = np.where(inside, np.minimum(z_new, zp - P.SKIN_UNDER * mm), z_new)
         new[i] = co[i] + np.outer(z_new - lz, g.Z)
+        dist_out[i] = np.minimum(dist_out[i], signed_distance(polys[f], x, y))
+        zdir[i] = g.Z
+    # the folds' outer slopes: the C-curve's sides make the sculpt move the
+    # skin a lot on the finger's steep sides, row by row; the displacement is
+    # smoothed there (never at the outline, so the fold line stays crisp)
+    disp = new - co
+    nb = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get('vertices', nb)
+    nb = nb.reshape(-1, 2)
+    free = (dist_out > P.FOLD_SMOOTH_FROM * mm) & ~capped      # (the free edge's side ramp stays)
+    for _ in range(P.FOLD_SMOOTH_PASSES):
+        acc = np.zeros_like(disp)
+        cnt = np.zeros(len(disp))
+        np.add.at(acc, nb[:, 0], disp[nb[:, 1]])
+        np.add.at(acc, nb[:, 1], disp[nb[:, 0]])
+        np.add.at(cnt, nb[:, 0], 1)
+        np.add.at(cnt, nb[:, 1], 1)
+        avg = acc / np.maximum(cnt, 1)[:, None]
+        disp = np.where(free[:, None], 0.5 * disp + 0.5 * avg, disp)
+    # the smoothing may lower the skin, never lift it (over a plate's rim)
+    d0 = ((new - co) * zdir).sum(1)
+    d1 = (disp * zdir).sum(1)
+    lift = np.maximum(d1 - d0, 0.0)
+    disp = disp - zdir * lift[:, None]
+    new = co + disp
     loc = new @ mwi[:3, :3].T + mwi[:3, 3]
     me.vertices.foreach_set('co', loc.ravel())
     me.update()
@@ -571,24 +646,35 @@ def nail_checks(scene, plates, info, check):
             p = Vector(Q[i])
             tested += 1
             nv = Vector(R @ pl_normal(pl, i))
-            if bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)[0] is not None:
+            hh = bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)
+            if hh[0] is not None:
                 bad += 1
+                if __import__('os').environ.get('NAIL_DEBUG'):
+                    q = pl.g.local(np.array(hh[0])); q0 = pl.g.local(np.array(Q[i]))
+                    print('UNDER', f, i // pl.shape[1], i % pl.shape[1], 'vert', (q0 / mm).round(2), 'hit', (q / mm).round(2), 'n', np.round(R.T @ np.array(nv), 2))
                 NJ, NC = pl.shape
                 info[f].setdefault('under_at_row_col', []).append([int(i // NC), int(i % NC)])
             hit = bvh.ray_cast(p, -n, 0.05)
             if hit[0] is not None:
                 gaps.append(hit[3] - T)
-        # the longest stop's plate (the slider's far end), from its own analytic surface
-        lp = pl.long
-        lv = lp.build()[0]
-        Ql = pl.g.O + lv @ R.T
-        bad_l = 0
-        for i in np.nonzero(lp.visible_mask())[0]:
-            nv = Vector(R @ pl_normal(lp, i))
-            p = Vector(Ql[i])
-            if bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)[0] is not None:
-                bad_l += 1
-        check(f'{f}: no visible plate vertex under the skin at the longest length', bad_l == 0, bad_l)
+        # every stop of the length slider, from its own analytic surface
+        bad_s = {}
+        for Ls in P.NAIL_FREE_STOPS:
+            lp = Plate(pl.g, pl.W0, pl.y_cut, pl.y_h, Ls, pl.lift)
+            lv = lp.build()[0]
+            Ql = pl.g.O + lv @ R.T
+            nb = 0
+            for i in np.nonzero(lp.visible_mask())[0]:
+                nv = Vector(R @ pl_normal(lp, i))
+                p = Vector(Ql[i])
+                hh = bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)
+                if hh[0] is not None:
+                    nb += 1
+                    if __import__('os').environ.get('NAIL_DEBUG'):
+                        print('UNDER-L', f, Ls, i // lp.shape[1], i % lp.shape[1], (pl.g.local(np.array(Ql[i])) / mm).round(2),
+                              (pl.g.local(np.array(hh[0])) / mm).round(2))
+            bad_s['%g' % Ls] = nb
+        check(f'{f}: no visible plate vertex under the skin at any length stop', not any(bad_s.values()), bad_s)
         info[f]['under_skin'] = f'{bad}/{tested}'
         info[f]['min_gap_under_mm'] = round(float(min(gaps) / mm), 3) if gaps else None
         check(f'{f}: no visible plate vertex under the skin', bad == 0, f'{bad}/{tested}')

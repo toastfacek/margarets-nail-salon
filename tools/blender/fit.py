@@ -391,21 +391,58 @@ def build(cage, report, check):
     # centre's place on the desk (game x, y) and its normal; its height is the
     # thumb lying on its side on the desk (v1's thumb hung below its palm)
     th_sel = cage.W[:, [BI['thumb.02'], BI['thumb.03']]].sum(1) > 0.5
+    th_base = (cage.W[:, BI['thumb.01']] > 0.5) & ~th_sel        # the thenar
     ix0 = unit((Rc @ (cage.joints['index.4'] - cage.joints['index.1']))[:2])
     side0 = np.array([-ix0[1], ix0[0]])
 
-    def thumb_err(x):
+    def thumb_geom(T):
+        """The thumb seen from the side: its two pitches (degrees, + = up toward
+        the tip) and heights above the desk (mm), against the index's axis."""
+        def pt(b, end):
+            M, tt = T[b]
+            return M @ (sk.head[b] if end == 'h' else sk.tail[b]) + tt
+        cmc, mcp, ip, tip = pt('thumb.01', 'h'), pt('thumb.02', 'h'), pt('thumb.03', 'h'), pt('thumb.03', 't')
+        pitch = lambda a, b: math.degrees(math.asin(np.clip(unit(b - a) @ up, -1, 1)))  # noqa: E731
+        ih = 0.5 * (pt('index.03', 'h') + pt('index.03', 't')) @ up - desk
+        return {'pitch_meta': pitch(cmc, mcp), 'pitch_prox': pitch(mcp, ip), 'pitch_dist': pitch(ip, tip),
+                'pitch_phal': pitch(mcp, tip), 'tip_h': float(tip @ up - desk), 'ip_h': float(ip @ up - desk),
+                'mcp_h': float(mcp @ up - desk), 'index_axis_h': float(ih)}
+
+    def thumb_err(x, stage=1):
         pose['thumb.01'] = (x[0], x[1], x[2])
         pose['thumb.02'] = (x[3], 0.0, 0.0)
         pose['thumb.03'] = (x[4], 0.0, 0.0)
         T = tfm()
+        low = float((sk.skin(cage.V[th_sel], cage.W[th_sel], T) @ up).min()) - desk
+        if stage == 2:
+            # stage 2 (Jesse, after V2): seen from the side, a relaxed thumb beside
+            # the index is fairly straight (a slight curl only), its metacarpal
+            # sloping a little down, the thumb about level with the index and a
+            # little below it; it never hooks down to the desk, and clears it.
+            # The base keeps near its stage-1 place and the nail near v1's facing
+            gm = thumb_geom(T)
+            curl = [max(gm['pitch_meta'] - gm['pitch_prox'] - P.THUMB_SIDE_CURL_MAX, 0.0),
+                    max(gm['pitch_prox'] - gm['pitch_dist'] - P.THUMB_SIDE_CURL_MAX, 0.0)]
+            meta = gm['pitch_meta'] - P.THUMB_META_PITCH
+            level = max(gm['tip_h'] - (gm['index_axis_h'] - P.THUMB_BELOW_INDEX_MM), 0.0) * P.THUMB_LEVEL_W
+            low1 = float((sk.skin(cage.V[th_base], cage.W[th_base], T) @ up).min()) - desk
+            rest = min(low - P.THUMB_DESK_CLEAR_MM, 0.0) * 20.0 + min(low1 - P.THENAR_DESK_CLEAR_MM, 0.0) * 20.0
+            M, tt = T['thumb.03']
+            ng = Rc @ (M @ cage.nail_normal('thumb'))
+            cg = sc * Rc @ (M @ cage.nail_centre('thumb') + tt) + tc
+            dv = (cg[:2] - np.array(P.V1_NAIL_CENTRE['thumb'][:2])) / sc
+            # the nail faces up-and-out like v1's (its tilt from up, not its heading)
+            e_n = [(math.degrees(math.acos(np.clip(unit(ng) @ unit(Rc @ up), -1, 1))) - P.THUMB_NAIL_TILT) * P.THUMB_NAIL_TILT_W]
+            out = max(dv @ side0 - 0.0, 0.0) * P.THUMB_OUT_W
+            prior = np.concatenate([(np.asarray(x[:3]) - x1[:3]) * P.THUMB_STAGE2_BASE_W,
+                                    (np.asarray(x[3:]) - th2[3:]) * P.THUMB_STRAIGHT_PRIOR_W])
+            return np.concatenate([np.array(curl) * P.THUMB_CURL_W, [meta * P.THUMB_META_W, level, rest, out], e_n, prior])
         M, tt = T['thumb.03']
         cg = sc * Rc @ (M @ cage.nail_centre('thumb') + tt) + tc
         ng = Rc @ (M @ cage.nail_normal('thumb'))
         dv = (cg[:2] - np.array(P.V1_NAIL_CENTRE['thumb'][:2])) / sc      # mm, on the desk
         e_c = np.array([dv @ ix0 * P.THUMB_ALONG_W, dv @ side0 * P.THUMB_OUT_W])
         e_n = (ng - unit(P.V1_NAIL_NORMAL['thumb'])) * 25.0              # 1 rad ~ 25 mm
-        low = float((sk.skin(cage.V[th_sel], cage.W[th_sel], T) @ up).min()) - desk
         # the base joint (the metacarpal, at the wrist) does the work; the two
         # outer joints stay near a natural relaxed flex (no hyper-extension)
         prior = (np.asarray(x) - th0) * np.array(P.THUMB_PRIOR_W)
@@ -418,25 +455,31 @@ def build(cage, report, check):
     cur_t = (flex_between(sk, T0, 'thumb.01', 'thumb.02'), flex_between(sk, T0, 'thumb.02', 'thumb.03'))
     rep['source_thumb_flex'] = [round(v, 1) for v in cur_t]
     th0 = np.array([0.0, 0.0, 0.0, P.THUMB_REST_FLEX[0] - cur_t[0], P.THUMB_REST_FLEX[1] - cur_t[1]])
-    def solve(x):
+    th2 = np.array([0.0, 0.0, 0.0, P.THUMB_STRAIGHT_FLEX[0] - cur_t[0], P.THUMB_STRAIGHT_FLEX[1] - cur_t[1]])
+
+    def solve(x, stage=1):
+        free = [0, 1, 2, 3, 4]
         lam = 1e-2
         for _ in range(80):
-            r = thumb_err(x)
-            Jm = np.zeros((len(r), 5))
-            for i in range(5):
+            r = thumb_err(x, stage)
+            Jm = np.zeros((len(r), len(free)))
+            for j, i in enumerate(free):
                 dx = np.zeros(5)
                 dx[i] = 0.25
-                Jm[:, i] = (thumb_err(x + dx) - r) / 0.25
-            step = np.linalg.solve(Jm.T @ Jm + lam * np.eye(5), -Jm.T @ r)
-            if (thumb_err(x + step) ** 2).sum() < (r ** 2).sum():
+                Jm[:, j] = (thumb_err(x + dx, stage) - r) / 0.25
+            st = np.linalg.solve(Jm.T @ Jm + lam * np.eye(len(free)), -Jm.T @ r)
+            step = np.zeros(5)
+            step[free] = st
+            if (thumb_err(x + step, stage) ** 2).sum() < (r ** 2).sum():
                 x = x + step
                 lam *= 0.5
             else:
                 lam *= 4
             if np.abs(step).max() < 1e-4:
                 break
-        return x, float((thumb_err(x) ** 2).sum())
-    # a few starts for the base joint (its cost has more than one valley)
+        return x, float((thumb_err(x, stage) ** 2).sum())
+    # stage 1: the base joint places the thumb like v1's (B9.8); a few starts
+    # (its cost has more than one valley)
     best = None
     for a in (-40, 0, 40):
         for b in (-40, 0, 40):
@@ -446,6 +489,10 @@ def build(cage, report, check):
                 if best is None or cost < best[1]:
                     best = (xs, cost)
     x = best[0]
+    rep['thumb_stage1'] = {kk: round(v, 1) for kk, v in thumb_geom(tfm()).items()}
+    # stage 2: straighten the outer joints (the base keeps its place)
+    x1 = x.copy()
+    x, _ = solve(np.concatenate([x[:3], th2[3:]]), stage=2)
     r = thumb_err(x)
     T = tfm()
     M, tt = T['thumb.03']
@@ -465,12 +512,23 @@ def build(cage, report, check):
         side = -side                       # + = away from the hand, on the thumb side
     dv = (cg[:2] - np.array(P.V1_NAIL_CENTRE['thumb'][:2])) / sc
     along, out = float(dv @ ixg), float(dv @ side)
+    gm = thumb_geom(T)
+    rep['thumb_side'] = {kk: round(v, 1) for kk, v in gm.items()}
+    bends = [gm['pitch_meta'] - gm['pitch_prox'], gm['pitch_prox'] - gm['pitch_dist']]
+    check('fit: thumb from the side: no joint bends down more than %g deg (no hook)' % (P.THUMB_SIDE_CURL_MAX + 2),
+          max(bends) <= P.THUMB_SIDE_CURL_MAX + 2, [round(b, 1) for b in bends], P.THUMB_SIDE_CURL_MAX + 2)
+    check('fit: thumb clears the desk', rep['thumb_low_vs_desk_mm'] >= 0.0, rep['thumb_low_vs_desk_mm'], '>= 0 mm')
     rep['thumb'] = {'pose': [round(float(v), 2) for v in x], 'centre_mm': round(dmm, 2), 'normal_deg': round(ddeg, 2),
                     'along_index_mm': round(along, 2), 'out_of_hand_mm': round(out, 2)}
-    check("fit: thumb rests beside the index like v1's: nail normal within %g deg, no further out than %g mm"
-          % (P.THUMB_FIT_DEG, P.THUMB_OUT_MM), ddeg <= P.THUMB_FIT_DEG and out <= P.THUMB_OUT_MM,
-          {'normal_deg': round(ddeg, 2), 'out_mm': round(out, 2), 'along_mm (info)': round(along, 2)},
-          [P.THUMB_FIT_DEG, P.THUMB_OUT_MM])
+    # Jesse (after V2) re-set the thumb's target: straight and level from the side.
+    # Lying straight on its side it cannot also keep v1's nail facing (v1's thumb
+    # hung below the palm), so the nail normal against v1's is now information
+    rep['thumb']['nail_from_up_deg'] = round(math.degrees(math.acos(np.clip(unit(ng) @ unit(Rc @ up), -1, 1))), 1)
+    rep['thumb']['v1_nail_from_up_deg'] = round(math.degrees(math.acos(np.clip(unit(P.V1_NAIL_NORMAL['thumb'])[2], -1, 1))), 1)
+    check("fit: thumb beside the index, no further out of the hand than v1's + %g mm" % P.THUMB_OUT_MM,
+          out <= P.THUMB_OUT_MM,
+          {'out_mm': round(out, 2), 'along_mm (info)': round(along, 2), 'nail_vs_v1_deg (info)': round(ddeg, 2)},
+          P.THUMB_OUT_MM)
     rep['pose'] = {kk: ([round(float(u), 2) for u in v] if np.shape(v) == (3,) else 'matrix') for kk, v in pose.items()}
 
     # 2. bake: the posed cage is the new rest; the joints move with their bones
@@ -511,7 +569,9 @@ def build(cage, report, check):
         low[f] = round(float((cage.V[sel] @ up).min() - desk), 2)
     arm = cage.W[:, BI['wrist']] > 0.5
     below = cage.V[~arm] @ up - desk
-    rep['desk'] = {'pads_mm': low, 'lowest_non_forearm_mm': round(float(below.min()), 2)}
+    iv = np.nonzero(~arm)[0][int(np.argmin(below))]
+    rep['desk'] = {'pads_mm': low, 'lowest_non_forearm_mm': round(float(below.min()), 2),
+                   'lowest_at_bone': BONES[int(np.argmax(cage.W[iv]))]}
     check('fit: every finger pad within %.1f mm of the desk plane' % P.DESK_PAD_TOL_MM,
           all(abs(v) <= P.DESK_PAD_TOL_MM for v in low.values()), low, P.DESK_PAD_TOL_MM)
     check('fit: no skin below the desk plane (the forearm aside: it dips under the towel)',
