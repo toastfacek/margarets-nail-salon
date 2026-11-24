@@ -80,9 +80,18 @@ export const SAMPLE_ROWS = 24;        // samples buffer rows: cap + edge crossin
 const QUEUE = 64;                     // raw samples between two frames
 const Q_STRIDE = 4;                   // clientX, clientY, timeStamp, kind
 const K_MOVE = 0, K_DOWN = 1, K_UP = 2;
-const EXTRA_CASTS = 4;                // per frame: touch fallbacks and edge bisection
-const BISECT_STEPS = 4;
+const EXTRA_CASTS = 4;                // per frame: touch fallbacks and edge bisection (plus what the samples leave unused)
+const BISECT_STEPS = 6;               // when the frame has the casts (_budget): 1/64 of the segment
 const TOUCH_EDGE_STEPS = 3;          // touch at the nail's top edge: 12 px / 8 = 1.5 px
+// Every cast is taken 1/128 CSS px right of and below the asked-for point.
+// three's ray-triangle test can miss a ray that runs exactly through an edge
+// shared by two triangles. The B9 nail has an edge along its centreline, and
+// the close-up frames that centreline exactly on a pixel column, so a stroke
+// on that column (a mouse moves in whole pixels) met holes in the middle of
+// the nail: an exit, a re-entry, a seam in the band and a tip jump
+// (brush-feel A1 / A2 / A18 on high-mouse, one run in two). 1/128 px moves no
+// paint visibly and keeps whole- and half-pixel points off such edges.
+const RAY_EPS_PX = 1 / 128;
 const PRESS_START = 0.35;             // pressure on down, ramps to 1 in ~65 ms
 const PRESS_RATE = 10;                // per second
 const RELEASE_RATE = 8;               // per second (old rig height only)
@@ -377,6 +386,12 @@ export class BrushInputHandler {
     this.strokeEnd = false;
     // touch gets the raw point and its edge bisection on top of the crossings'
     this._extraLeft = EXTRA_CASTS + (this.isTouch ? TOUCH_EDGE_STEPS : 0);
+    // The frame's raycasts stay within what the samples could take at most
+    // (one each, two for touch: nudged and raw) plus the extras, as before;
+    // but the extras also get whatever the samples leave unused (B9: two
+    // crossings in one slow frame shared 7 casts, and the second one went
+    // without bisection: B1.leave on touch). See _budget().
+    this._castCap = this.maxSamples * (this.isTouch ? 2 : 1) + this._extraLeft;
     const n = this._queueN;
 
     if (n === 0) {
@@ -446,10 +461,13 @@ export class BrushInputHandler {
     }
 
     // Pass 2: cast the kept samples in order.
+    let keptLeft = 0;
+    for (let i = 0; i < n; i++) if (keep[i] && (inStroke[i] || i === n - 1)) keptLeft++;
     for (let i = 0; i < n; i++) {
       const o = i * Q_STRIDE;
       const k = q[o + 3];
       const t = q[o + 2];
+      if (keep[i] && (inStroke[i] || i === n - 1)) this._budget(st.raycasts - rc0, keptLeft--);
       if (k === K_DOWN) {
         this.strokeStart = true;
         this.strokeStartMs = t;
@@ -478,6 +496,17 @@ export class BrushInputHandler {
     return this;
   }
 
+  /**
+   * Extra casts open to the next sample: the frame's cap, less what was cast
+   * so far and what the `kept` samples still to come (this one included) may
+   * take for themselves (one each, two for touch). Never below the fixed
+   * extras still unspent.
+   */
+  _budget(used, kept) {
+    const free = this._castCap - used - kept * (this.isTouch ? 2 : 1);
+    if (free > this._extraLeft) this._extraLeft = free;
+  }
+
   _endFrame(nailMesh, rc0) {
     const st = this.stats;
     st.lastRaycasts = st.raycasts - rc0;
@@ -504,7 +533,7 @@ export class BrushInputHandler {
    * into `row`, and the world face normal into `normal` when given.
    */
   _cast(nailMesh, sx, sy, row, normal) {
-    this._setMouse(sx, sy);
+    this._setMouse(sx + RAY_EPS_PX, sy + RAY_EPS_PX);
     this.raycaster.setFromCamera(this.mouse, this.camera);
     if (normal) this._rayDir.copy(this.raycaster.ray.direction);
     if (!nailMesh) return false;
@@ -573,14 +602,17 @@ export class BrushInputHandler {
   _bisectTouch(nailMesh, ax, ay, bx, by, sOn, sOff, onRow, out, steps, rawFirst) {
     out.set(onRow);
     const scratch = this._rowC;
-    let rawOnly = false;
+    // rawOnly: the paint point's last hit is the raw contact; nudgedUnknown:
+    // it was tried first and hit, so the nudged point was never cast
+    let rawOnly = false, nudgedUnknown = false;
     for (let k = 0; k < steps; k++) {
       const s = (sOn + sOff) * 0.5;
       const px = ax + (bx - ax) * s, py = ay + (by - ay) * s;
       const y1 = rawFirst ? py : py - TOUCH_NUDGE_PX, y2 = rawFirst ? py - TOUCH_NUDGE_PX : py;
       let on = this._cast(nailMesh, px, y1, scratch, null);
       let second = false;
-      if (!on && this._extraLeft > 0) {
+      // raw first: one cast stays back for the nudged point at the end
+      if (!on && this._extraLeft > (rawFirst ? 1 : 0)) {
         this._extraLeft--;
         on = this._cast(nailMesh, px, y2, scratch, null);
         second = true;
@@ -589,16 +621,30 @@ export class BrushInputHandler {
         out.set(scratch);
         sOn = s;
         rawOnly = rawFirst !== second;
+        nudgedUnknown = rawFirst && !second;
       } else {
         sOff = s;
       }
     }
     this._bisectS = sOn;
     if (rawOnly) {
-      const n = Math.min(TOUCH_EDGE_STEPS, this._extraLeft);
+      const px = ax + (bx - ax) * sOn, py = ay + (by - ay) * sOn;
+      // The raw contact hit first: the nudged point (the paint point while it
+      // is on) is cast before anything else. Without this, a crossing where
+      // both are on painted at the raw contact, or 12 / 2^n px below the
+      // nudged point after n refinement steps (B1.leave on touch, B9: the
+      // B9 nail's taller screen box sends more side crossings down the
+      // raw-first path).
+      if (nudgedUnknown && this._extraLeft > 0) {
+        this._extraLeft--;
+        if (this._cast(nailMesh, px, py - TOUCH_NUDGE_PX, scratch, null)) {
+          out.set(scratch);
+          rawOnly = false;
+        }
+      }
+      const n = rawOnly ? Math.min(TOUCH_EDGE_STEPS, this._extraLeft) : 0;
       if (n > 0) {
         this._extraLeft -= n;
-        const px = ax + (bx - ax) * sOn, py = ay + (by - ay) * sOn;
         this._bisect(nailMesh, px, py, px, py - TOUCH_NUDGE_PX, 0, 1, out, out, n);
       }
       this._bisectS = sOn;
