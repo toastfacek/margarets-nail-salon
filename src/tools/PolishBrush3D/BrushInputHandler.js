@@ -83,6 +83,15 @@ const K_MOVE = 0, K_DOWN = 1, K_UP = 2;
 const EXTRA_CASTS = 4;                // per frame: touch fallbacks and edge bisection (plus what the samples leave unused)
 const BISECT_STEPS = 6;               // when the frame has the casts (_budget): 1/64 of the segment
 const TOUCH_EDGE_STEPS = 3;          // touch at the nail's top edge: 12 px / 8 = 1.5 px
+// Every cast is taken 1/128 CSS px right of and below the asked-for point.
+// three's ray-triangle test can miss a ray that runs exactly through an edge
+// shared by two triangles. The B9 nail has an edge along its centreline, and
+// the close-up frames that centreline exactly on a pixel column, so a stroke
+// on that column (a mouse moves in whole pixels) met holes in the middle of
+// the nail: an exit, a re-entry, a seam in the band and a tip jump
+// (brush-feel A1 / A2 / A18 on high-mouse, one run in two). 1/128 px moves no
+// paint visibly and keeps whole- and half-pixel points off such edges.
+const RAY_EPS_PX = 1 / 128;
 const PRESS_START = 0.35;             // pressure on down, ramps to 1 in ~65 ms
 const PRESS_RATE = 10;                // per second
 const RELEASE_RATE = 8;               // per second (old rig height only)
@@ -524,7 +533,7 @@ export class BrushInputHandler {
    * into `row`, and the world face normal into `normal` when given.
    */
   _cast(nailMesh, sx, sy, row, normal) {
-    this._setMouse(sx, sy);
+    this._setMouse(sx + RAY_EPS_PX, sy + RAY_EPS_PX);
     this.raycaster.setFromCamera(this.mouse, this.camera);
     if (normal) this._rayDir.copy(this.raycaster.ray.direction);
     if (!nailMesh) return false;
