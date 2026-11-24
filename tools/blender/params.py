@@ -51,3 +51,27 @@ FOLD_TOP_ONLY = (0.30, 0.75)     # effect fades out below the plate between thes
 BED_DEPTH = 0.06                 # nail bed below the plate, x half width
 HYPO_GAP = 0.10                  # extra gap under the free edge per unit of overhang (x overhang length)
 RIGID_REACH = 1.3                # skin within this many nail half lengths of the plate rides on .03 only
+
+# ---- skin shape (sculpt.py) -------------------------------------------------------
+# Forearm: mostly under the towel and the arm rest. Faces whose vertices are all
+# 100% wrist and past ARM_X_KEEP (world x, toward the elbow) are decimated.
+ARM_X_KEEP = 0.0
+ARM_RATIO = 0.08
+# Palm underside (it lies on the towel, never seen): palm-weighted faces facing down.
+PALM_DOWN_RATIO = 0.3
+# Fingers, in cylinder coordinates around the bone chain (t along, theta from the back):
+TAPER_END = 0.93                 # radius factor at the last joint (1 at the knuckle)
+JOINT_BULGE_BACK = 0.045         # at the middle and last joints, on the back
+JOINT_BULGE_SIDE = 0.03
+JOINT_BULGE_WIDTH = 0.32         # x the joint's segment length
+WAIST = 0.02                     # slight waist between joints
+PAD_FULL = 0.07                  # fingertip pad fuller underneath
+TIP_ROUND = 0.35                 # tip rounding length, x the last segment
+# Back of the hand: soft mounds over the big knuckles with a shallow dimple each.
+KNUCKLE_MOUND = 0.010
+KNUCKLE_DIMPLE = 0.004
+KNUCKLE_RADIUS = 0.085
+
+# ---- skin colour masks (masks.py): R blush, G palm side, B cavity, A thinness ----
+MASK_SMOOTH_PASSES = 3
+CAVITY_CURV = (0.04, 0.30)       # Laplacian concavity (x mean edge length) -> cavity 0..1

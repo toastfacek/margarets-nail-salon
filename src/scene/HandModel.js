@@ -55,7 +55,7 @@ const WHITE = new THREE.Color(1, 1, 1);
 
 /** Nail-bed colour for a skin tone (linear colours). */
 export function nailBedColor(tone, out = new THREE.Color()) {
-    return out.copy(tone).lerp(BED_PINK, 0.55).lerp(WHITE, 0.16);
+    return out.copy(tone).lerp(BED_PINK, 0.45).lerp(WHITE, 0.12);
 }
 
 /**

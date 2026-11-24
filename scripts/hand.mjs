@@ -214,7 +214,7 @@ for (const h of ['left', 'right']) {
   add('H2', `${h}: bones`, f.bones.length, '== 17', f.bones.length === 17);
   add('H2', `${h}: skin determinant`, +f.det.toFixed(3), h === 'left' ? '< 0' : '> 0', h === 'left' ? f.det < 0 : f.det > 0);
 }
-add('H7', 'skin vertex colour masks (components)', facts.left.nails.index ? facts.left.nails.index.skinColor : 0, 'info (B9.2)', null);
+add('H7', 'skin vertex colour masks (components)', facts.left.nails.index ? facts.left.nails.index.skinColor : 0, '4', (facts.left.nails.index || {}).skinColor === 4);
 add('H2', 'same bone names on both hands', facts.left.bones.join(',') === facts.right.bones.join(','), 'true', facts.left.bones.join(',') === facts.right.bones.join(','));
 for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
   const L = facts.left.nails[f], R = facts.right.nails[f];
