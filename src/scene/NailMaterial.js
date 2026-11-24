@@ -63,8 +63,14 @@ varying vec3 vPosW;
 varying vec3 vLocal;
 varying vec3 vTanW;
 varying vec3 vBitW;
+#ifdef NAIL_UNDERSIDE
+varying float vUnder;
+#endif
 void main() {
 vUv = uv;
+#ifdef NAIL_UNDERSIDE
+vUnder = normal.z;
+#endif
 vLocal = position;
 vec4 wp = modelMatrix * vec4(position, 1.0);
 vPosW = wp.xyz;
@@ -122,6 +128,9 @@ varying vec3 vPosW;
 varying vec3 vLocal;
 varying vec3 vTanW;
 varying vec3 vBitW;
+#ifdef NAIL_UNDERSIDE
+varying float vUnder;
+#endif
 vec3 decodeSRGB(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
 float hash12(vec2 p) {
 vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -182,8 +191,15 @@ nail *= 0.994 + 0.006 * sin(w * 41.0 + sin(w * 13.0) * 1.3);
 float eSide = 1.0 - abs(w);
 float ePx = min(eSide / max(fwidth(w), 1e-5), max(cutE, 0.0) / max(fwidth(s), 1e-5));
 float contact = 1.0 - 0.3 * (1.0 - smoothstep(0.0, 2.5, ePx));
-vec3 albedo = mix(nail, uUnderColor, uUnderAmount);
-float cov = uUnderAmount;
+// hand v2: the free edge's underside (nail-space normal pointing in) shows the
+// natural free-edge colour and never paint (NAIL_UNDERSIDE; set from step G1)
+float under = 0.0;
+#ifdef NAIL_UNDERSIDE
+under = 1.0 - smoothstep(-0.35, -0.15, vUnder);
+nail = mix(nail, vec3(0.90, 0.86, 0.83), under);
+#endif
+vec3 albedo = mix(nail, uUnderColor, uUnderAmount * (1.0 - under));
+float cov = uUnderAmount * (1.0 - under);
 float relief = 0.0;
 float wetLocal = uWet;
 #if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
@@ -193,7 +209,7 @@ vec2 hgS = vec2(0.0);  // DERIV: paint-edge gradient in screen space
 float filmK = 0.0;
 float crest = 0.0;
 #endif
-if (uHasPaint > 0.5) {
+if (uHasPaint > 0.5 && under < 0.5) {
 vec4 p = texture2D(uPaintMap, vUv);
 vec3 straight = p.rgb / max(p.a, 0.004);
 straight /= max(1.0, max(straight.r, max(straight.g, straight.b)));
@@ -241,7 +257,7 @@ hg = vec2(filmR(vUv + vec2(fd, 0.0)) - film.r, filmR(vUv + vec2(0.0, fd)) - film
 #endif
 }
 vec3 pigment = albedo;
-if (uHasDeco > 0.5) {
+if (uHasDeco > 0.5 && under < 0.5) {
 vec4 deco = texture2D(uDecoMap, vUv);
 vec3 decoStraight = deco.rgb / max(deco.a, 0.004);
 albedo = albedo * (1.0 - deco.a) + decodeSRGB(decoStraight) * deco.a;
@@ -395,7 +411,8 @@ const RELIEF_DEFINES = Object.freeze({ FILM_H: '0.0070', EDGE_H: '0.0016', GLINT
 
 function definesFor(settings) {
   const d = settings && settings.nailShaderDefines;
-  return Object.assign({}, d || { GLITTER_CHEAP: '' }, RELIEF_DEFINES);
+  const extra = settings && settings.nailUnderside ? { NAIL_UNDERSIDE: '' } : null;
+  return Object.assign({}, d || { GLITTER_CHEAP: '' }, RELIEF_DEFINES, extra);
 }
 
 /**

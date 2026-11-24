@@ -110,6 +110,16 @@ def clean_weights(cage, report, check):
         W[vi] = 0.0
         W[vi, BI[f + '.03']] = 1.0
         rigid[f] = int(len(vi))
+    # soften the rigid unit's border: the ring just outside it blends
+    rig_v = np.zeros(n, dtype=bool)
+    for f in FINGERS:
+        rig_v[np.unique(cage.F[np.concatenate([cage.nails[f]] + list(cage.folds[f][:P.RIGID_RINGS]))])] = True
+    border = (grow(E, rig_v, 2) > 0)
+    for _ in range(P.RIGID_BORDER_PASSES):
+        acc = np.zeros_like(W)
+        np.add.at(acc, E[:, 0], W[E[:, 1]])
+        np.add.at(acc, E[:, 1], W[E[:, 0]])
+        W[border] = 0.5 * W[border] + 0.5 * (acc / np.maximum(cnt, 1)[:, None])[border]
     # 4 influences again after the smoothing, renormalise, drop dust
     W[W < 1e-4] = 0.0
     for i in np.nonzero((W > 0).sum(1) > 4)[0]:

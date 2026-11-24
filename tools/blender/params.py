@@ -75,6 +75,7 @@ WEIGHT_SMOOTH_PASSES = 4         # Laplacian passes on the finger webs and the t
 FINGER_JOINT_PASSES = 4          # Laplacian passes on the finger joint blends
 THENAR_RINGS = 3                 # the thenar web's weight smoothing reaches this many rings out
 THENAR_SMOOTH_PASSES = 10
+RIGID_BORDER_PASSES = 0          # Laplacian passes on the two rings round the rigid nail unit
 RIGID_RINGS = 2                  # rings of cage faces around the nail bed that ride on .03 only
 VOLUME_MIN = 0.85                # joint cross-section at any limit pose, x rest
 WEB_DIHEDRAL_MAX = 25.0          # max dihedral change across the thenar web at the game's thumb poses (the crease)
@@ -92,12 +93,17 @@ FACET_MAX_DEG = 4.0              # index last joint, DIP-to-tip: adjacent face n
 NAIL_WIDTH_FRAC = 0.80           # visible plate width / finger width at mid-nail
 NAIL_FREE_LEN = 0.25             # free edge length / nail bed length (Jesse is choosing this)
 NAIL_FREE_RANGE = (0.05, 0.90)   # the viewer's slider (the morph's two ends)
+NAIL_CORNER = 0.8                # the free edge's oval starts at most this far before the hyponychium (mm)
 NAIL_TIP_ROUND = 0.70            # 0 square .. 1 full oval: the free edge outline
 NAIL_SIDE_TAPER = 0.05           # the sides converge this much toward the tip
 NAIL_CUTICLE_ARC = 0.45          # cuticle sagitta, x half width (a clear U)
+NAIL_CUTICLE_ROUND = 0.12        # the cuticle's corners pull in this much (x half width) ...
+NAIL_CUTICLE_ROWS = 0.18         # ... over this much of the bed
 NAIL_C_CURVE = 1.0               # transverse radius, x the radius fitted to the bed
 NAIL_C_TIGHTEN = 0.10            # ... tighter by this past the hyponychium
-NAIL_DROOP = 0.012               # the free edge curves down: mm per mm^2 of overhang
+NAIL_FREE_SLOPE = 0.45          # past the hyponychium the plate keeps this much of the bed's downward slope
+                                 # (all of it made a long nail a claw)
+NAIL_DROOP = 0.004               # ... and curves down a little: mm per mm^2 of overhang
 NAIL_THICKNESS = 0.5             # plate thickness at the free edge
 NAIL_LIFT = 0.15                 # V1 placeholder: plate above the (unsculpted) bed
 FOLD_TUCK_PROX = 1.2             # the plate runs under the proximal fold (hidden)
@@ -111,3 +117,25 @@ CAP_NAIL_VERTS = 520
 MASK_ATTR = 'Col'
 MASK_SMOOTH_PASSES = 3
 CAVITY_CURV = (0.03, 0.15)       # concave mean curvature (1/mm) -> cavity 0..1
+# the groove sculpt (plan 4.3): widen on the cage, then shape the skin round the plate
+WIDEN_ITERS = 4                  # measure on the limit surface, rescale the groove's angular span, repeat
+WIDEN_FADE = (0.22, 0.04)        # the widening fades in from these fractions of the last bone before the bed
+FOLD_H_PROX = 0.45               # the proximal fold stands this far above the plate surface (mm)
+FOLD_H_SIDE = 0.35               # ... the side folds
+FOLD_WIDTH = 1.6                 # a fold's width outside the outline (mm)
+FOLD_COVER = 0.25                # inside the outline the skin drops through the plate's level over this (mm):
+                                 # the fold overlaps the rim, never lets it or the tuck show
+FOLD_MEET = 0.03                 # the skin meets the plate's level this far outside the outline (mm)
+FOLD_EDGE = 0.55                 # fold height right at the outline, x the fold height
+FOLD_SIDE_END = (1.5, 2.5)       # the side folds fade out round the hyponychium, over [y_h - a, y_h + b] (mm)
+UNDER_TOL = 0.05                 # the check: skin within this of the plate top at its rim counts as meeting it (mm)
+SKIN_UNDER = 0.03               # inside the visible outline the skin stays at least this far under the plate top (mm)
+BED_GAP = 0.1                    # the bed sits this far under the plate's underside (mm)
+HYPO_GAP = 0.3                   # the fingertip rounds away under the free edge: mm per mm of overhang
+HYPO_TILT = 32.0                 # the hyponychium line: where the dorsal surface turns this far from the bed (deg)
+FOLD_BAND = None                 # (lo, hi): skin edges whose signed distance to the outline (mm) meets it get one cut;
+                                 # off: level 2 is dense enough there, and it cost 2,700 verts
+BED_FLOOR = 0.68                 # ... and never shorter than this x the finger width
+BED_MIN = 0.7                    # a bed patch shorter than this x the finger width runs out to the hyponychium line
+NAIL_ARCH_MIN = 18.0             # the plate's arch along the finger: radius never under this (mm)
+#         # skin edges whose signed distance to the outline (mm) meets this band are cut once

@@ -133,6 +133,8 @@ def main():
     fit.build(cage, report, check)
     fit.cap_forearm(cage, report)
     RG.clean_weights(cage, report, check)
+    if not flags.get('placeholder'):
+        nails.widen_grooves(cage, report, check)
     hand, rig = base.make_objects(cage, {f: cage.nail_normal(f) for f in FINGERS})
     # mark the nail beds and their fold rings (material indices survive subdivision)
     me = hand.data
@@ -144,11 +146,11 @@ def main():
             mi[r] = 6 + fi
         mi[cage.nails[f]] = 1 + fi
     me.polygons.foreach_set('material_index', mi)
-    scene = {'cage': cage, 'hand': hand, 'rig': rig, 'nails': {}}
+    scene = {'cage': cage, 'hand': hand, 'rig': rig, 'nails': {}, 'morph': not flags.get('game')}
     dense.build(scene, report, check)
     Wd = RG.mesh_weights(hand)
     scene['W_dense'] = {f: Wd[:, [BI[f + '.0%d' % k] for k in (1, 2, 3)]].sum(1) for f in FINGERS}
-    nails.build(scene, report, check, sculpted=bool(flags.get('sculpt')))
+    nails.build(scene, report, check, sculpted=not flags.get('placeholder'), morph=not flags.get('game'))
     RG.checks(scene, report, check)
     masks.build(scene, report, check)
     if flags.get('blend'):
