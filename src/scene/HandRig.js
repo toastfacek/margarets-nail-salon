@@ -29,6 +29,7 @@ import {
 const DEG = Math.PI / 180;
 const EPS = 1e-4;        // degrees: below this a joint has not moved
 const SETTLE = 0.05;     // degrees: `settled` threshold (plan 5.2)
+const ACTIVE_ZETA_MIN = 0.75; // damping floor of the presented finger's chain
 const ANT_T = 0.12;      // s at ant = 1: how long the anticipation dip holds
 const ANT_DIP = 0.12;    // the dip, as a fraction of the coming change, at ant = 1, amp = 1
 const EASE_T = 0;        // s: camera-driven base changes jump; the joint springs (MOTION) carry the motion
@@ -489,11 +490,18 @@ export class HandAnimator {
     const zK = Math.max(0.08, 1 - F.bounce * (1 - pa));
     const zT = Math.max(0.08, 1 - (F.tip ?? F.bounce) * (1 - pa));
     const lagK = 1 - 0.45 * F.lag;
+    // the presented finger (and in the close-up the palm and wrist that carry
+    // it) never wobbles long: it is the paint surface, and a stroke may start
+    // any moment (ACTIVE_ZETA_MIN); the other fingers keep the full feel
+    const act = this._activeIndex();
+    const a0 = act >= 0 ? fingerBase(act) : -10;
     let busy = false;
     for (let b = 0; b < NB; b++) {
       const level = b < 2 ? 0 : (b - 2) % 3;
       const k = k0 * Math.pow(lagK, level);
-      const c = 2 * (level === 0 ? zK : zT) * Math.sqrt(k);
+      let z = level === 0 ? zK : zT;
+      if (act >= 0 && (b < 2 || (b >= a0 && b < a0 + 3))) z = Math.max(z, ACTIVE_ZETA_MIN);
+      const c = 2 * z * Math.sqrt(k);
       for (let q = b * 3; q < b * 3 + 3; q++) {
         let xi = x[q], vi = v[q];
         const ti = target[q];
