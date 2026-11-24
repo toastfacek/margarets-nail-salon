@@ -345,7 +345,7 @@ export class HandModel {
             this.group.add(model);
             this.setupHandNails(hand, model);
             this._setupSkin(hand, model);
-            this._computeNailFrames(hand, model);
+            this._computeNailFrames(hand);
             // the 17 bones by their file name ('index.01'; three drops the dot)
             const bones = {};
             model.traverse((o) => { if (o.isBone) bones[o.name] = o; });
@@ -445,36 +445,12 @@ export class HandModel {
     }
 
     /**
-     * Generate UV coordinates for a nail geometry based on bounding box projection
-     * (local x -> u, local y -> v). Kept identical to the original mapping so
-     * raycast UVs, canvas tools and paint agree.
-     */
-    generateNailUVs(geometry) {
-        if (!geometry.boundingBox) {
-            geometry.computeBoundingBox();
-        }
-        const bbox = geometry.boundingBox;
-        const positions = geometry.attributes.position;
-        const uvs = new Float32Array(positions.count * 2);
-        const sizeX = (bbox.max.x - bbox.min.x) || 1;
-        const sizeY = (bbox.max.y - bbox.min.y) || 1;
-        const flip = !!geometry.userData.flipU;
-        for (let i = 0; i < positions.count; i++) {
-            const u = (positions.getX(i) - bbox.min.x) / sizeX;
-            uvs[i * 2] = flip ? 1 - u : u;
-            uvs[i * 2 + 1] = (positions.getY(i) - bbox.min.y) / sizeY;
-        }
-        geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    }
-
-    /**
      * Set up a single nail for a specific hand.
      */
     setupNailForHand(hand, finger, nailMesh) {
+        // hand.glb carries every nail's UVs (TEXCOORD_0) and canonical frame
+        // (tools/blender/nails.py); the pipeline checks both
         const geometry = nailMesh.geometry;
-        if (!geometry.attributes.uv) {
-            this.generateNailUVs(geometry);
-        }
         if (!geometry.boundingBox) geometry.computeBoundingBox();
 
         const oldMaterial = nailMesh.material;
@@ -504,12 +480,11 @@ export class HandModel {
 
     /**
      * Natural-nail frame in the nail's object space: centre, the axis toward
-     * the cuticle, the axis across, and half extents. The UV projection is
-     * not aligned with the finger on every nail, so the cuticle direction is
-     * found from the skin: the finger continues past the cuticle, not past
-     * the free edge.
+     * the cuticle, the axis across, and half extents, from the file (each
+     * nail of hand.glb carries nailFrame / nailHalf / nailAnat: +X across,
+     * +Y to the cuticle, +Z out, origin on the plate at its centre).
      */
-    _computeNailFrames(hand, model) {
+    _computeNailFrames(hand) {
         const nails = this.hands[hand].nails;
         let fromFile = 0;
         for (const f of FINGER_LIST) {
@@ -526,89 +501,7 @@ export class HandModel {
             rec.nailNormal = new THREE.Vector3(0, 0, 1);
             fromFile++;
         }
-        if (fromFile === FINGER_LIST.length) return;
-        // Fallback (a hand file without nail frames): search the skin.
-        let skin = null;
-        model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
-        model.updateMatrixWorld(true);
-        const v = new THREE.Vector3();
-        const centreW = new THREE.Vector3();
-        const normalW = new THREE.Vector3();
-        const toBase = new THREE.Vector3();
-        const inv = new THREE.Matrix4();
-        const skinPts = [];
-        if (skin) {
-            skin.skeleton.update();
-            const pos = skin.geometry.attributes.position;
-            for (let i = 0; i < pos.count; i += 2) {
-                skin.getVertexPosition(i, v);
-                v.applyMatrix4(skin.matrixWorld);
-                skinPts.push(v.x, v.y, v.z);
-            }
-        }
-        for (const f of FINGER_LIST) {
-            const rec = nails[f];
-            if (!rec || rec.frame) continue;
-            const mesh = rec.mesh;
-            const geo = mesh.geometry;
-            const pos = geo.attributes.position;
-            const nrm = geo.attributes.normal;
-            mesh.updateWorldMatrix(true, false);
-            // world centre and mean normal
-            centreW.set(0, 0, 0);
-            normalW.set(0, 0, 0);
-            const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-            const n = new THREE.Vector3();
-            for (let i = 0; i < pos.count; i++) {
-                v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-                centreW.add(v);
-                if (nrm) {
-                    n.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
-                    // nails are a thin shell: count the outer side only
-                    if (n.y > 0) normalW.add(n);
-                }
-            }
-            centreW.multiplyScalar(1 / Math.max(1, pos.count));
-            if (normalW.lengthSq() < 1e-8) normalW.set(0, 1, 0);
-            normalW.normalize();
-            // skin within reach of the nail, projected onto the nail plane.
-            // The reach is about one nail length: the finger continues past
-            // the cuticle, not past the free edge. A wider search (it was
-            // 0.3 world units, ~4 nail widths) reaches the neighbouring
-            // fingers and the palm and turned the axis across the nail.
-            toBase.set(0, 0, 0);
-            if (!geo.boundingBox) geo.computeBoundingBox();
-            const reach = new THREE.Box3().copy(geo.boundingBox).applyMatrix4(mesh.matrixWorld)
-                .getSize(new THREE.Vector3()).length() * 0.9;
-            const R2 = reach * reach;
-            for (let i = 0; i < skinPts.length; i += 3) {
-                const dx = skinPts[i] - centreW.x, dy = skinPts[i + 1] - centreW.y, dz = skinPts[i + 2] - centreW.z;
-                const d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 > R2) continue;
-                toBase.x += dx; toBase.y += dy; toBase.z += dz;
-            }
-            toBase.addScaledVector(normalW, -toBase.dot(normalW));
-            if (toBase.lengthSq() < 1e-10) toBase.set(1, 0, 0).addScaledVector(normalW, -normalW.x);
-            toBase.normalize();
-            // into object space
-            inv.copy(mesh.matrixWorld).invert();
-            const axis = toBase.clone().transformDirection(inv);
-            const cLocal = centreW.clone().applyMatrix4(inv);
-            const nLocal = normalW.clone().transformDirection(inv);
-            const side = new THREE.Vector3().crossVectors(nLocal, axis).normalize();
-            let halfL = 0, halfW = 0;
-            for (let i = 0; i < pos.count; i++) {
-                v.fromBufferAttribute(pos, i).sub(cLocal);
-                halfL = Math.max(halfL, Math.abs(v.dot(axis)));
-                halfW = Math.max(halfW, Math.abs(v.dot(side)));
-            }
-            const u = rec.material.uniforms;
-            rec.nailNormal = nLocal.clone().normalize();
-            u.uNailCentre.value.copy(cLocal);
-            u.uNailAxis.value.copy(axis);
-            u.uNailSide.value.copy(side);
-            u.uNailHalf.value.set(halfL || 1, halfW || 1);
-        }
+        if (fromFile !== FINGER_LIST.length) console.warn('hand.glb: a nail has no canonical frame (tools/blender/nails.py)');
     }
 
     /**

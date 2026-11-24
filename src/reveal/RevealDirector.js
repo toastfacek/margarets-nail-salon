@@ -10,7 +10,7 @@
  *        white flash, reveal:flash (WP5: shutter, confetti pop, the jingle and
  *        its star dings), confetti cannons; the polaroid pops up once the
  *        photo lands. Big stars and a canvas punch on each ding (CSS delays)
- *   3.0  jazz hands: the fingers wiggle over the dings
+ *   (jazz hands: app.hand wiggles the fingers on reveal:flash)
  *   last ding: the client's "yay", a pink heart burst, a second confetti volley
  *   END-0.45  camera glides back; the polaroid flies onto the stack
  *   END  everything restored exactly, reveal:done. END = last ding + 0.35 s,
@@ -32,7 +32,6 @@ const PINK = 0xff2a6d;
 
 const ease = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2);
 const UP = new THREE.Vector3(0, 1, 0);
-const XAXIS = new THREE.Vector3(1, 0, 0);
 // uniform Catmull-Rom through 4 points (ends held), no allocation
 const cr = (a, b, c, d, t, t2, t3) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (3 * b - a - 3 * c + d) * t3);
 function spline(P, u, out) {
@@ -65,7 +64,6 @@ export class RevealDirector {
     this._v = V();
     this._F = V();
     this._S = V();
-    this._q = new THREE.Quaternion();
     this._nails = [V(), V(), V(), V(), V()];
     this._has = [false, false, false, false, false];
     this._want = [false, false, false, false, false];
@@ -73,8 +71,6 @@ export class RevealDirector {
     this._pf = new Int8Array(5);
     this._pt = new Float32Array(5);
     this._pn = 0;
-    this._bones = [];
-    this._rest = [];
 
     this.flash = document.createElement('div');
     this.flash.className = 'rv-flash';
@@ -109,21 +105,6 @@ export class RevealDirector {
       window.addEventListener(type, block, { capture: true, passive: true });
     }
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.end(); });
-  }
-
-  /** Finger bones of a hand model (sanitised GLB names: index01, index02...). */
-  _findBones(hand) {
-    this._bones.length = 0;
-    if (this.app.hand) return; // B9: app.hand owns the bones (reveal:flash plays its wiggle)
-    const model = this.app.nail.hands[hand] && this.app.nail.hands[hand].model;
-    if (model) {
-      model.traverse((o) => {
-        const m = o.isBone && /^(thumb|index|middle|ring|pinky)0?([12])$/.exec(o.name);
-        if (m) this._bones.push({ bone: o, f: FINGERS.indexOf(m[1]), k: m[2] === '1' ? 1 : 0.6 });
-      });
-    }
-    while (this._rest.length < this._bones.length) this._rest.push(new THREE.Quaternion());
-    for (let i = 0; i < this._bones.length; i++) this._rest[i].copy(this._bones[i].bone.quaternion);
   }
 
   /** Camera and look-at control points from the nail positions and the screen. */
@@ -219,8 +200,6 @@ export class RevealDirector {
       this._pt[k] = order.length > 1 ? 0.7 + (1.5 * k) / (order.length - 1) : 1.3;
     }
 
-    this._findBones(this.hand);
-    this._rock = hm.getMesh().rotation.z;
 
     // brush away, every nail hard and glossy
     this._brush = app.polishBrush3D && app.polishBrush3D.isActive;
@@ -287,9 +266,7 @@ export class RevealDirector {
       if (x > -0.1 && x < 1.2) hm.setRevealPulse(this.hand, FINGERS[f], x > 0 && x < 1 ? x : 0);
     }
 
-    // jazz hands over the dings
-    const w = (t - 3.0) / 0.9;
-    if (w > 0 && w < 1.1) this._wiggle(w < 1 ? Math.sin(Math.PI * w) : 0, t);
+    // jazz hands over the dings: app.hand plays its wiggle on reveal:flash
 
     // the last ding: the client loves it
     if (!this._yay && t - this._flashT >= DING[this.stars - 1]) {
@@ -308,20 +285,6 @@ export class RevealDirector {
     }
     if (t >= this._end) this.finish();
     else app.invalidate();
-  }
-
-  _wiggle(env, t) {
-    if (this.app.hand) return;
-    const bones = this._bones;
-    if (!bones.length) {
-      this.app.nail.getMesh().rotation.z = this._rock + 0.052 * env * Math.sin(t * 13);
-      return;
-    }
-    for (let i = 0; i < bones.length; i++) {
-      const b = bones[i];
-      const a = 0.13 * b.k * env * Math.sin((t - 3) * 15 - (4 - b.f) * 0.7);
-      b.bone.quaternion.copy(this._rest[i]).multiply(this._q.setFromAxisAngle(XAXIS, a));
-    }
   }
 
   /** After the main render: take the photo of this frame. */
@@ -379,7 +342,6 @@ export class RevealDirector {
       scene.naturalUp(this._p, this._l, scene.camera.up);
       scene.camera.lookAt(this._l);
       scene.setDim(0.75);
-      if (this._bones.length) this._wiggle(0, 0);
       scene.render();
       this._takePhoto();
     }
@@ -397,7 +359,7 @@ export class RevealDirector {
     app.loop.remove(this._tick);
     app.loop.remove(this._after);
 
-    // exact restore: camera, controls, lights, bones, glints. If the screen
+    // exact restore: camera, controls, lights, glints (app.hand owns the bones). If the screen
     // changed shape meanwhile, NailScene re-frames the focused nail once released.
     scene.holdCamera(false);
     scene.camera.position.copy(this._pos0);
@@ -407,8 +369,6 @@ export class RevealDirector {
     scene.controls.enabled = this._ctl;
     if (scene.camera.aspect !== this._aspect) scene.onResize();
     scene.setDim(1);
-    for (let i = 0; i < this._bones.length; i++) this._bones[i].bone.quaternion.copy(this._rest[i]);
-    hm.getMesh().rotation.z = this._rock;
     for (let i = 0; i < 5; i++) if (this._has[i]) hm.setRevealPulse(this.hand, FINGERS[i], 0);
     if (!this._dropped) this.wall.dropNow();
 

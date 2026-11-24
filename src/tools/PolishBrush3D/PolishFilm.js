@@ -775,9 +775,7 @@ export class PolishFilm {
    * The bound nail's frame in nail-plane units (once per bind; allocates).
    * Fits plane = centre + along * a + across * w over the nail's vertices,
    * where a = +1 at the cuticle, -1 at the free edge and w = +-1 at the side
-   * walls. The cuticle direction is found from the skin around the nail (it
-   * does not trust uNailAxis, whose wide skin search can point across the
-   * nail).
+   * walls, in the nail's canonical frame (hand.glb). Null without one.
    * Returns { aspect, widthV, lengthV, cx, cy (plane), alongX, alongY,
    * acrossX, acrossY (unit, plane) }.
    */
@@ -787,62 +785,15 @@ export class PolishFilm {
     const aspect = handModel.getUVAspect(hand, finger);
     const mesh = rec.mesh;
     const pos = mesh.geometry.attributes.position;
-    const nrm = mesh.geometry.attributes.normal;
     const uv = mesh.geometry.attributes.uv;
     const vis = rec.visible || null; // B9: fit the visible plate only
     const v = new THREE.Vector3();
-    let c, ax, sd;
-    if (rec.frame) {
-      // B9: the canonical frame from the file (no skin search, no world-up test)
-      const u = rec.material.uniforms;
-      c = u.uNailCentre.value.clone();
-      ax = u.uNailAxis.value.clone();
-      sd = u.uNailSide.value.clone();
-    } else {
-      // The cuticle direction, from the skin right around the nail (the finger
-      // continues past the cuticle, not past the free edge). The skin search is
-      // kept tight (about one nail length): a wide one reaches other fingers.
-      mesh.updateWorldMatrix(true, false);
-      const cW = new THREE.Vector3();
-      const nW = new THREE.Vector3();
-      const n = new THREE.Vector3();
-      const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-      const box = new THREE.Box3();
-      const out = rec.nailNormal ? rec.nailNormal.clone().transformDirection(mesh.matrixWorld) : null;
-      for (let i = 0; i < pos.count; i++) {
-        v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-        cW.add(v);
-        box.expandByPoint(v);
-        if (nrm) {
-          n.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
-          if (out ? n.dot(out) > 0 : n.y > 0) nW.add(n);
-        }
-      }
-      cW.multiplyScalar(1 / Math.max(1, pos.count));
-      if (nW.lengthSq() < 1e-10) nW.set(0, 1, 0);
-      nW.normalize();
-      const reach = box.getSize(new THREE.Vector3()).length() * 0.9;
-      const toBase = new THREE.Vector3();
-      let skin = null;
-      const model = handModel.hands && handModel.hands[hand] && handModel.hands[hand].model;
-      if (model) model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
-      if (skin) {
-        skin.skeleton.update();
-        const sp = skin.geometry.attributes.position;
-        for (let i = 0; i < sp.count; i++) {
-          skin.getVertexPosition(i, v);
-          v.applyMatrix4(skin.matrixWorld).sub(cW);
-          if (v.lengthSq() < reach * reach) toBase.add(v);
-        }
-      }
-      toBase.addScaledVector(nW, -toBase.dot(nW));
-      if (toBase.lengthSq() < 1e-12) toBase.set(1, 0, 0).addScaledVector(nW, -nW.x);
-      const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
-      ax = toBase.normalize().clone().transformDirection(inv);
-      c = cW.clone().applyMatrix4(inv);
-      const nL = nW.clone().transformDirection(inv);
-      sd = new THREE.Vector3().crossVectors(nL, ax).normalize();
-    }
+    // B9: the canonical frame from the file (every nail of hand.glb has one)
+    if (!rec.frame) return null;
+    const u = rec.material.uniforms;
+    const c = u.uNailCentre.value.clone();
+    const ax = u.uNailAxis.value.clone();
+    const sd = u.uNailSide.value.clone();
     const half = new THREE.Vector2();
     for (let i = 0; i < pos.count; i++) {
       if (vis && !vis[i]) continue;
