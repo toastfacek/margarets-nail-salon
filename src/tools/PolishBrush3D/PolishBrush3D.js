@@ -158,7 +158,39 @@ function computeNailGeom(handModel, hand, finger) {
     if (n.dot(rec.nailNormal.clone().transformDirection(mesh.matrixWorld)) < 0) n.negate();
   } else if (n.y < 0) n.negate();
   const perPlane = Math.sqrt(ju.length() * jv.length()) || 1;
-  return Object.assign(f, { ju, jv, c, n, perPlane });
+  // B9: the hand moves (app.hand), the nail is rigid on its bone: keep the
+  // fit in nail-local space too and re-derive the world fields whenever the
+  // nail's matrixWorld changes (refreshNailGeom)
+  const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+  const lin = new THREE.Matrix3().setFromMatrix4(inv);
+  return Object.assign(f, {
+    ju, jv, c, n, perPlane,
+    mesh,
+    mw: mesh.matrixWorld.clone(),
+    cL: c.clone().applyMatrix4(inv),
+    juL: ju.clone().applyMatrix3(lin),
+    jvL: jv.clone().applyMatrix3(lin),
+    nL: n.clone().applyMatrix3(lin),
+    _m3: new THREE.Matrix3(),
+  });
+}
+
+/**
+ * Re-derive a nail geometry's world fields (c, ju, jv, n) from its
+ * nail-local ones when the nail moved. In place, no allocation. Returns true
+ * when it changed.
+ */
+export function refreshNailGeom(g) {
+  if (!g || !g.mesh) return false;
+  const mw = g.mesh.matrixWorld;
+  if (g.mw.equals(mw)) return false;
+  g.mw.copy(mw);
+  const m3 = g._m3.setFromMatrix4(mw);
+  g.c.copy(g.cL).applyMatrix4(mw);
+  g.ju.copy(g.juL).applyMatrix3(m3);
+  g.jv.copy(g.jvL).applyMatrix3(m3);
+  g.n.copy(g.nL).applyMatrix3(m3).normalize();
+  return true;
 }
 
 export class PolishBrush3D {
@@ -422,6 +454,7 @@ export class PolishBrush3D {
 
     const g = this._geom(hand, finger);
     if (!g) return;
+    refreshNailGeom(g);
     this._g = g;
     const baked = this.handModel.getPaintTarget(hand, finger, false);
     this.film.loadDye(baked ? baked.texture : null);
@@ -1011,6 +1044,10 @@ export class PolishBrush3D {
     const film = this.film;
     const g = this._g;
     let changed = false;
+
+    // Has the bound nail moved (the posed hand, B9)? Then the cached world
+    // frame follows it (16-float compare, no allocation).
+    if (this._g && refreshNailGeom(this._g)) this._needsPose = true;
 
     // Has the camera moved? (16-float compare, no allocation)
     const camMatrix = this.camera.matrixWorld;

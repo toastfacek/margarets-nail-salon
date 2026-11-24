@@ -136,6 +136,7 @@ export class HandModel {
             left: { model: null, nails: {}, skins: [] },
             right: { model: null, nails: {}, skins: [] }
         };
+        this.sourceModel = null;
         this._loading = { left: null, right: null };
 
         this.activeNail = FINGERS.INDEX;  // Default to index finger
@@ -201,6 +202,8 @@ export class HandModel {
             if (!source || Array.isArray(source)) return;
             const { full, lite } = createSkinMaterials(this.skinShared);
             skins.push({ mesh: child, full, lite });
+            // its bounding sphere is the rest pose's; the posed hand can leave it
+            child.frustumCulled = false;
             source.dispose();
         });
         this._applySkinVariant();
@@ -332,6 +335,8 @@ export class HandModel {
         if (this._loading[hand]) return this._loading[hand];
 
         this._loading[hand] = this._loadSource().then((source) => {
+            // the pristine file (unmirrored, rest pose): app.hand reads the bone axes from it
+            this.sourceModel = source;
             // both hands are clones: the loaded scene stays pristine (its
             // materials and geometry are never set up in place)
             const model = hand === 'right' ? cloneSkinned(source) : this._mirrorClone(source);
@@ -341,6 +346,10 @@ export class HandModel {
             this.setupHandNails(hand, model);
             this._setupSkin(hand, model);
             this._computeNailFrames(hand, model);
+            // the 17 bones by their file name ('index.01'; three drops the dot)
+            const bones = {};
+            model.traverse((o) => { if (o.isBone) bones[o.name] = o; });
+            this.hands[hand].bones = bones;
             if (hand === this.currentHand) {
                 this.setNailHighlight(this.activeNail, true);
                 if (this.onHandShown) this.onHandShown(hand);

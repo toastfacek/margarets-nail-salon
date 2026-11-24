@@ -116,6 +116,8 @@ export class NailScene {
         this._railPoses = RAIL.map(() => makePose());
         this._railReady = false;
         this.railS = -1;              // where the camera sits on the rail (finger index, fractional), -1 = off
+        this.handPose = null;         // B9: (pose, fn) => app.hand.withPose(pose, fn), set by handPose.feature.js
+        this._inHandPose = false;
         this._railGlide = false;      // a rail glide is running (isAnimating too)
         this._glide = { s0: 0, s1: 0, v0: 0, t: 0, T: 0.35 };
         this._railBlend = { w: 0, t0: 0, T: 220, pos: new THREE.Vector3(), target: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) };
@@ -362,6 +364,17 @@ export class NailScene {
     }
 
     _bakeHand() {
+        // B9: one bake per hand, in the file's rest pose (the pose moves the
+        // fingertips by a few percent of the hand; the shadow does not follow)
+        if (this.handPose && !this._inHandPose) {
+            this._inHandPose = true;
+            try {
+                this.handPose('neutral', () => this._bakeHand());
+            } finally {
+                this._inHandPose = false;
+            }
+            return;
+        }
         const hm = this.handModel;
         if (!hm) return;
         const hand = hm.hands[hm.getCurrentHand()];
@@ -719,6 +732,16 @@ export class NailScene {
      * @param {number} [aspect]
      */
     focusPose(finger, out, aspect = this.width / Math.max(1, this.height)) {
+        // B9: measured with the hand presenting this finger (app.hand), the
+        // pose it takes whenever the camera sits on this finger
+        if (this.handPose && !this._inHandPose) {
+            this._inHandPose = true;
+            try {
+                return this.handPose(finger, () => this.focusPose(finger, out, aspect));
+            } finally {
+                this._inHandPose = false;
+            }
+        }
         out.ok = false;
         const hm = this.handModel;
         const rec = hm && finger ? hm.getNail(hm.getCurrentHand(), finger) : null;
