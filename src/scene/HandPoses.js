@@ -65,6 +65,8 @@ export const POSE_SETS = Object.freeze({
     thumbActive: Object.freeze([-1.2, -7.1, 14.9, -8, -5]),
     thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
     spreadAway: 3,
+    active: Object.freeze([-8, 4, 4]),
+    other: Object.freeze([8, 10, 5]),
   }),
   v3: Object.freeze({
     finger: [[-15, 25, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 40, 0, 0, -1, 1]],
@@ -81,6 +83,11 @@ export const POSE_SETS = Object.freeze({
     // close side by side, and a neighbour packed against the active finger
     // fills the close-up with skin (its fill rate) and crowds the nail
     spreadAway: 8,   // 12 put the pinky nail behind the side panel at the rail stop (pan.mjs P3)
+    // the presented finger lifts and the others curl away under it: the
+    // close-up shows the one finger (as the live v1 hand's does), not a
+    // neighbour's nail beside it
+    active: Object.freeze([-8, 4, 4]),
+    other: Object.freeze([25, 45, 30]),
   }),
 });
 let _set = POSE_SETS.v2;
@@ -149,8 +156,9 @@ function thumb(out, t) {
 // The present pose (plan 5.3): the active finger lifts its tip toward the
 // camera, the others relax out of the way and spread a little away from it.
 export const PRESENT = Object.freeze({
-  active: [-8, 4, 4],          // knuckle, middle joint, last joint (flex)
-  other: [8, 10, 5],
+  // knuckle, middle joint, last joint (flex): the pose set's (v2: [-8, 4, 4] / [8, 10, 5])
+  get active() { return _set.active; },
+  get other() { return _set.other; },
   get spreadAway() { return _set.spreadAway; },
   // the thumb, about THUMB_REST: presented it comes forward a little away
   // from the index with its nail turned up (its joints straighten toward the
