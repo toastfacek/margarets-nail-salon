@@ -15,9 +15,8 @@ PALM = [
     # thenar crease: round the thenar to the wrist
     dict(pts=[(-33, 64), (-26, 58), (-20, 49), (-16, 39), (-13, 28), (-10, 18), (-7, 10)], depth=0.6, width=0.75),
     # wrist creases: faint, oblique, broken
-    dict(pts=[(-22, 9.5), (-12, 8.0), (-3, 7.6)], depth=0.28, width=0.5),
-    dict(pts=[(1, 7.4), (10, 6.6), (21, 4.8)], depth=0.25, width=0.5),
-    dict(pts=[(-20, 3.0), (-6, 1.8), (6, 1.4), (18, 0.0)], depth=0.18, width=0.45),
+    dict(pts=[(-15, 8.8), (-7, 8.0), (-1, 7.6)], depth=0.25, width=0.5),
+    dict(pts=[(3, 7.2), (10, 6.6), (16, 5.6)], depth=0.22, width=0.5),
 ]
 
 

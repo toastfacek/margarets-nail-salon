@@ -74,7 +74,7 @@ THUMB_REST = dict(mc_yaw=34.0, mc_pitch=3.0, pronation=65.0,
 TIP_EXT = {'thumb': 4.0, 'index': 3.6, 'middle': 3.8, 'ring': 3.7, 'pinky': 3.3}
 
 # ---- wrist and forearm ----------------------------------------------------------------
-FOREARM_LEN = 85.0                   # wrist centre back to the cut
+FOREARM_LEN = 150.0                  # wrist centre back to the cut
 FOREARM_DROP = 27.0                   # wrist extension at rest (deg): forearm slopes down behind the wrist
 
 

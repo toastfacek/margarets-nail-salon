@@ -37,11 +37,11 @@ FINGER_PROFILE = [
     (1.85, 6.25, 5.0, 6.2, 2.5, 2.6, 0.0),
     (2.00, 6.25, 5.0, 5.9, 2.45, 2.45, 0.0), # DIP
     (2.20, 6.1, 4.7, 6.0, 2.7, 2.5, 0.0),
-    (2.55, 5.85, 4.4, 5.7, 2.9, 2.4, 0.0),    # under the nail: flat back, a slim pulp
-    (2.85, 5.5, 4.1, 5.3, 2.9, 2.3, 0.0),
-    (3.00, 5.1, 3.9, 4.8, 2.8, 2.2, 0.0),    # bone tip
+    (2.55, 5.95, 4.4, 5.7, 2.9, 2.4, 0.0),    # under the nail: flat back, a slim pulp
+    (2.85, 5.75, 4.1, 5.3, 2.9, 2.3, 0.0),
+    (3.00, 5.5, 3.9, 4.8, 2.8, 2.2, 0.0),    # bone tip
 ]
-FINGER_SCALE = {'index': (1.0, 1.0), 'middle': (1.04, 1.03), 'ring': (0.97, 0.98), 'pinky': (0.85, 0.9)}
+FINGER_SCALE = {'index': (1.05, 1.0), 'middle': (1.09, 1.03), 'ring': (1.02, 0.98), 'pinky': (0.89, 0.9)}
 # (width scale, height scale)
 
 THUMB_PROFILE = [
@@ -55,10 +55,10 @@ THUMB_PROFILE = [
     (1.55, 8.64, 6.44, 7.36, 2.4, 2.5, 0.0),
     (1.85, 8.73, 6.62, 6.99, 2.4, 2.4, 0.0),
     (2.0, 8.8, 6.9, 6.81, 2.35, 2.4, 0.0),
-    (2.2, 8.82, 6.26, 7.36, 2.6, 2.4, 0.0),
-    (2.55, 8.0, 5.6, 7.0, 2.8, 2.3, 0.0),
-    (2.85, 7.3, 5.2, 6.5, 2.8, 2.25, 0.0),
-    (3.0, 6.6, 4.8, 5.8, 2.7, 2.2, 0.0),
+    (2.2, 9.2, 6.26, 6.95, 2.6, 2.4, 0.0),
+    (2.55, 8.75, 5.6, 7.0, 2.8, 2.3, 0.0),
+    (2.85, 8.15, 5.2, 6.5, 2.8, 2.25, 0.0),
+    (3.0, 7.5, 4.8, 5.8, 2.7, 2.2, 0.0),
 ]
 
 
@@ -115,7 +115,7 @@ def finger_tube(sk, f):
 
     ws, hs = FINGER_SCALE.get(f, (1.0, 1.0))
     prof = [(s_of(r[0]), r[1] * ws, r[2] * hs, r[3] * hs, r[4], r[5], r[6]) for r in FINGER_PROFILE]
-    prof = _tip_falloff(prof, jx[3], s[-1] - jx[3], (13.0 * ws, 6.0 * hs, 8.5 * hs))
+    prof = _tip_falloff(prof, jx[3], s[-1] - jx[3], (6.2 * ws, 5.5 * hs, 7.0 * hs))
     prof = np.array(prof)
     # dorsal axis per sample: each phalanx's w, blended over +-4 mm at the joints
     W = np.zeros_like(pts)
@@ -148,7 +148,7 @@ def thumb_tube(sk):
         return jx[k] + (where - k) * (jx[k + 1] - jx[k])
 
     prof = [(s_of(r[0]), r[1], r[2], r[3], r[4], r[5], r[6]) for r in THUMB_PROFILE]
-    prof = np.array(_tip_falloff(prof, jx[3], s[-1] - jx[3], (13.0, 7.0, 10.0)))
+    prof = np.array(_tip_falloff(prof, jx[3], s[-1] - jx[3], (8.0, 6.5, 8.5)))
     W = np.zeros_like(pts)
     for i, sv in enumerate(s):
         acc = frames[0][2].copy()
@@ -189,25 +189,25 @@ def forearm_tube():
     S = s[-1]
     prof = np.array([
         # s, a, bd, bv, nd, nv
-        (0.0, 17.0, 6.0, 9.0, 2.3, 2.6),
-        (w0 - 6, 24.6, 11.0, 17.0, 2.4, 2.6),
+        (0.0, 14.0, 6.0, 9.0, 2.3, 2.6),
+        (w0 - 6, 20.5, 10.4, 16.5, 2.4, 2.6),
         (w0, 23.4, 11.8, 19.6, 2.4, 2.5),       # the wrist: a slim oval, about 50 x 36
-        (w0 + 12, 23.8, 13.4, 20.0, 2.35, 2.4),
-        (w0 + 30, 25.2, 15.4, 20.6, 2.25, 2.3),
-        (w0 + 55, 27.0, 17.4, 21.4, 2.2, 2.2),
-        (S - 22, 27.6, 17.8, 21.6, 2.2, 2.2),
-        (S, 23.0, 14.6, 17.6, 2.2, 2.2),       # a soft taper into the rounded end
+        (w0 + 12, 23.8, 13.4, 20.0, 2.35, 2.5),
+        (w0 + 30, 25.0, 15.2, 20.2, 2.25, 2.6),
+        (w0 + 55, 26.8, 16.8, 20.6, 2.2, 2.7),
+        (w0 + 85, 28.6, 18.0, 21.0, 2.2, 2.7),  # ~57 x 39: a slim forearm, the volar side flatter
+        (S, 29.6, 18.6, 21.4, 2.2, 2.7),        # a flat cut, far out of shot
 
     ])
     P = dict(s=prof[:, 0], a=prof[:, 1], bd=prof[:, 2], bv=prof[:, 3], nd=prof[:, 4], nv=prof[:, 5])
     t = Tube(pts, W, P)
-    t.end_round = 10.0
+    t.end_round = 2.0
     return t, dict(wrist_s=w0)
 
 
 # ---- the palm core ---------------------------------------------------------------------------
-PALM_OUTLINE = [(-21.5, -7.0), (0.0, -9.0), (21.5, -7.0), (29.0, 22.0), (34.6, 46.0), (34.8, 62.0), (34.1, 74.0), (28.4, 83.0), (12.6, 90.0), (-5.2, 96.0), (-23.9, 94.0), (-29.0, 78.0), (-27.0, 50.0), (-25.5, 22.0)]
-PALM_ROUND = 7.5          # the back's edge
+PALM_OUTLINE = [(-16.0, -40.0), (0.0, -42.0), (16.0, -40.0), (29.0, 22.0), (34.6, 46.0), (34.8, 62.0), (34.1, 74.0), (28.4, 83.0), (12.6, 90.0), (-5.2, 96.0), (-23.9, 94.0), (-29.0, 78.0), (-27.0, 50.0), (-25.5, 22.0)]
+PALM_ROUND = 9.0          # the back's edge
 PALM_ROUND_V = 4.0        # the underside's edge (the heel and pads carry the volume)
 
 
@@ -249,10 +249,14 @@ def mcp_z(X):
 
 def palm_dorsal(X, Y):
     # along the middle metacarpal: high at the wrist, lower at the knuckles
-    z = cr_interp(Y, [0, 12, 30, 50, 70], [10.6, 11.6, 12.5, 11.6, 10.2])
+    z = cr_interp(np.maximum(Y, 0.0), [0, 12, 30, 50, 70], [10.6, 11.6, 12.5, 11.6, 10.2])
+    # behind the wrist the core sinks under the forearm's bend (buried, no cap)
+    yb = np.minimum(Y, 0.0)
+    z = z - (49.0 - np.sqrt(np.maximum(49.0 ** 2 - yb ** 2, 1.0))) - 8.0 * smoothstep(0.0, -35.0, Y)
     xc = -4.0
     curv = 0.0036 + 0.0026 * smoothstep(5.0, 32.0, Y)    # flatter across at the wrist
     z = z - curv * (X - xc) ** 2 - 0.10 * 3.0 * np.logaddexp(0.0, (X - 12.0) / 3.0) * smoothstep(5.0, 32.0, Y)
+    z = z - 0.12 * 5.0 * np.logaddexp(0.0, (-X - 17.0) / 5.0)     # rolls over into the radial border
     # shallow valleys between the metacarpals over the distal half
     heads = [SK.MC[f][1] for f in ('index', 'middle', 'ring', 'pinky')]
     bases = [SK.MC[f][0] for f in ('index', 'middle', 'ring', 'pinky')]
@@ -336,14 +340,14 @@ class Hand:
             x = 0.5 * (ma[0] + mb[0])
             y = 0.5 * (ma[1] + mb[1]) + 1.0
             zs = float(palm_volar(np.array([x]), np.array([y]))[0])
-            self.mounds.append(Ellipsoid(np.array([x, y - 1.0, zs + 2.5 - 0.5]), (8.0, 10.0, 2.5), frame_R([0, 1, 0], [0, 0, 1])))
+            self.mounds.append(Ellipsoid(np.array([x, y - 1.0, zs + 2.5 - 0.25]), (8.0, 10.0, 2.5), frame_R([0, 1, 0], [0, 0, 1])))
         # knuckle caps: the metacarpal heads under the dorsal skin
         self.knuckles = []
         for f in FINGERS[1:]:
             b_, h_ = (np.array(p) for p in SK.MC[f])
             ax = unit(h_ - b_)
             sc = FINGER_SCALE[f][0]
-            self.knuckles.append(Ellipsoid(h_ - ax * 1.5 + np.array([0, 0, 1.6]), (6.0 * sc, 11.0, 4.6 * sc), frame_R(ax, [0, 0, 1])))
+            self.knuckles.append(Ellipsoid(h_ - ax * 1.5 + np.array([0, 0, 2.4]), (6.0 * sc, 11.0, 4.6 * sc), frame_R(ax, [0, 0, 1])))
         # interdigital webs
         self.webs = []
         for a, b in (('index', 'middle'), ('middle', 'ring'), ('ring', 'pinky')):
@@ -353,7 +357,7 @@ class Hand:
             self.webs.append(Capsule(m0, m1, 6.0, 4.2))
         # first web and the first dorsal interosseous
         idx = sk['index']['joints']
-        p1 = T[1] + 0.50 * (T[2] - T[1])
+        p1 = T[1] + 0.36 * (T[2] - T[1])
         self.web1 = TriSlab(cmc + 0.30 * mc1 + np.array([8, 0, 1]), idx[0] + np.array([-5.0, -4.0, -2.5]), p1 + np.array([3.0, 0.5, 0.5]), 3.5, 3.0, 2.6)
         mc2b, mc2h = np.array(SK.MC['index'][0]), np.array(SK.MC['index'][1])
         mid = 0.5 * (cmc + 0.55 * mc1 + mc2b + 0.55 * (mc2h - mc2b))
@@ -371,7 +375,7 @@ class Hand:
         d = smin(d, self.hypothenar(P), 7.0)
         d = smin(d, self.pisiform(P), 5.0)
         for e in self.knuckles:
-            d = smin(d, e(P), 2.5)
+            d = smin(d, e(P), 4.0)
         d = smin(d, self.fdi(P), 6.0)
         d = smin(d, self.web1(P), 5.0)
         d = smin(d, self._tube(self.forearm, P, d, cull), 7.0)
@@ -384,8 +388,11 @@ class Hand:
         for f in FINGERS[1:]:
             t = self._carve(f, P, self._tube(self.fingers[f], P, d, cull, self._cr(f)))
             df = t if df is None else np.minimum(df, t)
-        d = smin(d, df, 4.5)
-        d = smin(d, self._carve('thumb', P, self._tube(self.fingers['thumb'], P, d, cull, self._cr('thumb'))), 7.0)
+        th = self._carve('thumb', P, self._tube(self.fingers['thumb'], P, d, cull, self._cr('thumb')))
+        # the thumb blends into the palm (k 7) and the fingers into the palm
+        # (k 6.5), but thumb and fingers meet with a tight blend (k 2): no
+        # blob where the thumb lies close to the index, no crease either
+        d = smin(smin(d, df, 6.5), smin(d, th, 7.0), 2.0)
         near = np.abs(d) < 3.0
         if near.any():
             d = d.copy()

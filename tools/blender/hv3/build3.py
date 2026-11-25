@@ -46,12 +46,12 @@ for _f in FINGERS:
     PARENT[_f + '.02'] = _f + '.01'
     PARENT[_f + '.03'] = _f + '.02'
 
-TARGET_VERTS = 11600          # after decimation; UV seams add the rest (cap 14,000)
+TARGET_VERTS = 11000          # after decimation; UV seams add the rest (cap 14,000)
 CAP_SKIN_VERTS = 14000
 CAP_GLB_BYTES = 1_300_000     # the game variant, before quantisation
 MAP_SIZE = 1024
 MAP_SCALE = 2.5               # the shader's uDetailScale (stored slope x this)
-MAP_CAVITY_MM = 0.18          # a groove this deep is full cavity (B)
+MAP_CAVITY_MM = 0.40          # a groove this deep is full cavity (B)
 FREE_STOPS_MM = (0.5, 1.5, 2.5, 4.0, 6.0, 9.0)
 FREE_DEFAULT_MM = 2.5
 PLATE_COLS, PLATE_ROWS = 13, 22
@@ -161,7 +161,7 @@ def detail_map(me, V, Nv, hand_full, hand_plain, out_dir, report, check):
     cT = (pt - tb * pb) / det
     cB = (pb - tb * pt) / det
     # cavity: how far the creases and folds sink the full surface under the plain one
-    depth = mesher._eval(hand_full.eval, Ph) * 0 + (mesher._eval(hand_plain.eval, Ph))
+    depth = mesher._eval(hand_plain.eval, Ph)
     cav = np.clip(-depth / MAP_CAVITY_MM, 0, 1)
     img = np.zeros((MAP_SIZE, MAP_SIZE, 4))
     img[..., 0] = 0.5
@@ -440,7 +440,8 @@ def main():
     # 2. UVs and the detail map (hand frame, mm)
     smart_uv(ob)
     Nv = rig3.vertex_normals(V, F)
-    detail_map(ob.data, V, Nv, hand_full, hand_plain, out_dir, report, check)
+    if not flags.get('nomap'):
+        detail_map(ob.data, V, Nv, hand_full, hand_plain, out_dir, report, check)
     # 3. weights and masks
     W = rig3.weights(hand_plain, V, F)
     col = rig3.masks(hand_plain, V, F, Nv)

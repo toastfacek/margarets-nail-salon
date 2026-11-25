@@ -18,10 +18,14 @@ BI = {b: i for i, b in enumerate(BONES)}
 # joint windows (mm along the tube's spine, before / after the joint centre)
 WIN = {
     'finger': [(6.0, 7.0), (3.4, 3.8), (2.8, 3.2)],     # MCP, PIP, DIP
-    'thumb': [(-2.0, 14.0), (5.0, 6.0), (3.2, 3.6)],    # CMC (palm -> thumb.01 well past the CMC), MCP, IP
+    'thumb': [(-6.0, 18.0), (6.0, 7.5), (4.5, 5.0)],    # CMC (palm -> thumb.01 well past the CMC), MCP, IP
 }
 MEMBER = {'finger': (4.5, 0.6), 'thumb': (7.0, 1.0)}    # tube distance (mm): no share .. full share
 WRIST_WIN = (-3.0, 12.0)                                # forearm spine, around the wrist joint
+WEB_REACH = 9.0                                         # mm from both the thumb and the index
+WEB_PASSES = 60
+DIGIT_SOFT = 0.8                                        # mm: the nearest digit's lead over the next
+THUMB_DISTAL_LO = 7.0                                   # the thumb's membership reach past its MCP (mm)
 SMOOTH_PASSES = 12
 RIGID_MARGIN = 1.6                                      # mm round the nail outline that rides on .03 only
 
@@ -81,14 +85,45 @@ def weights(hand, V, F):
     W[:, BI['wrist']] = a
     rest = 1 - a
     # finger memberships
-    mem, chains = {}, {}
+    mem, chains, dist = {}, {}, {}
     for f in FINGERS:
         t = hand.fingers[f]
         d, lf = t(V, local=True)
+        dist[f] = d
+        if f == 'thumb':
+            thumb_s = lf['s']
         kind = 'thumb' if f == 'thumb' else 'finger'
         lo, hi = MEMBER[kind]
+        if kind == 'thumb':
+            # past the thumb's MCP the membership tightens: the first web's
+            # skin (within a few mm of the proximal phalanx) stays on the
+            # palm and the metacarpal, never on the phalanx alone
+            jx = hand.info[f]['jx']
+            tt = smoothstep(jx[1] - 4.0, jx[1] + 6.0, lf['s'])
+            lo = lo * (1 - tt) + THUMB_DISTAL_LO * tt
+            hi = hi * (1 - tt) + 0.4 * tt
         mem[f] = smoothstep(lo, hi, d)
-        chains[f] = chain_weights(lf['s'], hand.info[f]['jx'], WIN[kind])
+        if kind == 'thumb':
+            # the first web: shared between the thumb and the index side by
+            # relative distance, so it stretches evenly instead of folding
+            di = np.maximum(hand.fingers['index'](V), 0.0)
+            dt = np.maximum(d, 0.0)
+            ratio = di / np.maximum(di + dt, 1e-6)
+            web = smoothstep(16.0, 9.0, dt) * smoothstep(20.0, 12.0, di)
+            mem[f] = np.maximum(mem[f], web * smoothstep(0.15, 0.85, ratio))
+        s_ch = lf['s']
+        if kind == 'thumb':
+            # skin off the thumb's own surface (the first web) rides on the
+            # metacarpal: its chain position is held short of the MCP
+            jx = hand.info[f]['jx']
+            wd = smoothstep(0.3, 2.0, d)
+            s_ch = s_ch * (1 - wd) + np.minimum(s_ch, jx[1] - 5.0) * wd
+        chains[f] = chain_weights(s_ch, hand.info[f]['jx'], WIN[kind])
+    # between neighbouring digits the nearest one wins (softly): skin on the
+    # ring finger's side never rides partly on the middle finger
+    dmin = np.minimum.reduce([dist[f] for f in FINGERS[1:]])
+    for f in FINGERS[1:]:
+        mem[f] = mem[f] * np.exp(-np.maximum(dist[f] - dmin, 0.0) / DIGIT_SOFT)
     tot = sum(mem.values())
     scale = np.where(tot > 1, 1 / np.maximum(tot, 1e-9), 1.0)
     palm = rest.copy()
@@ -108,6 +143,14 @@ def weights(hand, V, F):
         fixed |= r
     E = adjacency(F, n)
     W = smooth(W, E, n, SMOOTH_PASSES, fixed=fixed)
+    # the first web between the thumb's proximal phalanx and the index root
+    # is only a few mm wide at rest: diffuse its weights much further, so the
+    # thumb's motion spreads over all of it instead of a 2 mm band
+    jt = hand.info['thumb']['jx']
+    st = thumb_s
+    webr = (dist['thumb'] < WEB_REACH) & (dist['index'] < WEB_REACH) & (st > jt[0] + 8.0) & (st < jt[2] + 2.0)
+    if webr.any():
+        W = smooth(W, E, n, WEB_PASSES, fixed=fixed | ~webr)
     # keep the four largest
     idx = np.argsort(-W, 1)
     keep = np.zeros_like(W, dtype=bool)

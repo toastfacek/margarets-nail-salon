@@ -69,7 +69,7 @@ class NailUnit:
         self.slope_h = (self.zc[i] - self.zc[i - 3]) / (ys[i] - ys[i - 3])
         # the finger's half width toward the tip: the plate never runs wider
         # than the skin under it (else its free-edge corners poke out as ears)
-        self.ys_w = np.linspace(ymid, self.yh + 4.0, 12)
+        self.ys_w = np.linspace(ymid, self.yh + 6.0, 16)
         self.side_w = np.array([self._side(y) for y in self.ys_w])
 
     # ---- probing the skin -------------------------------------------------------
@@ -98,7 +98,12 @@ class NailUnit:
         t = np.clip((y - self.yc) / (self.yh - self.yc), 0, 1.4)
         base = self.hw0 * (1 - TAPER * t)
         cap = SKIN_CAP * np.interp(np.minimum(y, self.yh), self.ys_w, self.side_w, left=1e9)
-        return np.minimum(base, cap)
+        hw = np.minimum(base, cap)
+        # past the hyponychium: 0.4 mm inside the pulp's silhouette while the
+        # pulp lasts (a longer free edge keeps 60% of the width beyond it)
+        sk = np.interp(y, self.ys_w, self.side_w) - 0.4
+        past = np.asarray(y) > self.yh
+        return np.where(past, np.minimum(hw, np.maximum(sk, 0.6 * hw)), hw)
 
     def z_centre(self, y):
         ym = 0.5 * (self.yc + self.yh)
@@ -121,7 +126,7 @@ class NailUnit:
 
     def free_y(self, x, free):
         """The free edge outline: y at which the plate ends, per x."""
-        hw = self.hw(self.yh + free)
+        hw = float(self.hw(self.yh))
         u = np.clip(np.abs(x) / hw, 0, 1)
         e = 2.0 + 6.0 * (1 - TIP_ROUND)        # superellipse exponent
         depth = min(free + 0.8, hw * 0.75)       # how far the rounding reaches back
@@ -144,6 +149,11 @@ class NailUnit:
         prox = self.cuticle_y(x) - y
         o = smax(side, prox, 1.1)
         zb = self.z_top(x, y) - T
+        # the groove fades out over the last 2 mm of the bed (no notch at the tip)
+        # the side walls fade out over the last 2 mm of the bed (no notch at
+        # the tip's silhouette); the middle stays open over the plate
+        sidew = smoothstep(0.75, 1.0, np.abs(x) / np.maximum(hw, 1e-6))
+        zb = zb + 3.0 * smoothstep(self.yh - 2.0, self.yh + 0.3, y) * sidew
         g = np.maximum(o, zb - z)
         far = np.linalg.norm(P - self.o, axis=1) > 40
         g = np.where(far, 50.0, g)
