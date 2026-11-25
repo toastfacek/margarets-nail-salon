@@ -13,6 +13,7 @@ import { createNailMaterial, createNailLighting, applyNailFinish, nailVariantKey
 import { createSkinMaterials, createSkinShared, setSkinTone } from './SkinMaterial.js';
 import { computeSettings } from '../core/Quality.js';
 import { whenIdle, warmRender } from './Warmup.js';
+import { useHandPoseSet } from './HandPoses.js';
 
 
 // Nail shape options
@@ -337,6 +338,10 @@ export class HandModel {
         this._loading[hand] = this._loadSource().then((source) => {
             // the pristine file (unmirrored, rest pose): app.hand reads the bone axes from it
             this.sourceModel = source;
+            // the model's pose set (its thumb poses and limits are about its own bind)
+            let poseSet = null;
+            source.traverse((o) => { if (!poseSet && o.userData && o.userData.handPoseSet) poseSet = o.userData.handPoseSet; });
+            useHandPoseSet(poseSet || 'v2');
             // both hands are clones: the loaded scene stays pristine (its
             // materials and geometry are never set up in place)
             const model = hand === 'right' ? cloneSkinned(source) : this._mirrorClone(source);

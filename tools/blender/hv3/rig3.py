@@ -12,6 +12,26 @@ import skeleton as SK
 from sdf import smoothstep
 
 FINGERS = SK.FINGERS
+
+# v3's pose set: a mirror of POSE_SETS.v3 in src/scene/HandPoses.js (the
+# thumb's game poses about v3's bind, and the joint limits the rig checks
+# cover). Thumb poses: [base flex, base spread, base twist, middle, last].
+POSE_SET_V3 = {
+    'limits': {
+        'finger.01': ((-15, 25), (-12, 12), (0, 0)),
+        'finger.02': ((0, 45), (0, 0), (0, 0)),
+        'finger.03': ((-5, 45), (0, 0), (0, 0)),
+        'thumb.01': ((-12, 4), (-14, 2), (-8, 20)),
+        'thumb.02': ((-16, 8), (0, 0), (0, 0)),
+        'thumb.03': ((-12, 45), (0, 0), (0, 0)),
+    },
+    'thumb': {
+        'relaxed': (0, -1, 0, 0, 5),
+        'fan': (-2, -3, 4, -12, -10),
+        'thumbActive': (-2, -1, 14, -10, -4),
+        'thumbOther': (0, 0, 0, 0, 2),
+    },
+}
 BONES = ['wrist', 'palm'] + [f'{f}.0{k}' for f in FINGERS for k in (1, 2, 3)]
 BI = {b: i for i, b in enumerate(BONES)}
 
@@ -20,10 +40,11 @@ WIN = {
     'finger': [(6.0, 7.0), (3.4, 3.8), (2.8, 3.2)],     # MCP, PIP, DIP
     'thumb': [(-6.0, 18.0), (6.0, 7.5), (4.5, 5.0)],    # CMC (palm -> thumb.01 well past the CMC), MCP, IP
 }
-MEMBER = {'finger': (4.5, 0.6), 'thumb': (7.0, 1.0)}    # tube distance (mm): no share .. full share
+MEMBER = {'finger': (6.5, 1.0), 'thumb': (7.0, 1.0)}    # tube distance (mm): no share .. full share
 WRIST_WIN = (-3.0, 12.0)                                # forearm spine, around the wrist joint
 WEB_REACH = 9.0                                         # mm from both the thumb and the index
 WEB_PASSES = 60
+WEB_THUMB_KEEP = 1.0                                    # mm: the thumb's skin, held out of the web diffusion
 DIGIT_SOFT = 0.8                                        # mm: the nearest digit's lead over the next
 THUMB_DISTAL_LO = 7.0                                   # the thumb's membership reach past its MCP (mm)
 SMOOTH_PASSES = 12
@@ -150,7 +171,10 @@ def weights(hand, V, F):
     st = thumb_s
     webr = (dist['thumb'] < WEB_REACH) & (dist['index'] < WEB_REACH) & (st > jt[0] + 8.0) & (st < jt[2] + 2.0)
     if webr.any():
-        W = smooth(W, E, n, WEB_PASSES, fixed=fixed | ~webr)
+        # the thumb's own surface keeps its weights (its skin turns with the
+        # phalanx); only the web between thumb and index is diffused
+        on_thumb = dist['thumb'] < WEB_THUMB_KEEP
+        W = smooth(W, E, n, WEB_PASSES, fixed=fixed | ~webr | on_thumb)
     # keep the four largest
     idx = np.argsort(-W, 1)
     keep = np.zeros_like(W, dtype=bool)

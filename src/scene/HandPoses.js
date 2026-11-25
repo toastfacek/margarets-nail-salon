@@ -40,16 +40,76 @@ const L_THUMB = [[-19, 21, -47, 9, -9, 21], [-17, 33, 0, 0, 0, 0], [-20, 45, 0, 
 const L_PALM = [-10, 10, -6, 6, 0, 0];
 const L_WRIST = [-10, 10, -8, 8, 0, 0];
 
-/** LIMITS[b * 6 + k]: per bone, flex/spread/twist min and max (degrees). */
-export const LIMITS = (() => {
-  const a = new Float32Array(NB * 6);
+/**
+ * Per-model pose sets. The thumb's poses are about each file's own bind, so a
+ * hand model built around a different thumb rest needs its own numbers; the
+ * model names its set in its armature's glTF extras (`handPoseSet`, read by
+ * HandModel) and useHandPoseSet() switches to it. 'v2' is the default (the
+ * numbers above, B9.8). 'v3' is the hand built from the anatomical distance
+ * field (tools/blender/hv3): its thumb rests beside the index with a first web
+ * only ~7 mm wide, so its poses open the thumb through the MCP and IP joints
+ * and turn the nail with the base twist, never pushing the thumb toward the
+ * index; its limits are where tools/blender/hv3/build3.py finds no flipped
+ * triangle (the finger knuckles' flex stops at 25: past ~28 linear blend
+ * skinning folds v3's volar finger roots; the game's poses stay under ~20).
+ * Mirrored in tools/blender/hv3/rig3.py (POSE_SET_V3).
+ */
+export const POSE_SETS = Object.freeze({
+  v2: Object.freeze({
+    finger: L_FINGER,
+    thumb: L_THUMB,
+    // [base flex, base spread, base twist, middle joint flex, last joint flex]
+    relaxed: Object.freeze([2.6, 7.3, -1.9, -2, 2]),   // before B9.8: [8, 34, 4, 10, 12]
+    fan: Object.freeze([-2.9, -9.3, 7.8, -10, -8]),    // before B9.8: [0, 18, 10, 2, 2]
+    thumbActive: Object.freeze([-1.2, -7.1, 14.9, -8, -5]),
+    thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
+  }),
+  v3: Object.freeze({
+    finger: [[-15, 25, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 45, 0, 0, -1, 1]],
+    thumb: [[-12, 4, -14, 2, -8, 20], [-16, 8, 0, 0, 0, 0], [-12, 45, 0, 0, -1, 1]],
+    // relaxed: the rest, the last joint softly curled
+    relaxed: Object.freeze([0, -1, 0, 0, 5]),
+    // fan: the thumb opens away from the index (MCP and IP straighten), nail a little up
+    fan: Object.freeze([-2, -3, 4, -12, -10]),
+    // presented: forward and away from the index, the nail turned up toward the camera
+    thumbActive: Object.freeze([-2, -1, 14, -10, -4]),
+    // another finger presented: the thumb stays put, the last joint a touch curled
+    thumbOther: Object.freeze([0, 0, 0, 0, 2]),
+  }),
+});
+let _set = POSE_SETS.v2;
+let _setName = 'v2';
+
+function fillLimits(a, set) {
   a.set(L_WRIST, 0);
   a.set(L_PALM, 6);
   for (let f = 0; f < 5; f++) {
-    for (let k = 0; k < 3; k++) a.set((f === 0 ? L_THUMB : L_FINGER)[k], (fingerBase(f) + k) * 6);
+    for (let k = 0; k < 3; k++) a.set((f === 0 ? set.thumb : set.finger)[k], (fingerBase(f) + k) * 6);
   }
   return a;
-})();
+}
+
+/** LIMITS[b * 6 + k]: per bone, flex/spread/twist min and max (degrees), of the current pose set. */
+export const LIMITS = fillLimits(new Float32Array(NB * 6), _set);
+
+/**
+ * Switch the pose set ('v2' | 'v3'): the thumb's named and present poses and
+ * LIMITS (rewritten in place) follow. Unknown names keep the current set.
+ * @returns {string} the set now in use
+ */
+export function useHandPoseSet(name) {
+  if (POSE_SETS[name] && name !== _setName) {
+    _set = POSE_SETS[name];
+    _setName = name;
+    fillLimits(LIMITS, _set);
+  }
+  return _setName;
+}
+
+/** The pose set in use. */
+export function handPoseSet() {
+  return _setName;
+}
 
 /** Clamp a pose (in place) to the limits. */
 export function clampPose(p) {
@@ -91,8 +151,9 @@ export const PRESENT = Object.freeze({
   // file's old straight thumb, never hyper-extended); while another finger is
   // presented it tucks a little closer
   // (before B9.8, about the straight-out thumb: [2, 20, 18, 4, 5] / [6, 28, 4, 14, 12])
-  thumbActive: Object.freeze([-1.2, -7.1, 14.9, -8, -5]),
-  thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
+  // the thumb's numbers are the pose set's (POSE_SETS: thumbActive, thumbOther)
+  get thumbActive() { return _set.thumbActive; },
+  get thumbOther() { return _set.thumbOther; },
 });
 
 /**
@@ -153,12 +214,12 @@ export const POSE_NAMES = Object.freeze(['neutral', 'relaxed', 'fan']);
 export function writeNamed(name, out) {
   out.fill(0);
   if (name === 'relaxed') {
-    thumb(out, [2.6, 7.3, -1.9, -2, 2]); // before B9.8: [8, 34, 4, 10, 12]
+    thumb(out, _set.relaxed);
     return fingers(out, [null, [6, 10, 5], [6, 10, 5], [6, 10, 5], [6, 10, 5]], [0, -1, 0, 1, 2]);
   }
   if (name === 'fan') {
     // the show-off: fingers spread 8-10 degrees, tips a little up, the thumb opens
-    thumb(out, [-2.9, -9.3, 7.8, -10, -8]); // before B9.8: [0, 18, 10, 2, 2]
+    thumb(out, _set.fan);
     return fingers(out, [null, [-5, 0, 0], [-5, 0, 0], [-5, 0, 0], [-4, 0, 0]], [0, -9, -2, 5, 10]);
   }
   return thumb(out, THUMB_REST);

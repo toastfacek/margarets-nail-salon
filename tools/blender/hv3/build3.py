@@ -165,6 +165,15 @@ def decimate(ob, target, hand=None):
     bpy.ops.object.modifier_apply(modifier='dec')
     if hand is not None:
         ob.vertex_groups.remove(ob.vertex_groups['decimate'])
+    # flip edges toward well-shaped triangles: collapse decimation leaves a
+    # few slivers whose normals turn over at the slightest bend
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bmesh.ops.beautify_fill(bm, faces=bm.faces[:], edges=bm.edges[:], use_restrict_tag=False, method='AREA')
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
 
 
 def smart_uv(ob):
@@ -522,6 +531,12 @@ def main():
         check(f'{f}: nail UVs inside [0, 1]', UVn.min() >= 0 and UVn.max() <= 1)
     # 6. checks: the hv2 rig checks (limit poses, flips, joint sections, thenar web)
     import rig as RG
+    # v3's own pose set (HandPoses.js POSE_SETS.v3): the checks run its limits
+    # and game poses; the file names the set for the game (armature extras)
+    RG.LIMITS.update(rig3.POSE_SET_V3['limits'])
+    RG.GAME_THUMB.update(rig3.POSE_SET_V3['thumb'])
+    rig['handPoseSet'] = 'v3'
+    report['pose_set'] = 'v3'
     scene = {'hand': ob, 'rig': rig, 'nails': nails, 'nail_normal': nail_n}
     RG.checks(scene, report, check)
     # 7. export
