@@ -79,6 +79,25 @@ def mid_mesh(hand, cache):
     return V, Q
 
 
+def clamp_under_plates(hand, V, margin=0.15):
+    """The decimated skin can cut through the nail plate where its triangles
+    span the groove: every skin vertex inside a plate's visible outline is
+    pushed down to just under the plate's underside (no skin poking through
+    the plate, no z-fighting)."""
+    V = V.copy()
+    total = 0
+    for f in FINGERS:
+        nu = hand.nails[f]
+        q = V - nu.o
+        x, y, z = q @ nu.U, q @ nu.F, q @ nu.W
+        o = np.maximum(np.abs(x) - nu.hw(y), nu.cuticle_y(x) - y)
+        floor = nu.z_top(x, y) - nails3.T - margin
+        sel = (o < 0.05) & (y < nu.yh + FREE_STOPS_MM[-1]) & (z > floor) & (z < floor + 4.0)
+        V[sel] -= nu.W * (z[sel] - floor[sel])[:, None]
+        total += int(sel.sum())
+    return V, total
+
+
 def make_mesh_obj(name, V, F):
     me = bpy.data.meshes.new(name)
     me.from_pydata(V.tolist(), [], F.tolist())
@@ -111,7 +130,7 @@ def mesh_arrays(me):
     return V.reshape(-1, 3), np.array(tris, dtype=np.int64)
 
 
-def decimate(ob, target):
+def decimate(ob, target, hand=None):
     me = ob.data
     ratio = target / len(me.vertices)
     activate(ob)
@@ -119,7 +138,29 @@ def decimate(ob, target):
     m.decimate_type = 'COLLAPSE'
     m.ratio = ratio
     m.use_collapse_triangulate = True
+    if hand is not None:
+        # spend the budget where it shows: the nail folds and fingertips keep
+        # more vertices, the long forearm (out of shot, under the desk) fewer
+        V = np.empty(len(me.vertices) * 3)
+        me.vertices.foreach_get('co', V)
+        V = V.reshape(-1, 3)
+        w0 = hand.info['forearm']['wrist_s']
+        _, loc = hand.forearm(V, local=True)
+        near = np.zeros(len(V))
+        for f in FINGERS:
+            nu = hand.nails[f]
+            dd = np.linalg.norm(V - (nu.o + nu.F * 0.5 * (nu.yc + nu.yh)), axis=1)
+            near = np.maximum(near, np.clip((16.0 - dd) / 8.0, 0, 1))
+        arm = np.clip((loc['s'] - (w0 + 15.0)) / 30.0, 0, 1)
+        dw = np.clip(0.5 - 0.45 * near + 0.45 * arm, 0, 1)
+        g = ob.vertex_groups.new(name='decimate')
+        for i in range(len(V)):
+            g.add([i], float(dw[i]), 'REPLACE')
+        m.vertex_group = 'decimate'
+        m.vertex_group_factor = 1.0
     bpy.ops.object.modifier_apply(modifier='dec')
+    if hand is not None:
+        ob.vertex_groups.remove(ob.vertex_groups['decimate'])
 
 
 def smart_uv(ob):
@@ -429,9 +470,11 @@ def main():
     # 1. the game mesh
     Vm, Qm = mid_mesh(hand_plain, flags.get('cache') or os.path.join(out_dir, 'hv3-mid.npz'))
     ob = make_mesh_obj('Hand', Vm, Qm)
-    decimate(ob, TARGET_VERTS)
+    decimate(ob, TARGET_VERTS, hand_plain)
     V, F = mesh_arrays(ob.data)
     V = mesher.project(hand_plain.eval, V, 0.6, iters=3)
+    V, n_clamped = clamp_under_plates(hand_plain, V)
+    report['counts']['skin_verts_pushed_under_plates'] = n_clamped
     ob.data.vertices.foreach_set('co', V.ravel())
     ob.data.update()
     ob.data.shade_smooth()
