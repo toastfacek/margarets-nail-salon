@@ -51,7 +51,8 @@ CAP_SKIN_VERTS = 14000
 CAP_GLB_BYTES = 1_300_000     # the game variant, before quantisation
 MAP_SIZE = 1024
 MAP_SCALE = 2.5               # the shader's uDetailScale (stored slope x this)
-MAP_CAVITY_MM = 0.40          # a groove this deep is full cavity (B)
+DETAIL_GAIN = 0.6             # the creases' normal tilt, scaled (faint creases)
+MAP_CAVITY_MM = 0.60          # a groove this deep is full cavity (B)
 FREE_STOPS_MM = (0.5, 1.5, 2.5, 4.0, 6.0, 9.0)
 FREE_DEFAULT_MM = 2.5
 PLATE_COLS, PLATE_ROWS = 13, 22
@@ -204,6 +205,8 @@ def detail_map(me, V, Nv, hand_full, hand_plain, out_dir, report, check):
     det = np.maximum(1 - tb * tb, 1e-4)
     cT = (pt - tb * pb) / det
     cB = (pb - tb * pt) / det
+    # a young hand's creases read faint in the game's shader: soften the tilt
+    cT, cB = cT * DETAIL_GAIN, cB * DETAIL_GAIN
     # cavity: how far the creases and folds sink the full surface under the plain one
     depth = mesher._eval(hand_plain.eval, Ph)
     cav = np.clip(-depth / MAP_CAVITY_MM, 0, 1)
