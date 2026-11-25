@@ -87,7 +87,7 @@ export const POSE_SETS = Object.freeze({
     // (further curls keep neighbours out of the close-up but break the pan:
     // a finger under the pointer must not move much as the rail glides,
     // pan.mjs P1b, hand.mjs H3, hand-pose.mjs P4)
-    active: Object.freeze([-15, 2, 2]),
+    active: Object.freeze([-12, 2, 2]),
     other: Object.freeze([10, 12, 6]),
   }),
 });
