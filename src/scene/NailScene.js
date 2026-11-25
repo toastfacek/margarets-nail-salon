@@ -52,6 +52,10 @@ function focusBand(w, h, out) {
 // backs off between two fingers (x focus distance) so the next one shows sooner.
 const RAIL = Object.freeze(['thumb', 'index', 'middle', 'ring', 'pinky']);
 const RAIL_BULGE = 0.22;
+// the desk sits at least this far under the lowest finger skin (rest pose):
+// a curled neighbour (a presented finger's pose) stays above it
+const DESK_FINGER_GAP = 0.07;
+const FINGER_BONE = /0?[123]$/;
 const WORLD_UP = Object.freeze(new THREE.Vector3(0, 1, 0));
 /** A camera pose: position, look-at target, up (unit), focus distance. */
 const makePose = () => ({ pos: new THREE.Vector3(), target: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), d: 0.5, ok: false });
@@ -397,7 +401,10 @@ export class NailScene {
             if (wp && wp.y < minNailY) minNailY = wp.y;
         });
         if (!isFinite(minNailY)) minNailY = b.max.y - 0.3;
-        const deskY = minNailY - 0.1;
+        // hand v3's thumb sits lower than its nail suggests: the desk also
+        // goes under the lowest finger skin (not the forearm, which dips
+        // under the towel on purpose)
+        const deskY = Math.min(minNailY - 0.1, this._lowestFingerY(hand.model) - DESK_FINGER_GAP);
 
         // Footprint of what is above the desk.
         let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -426,6 +433,29 @@ export class NailScene {
         this.defaultTarget.set(cx, deskY + 0.15, cz);
         this.defaultCameraPos.set(cx, deskY + 2.4, cz + 0.55);
         this.invalidate();
+    }
+
+    /** Lowest world y of the skin weighted (>= 0.5) to finger bones (once per bake). */
+    _lowestFingerY(model) {
+        let skin = null;
+        model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
+        if (!skin) return Infinity;
+        skin.updateMatrixWorld(true);
+        skin.skeleton.update();
+        const P = skin.geometry.attributes.position;
+        const ws = skin.geometry.attributes.skinWeight, ix = skin.geometry.attributes.skinIndex;
+        const bones = skin.skeleton.bones;
+        const isFinger = bones.map((b) => FINGER_BONE.test(b.name));
+        const v = new THREE.Vector3();
+        let lo = Infinity;
+        for (let i = 0; i < P.count; i++) {
+            let fw = 0;
+            for (let k = 0; k < 4; k++) if (isFinger[ix.getComponent(i, k)]) fw += ws.getComponent(i, k);
+            if (fw < 0.5) continue;
+            skin.getVertexPosition(i, v).applyMatrix4(skin.matrixWorld);
+            if (v.y < lo) lo = v.y;
+        }
+        return lo;
     }
 
     setupControls() {
