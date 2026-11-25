@@ -921,6 +921,26 @@ export class BrushInputHandler {
     }
     const list = [];
     for (const [k, n] of uses) if (n === 1) list.push(Math.floor(k / 65536), k % 65536);
+    if (list.length === 0) {
+      // a closed plate (hand v3: top, underside and rim are one solid): its
+      // outline is the edge of the top sheet, the faces turned to the
+      // nail's +Z (out, in its canonical frame)
+      uses.clear();
+      for (let t = 0; t < nt; t++) {
+        const i0 = ix ? ix[t * 3] : t * 3, i1 = ix ? ix[t * 3 + 1] : t * 3 + 1, i2 = ix ? ix[t * 3 + 2] : t * 3 + 2;
+        const e1x = pos.getX(i1) - pos.getX(i0), e1y = pos.getY(i1) - pos.getY(i0), e1z = pos.getZ(i1) - pos.getZ(i0);
+        const e2x = pos.getX(i2) - pos.getX(i0), e2y = pos.getY(i2) - pos.getY(i0), e2z = pos.getZ(i2) - pos.getZ(i0);
+        const nz = e1x * e2y - e1y * e2x;
+        const nl = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, nz);
+        if (!(nl > 0) || nz < 0.2 * nl) continue;
+        for (let e = 0; e < 3; e++) {
+          const a = id[ix ? ix[t * 3 + e] : t * 3 + e], b = id[ix ? ix[t * 3 + (e + 1) % 3] : t * 3 + (e + 1) % 3];
+          const k = a < b ? a * 65536 + b : b * 65536 + a;
+          uses.set(k, (uses.get(k) || 0) + 1);
+        }
+      }
+      for (const [k, n] of uses) if (n === 1) list.push(Math.floor(k / 65536), k % 65536);
+    }
     const edges = Int32Array.from(list);
     this._outline = { geo, version: pos.version, count: pos.count, edges, scr: new Float32Array(pos.count * 2) };
     return edges;

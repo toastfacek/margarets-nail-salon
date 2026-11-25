@@ -25,12 +25,14 @@ Notes
   painted from this project's own analytic shapes and noise in `tools/blender/maps.py`, and the
   micro tile (pores, ridges) is generated at run time by `createSkinMicroTile` in
   `src/scene/SkinMaterial.js`. No photo, scan or third-party texture is used.
-- Hand v3 (`tools/blender/hv3/`, `public/models/hand-v3.glb`, `public/models/skin-detail-v3.webp`):
+- Hand v3 (`tools/blender/hv3/`, `public/models/hand-v3.glb`; the viewer's skin detail map):
   built entirely from this project's own code. The hand is an anatomical signed distance field
   written for this project (skeleton, tubes, palm height fields, ellipsoid masses, nail grooves,
   creases), meshed by this project's own surface-nets mesher, decimated, UV-unwrapped and
   exported by Blender 5.3 used as a tool. No external mesh, scan, photo, texture, research
   model (MANO, SMPL-X, NIMBLE or similar) or third-party code is used; the CC0 MakeHuman
   base mesh above is not used by v3 either. Proportions come from general anatomical
-  knowledge, not from any dataset.
+  knowledge, not from any dataset. The game's file is quantized (KHR_mesh_quantization) by
+  this project's own `tools/blender/hv3/quantize_glb.py` (numpy only; no gltfpack or
+  meshoptimizer code).
 

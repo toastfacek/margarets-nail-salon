@@ -64,6 +64,7 @@ export const POSE_SETS = Object.freeze({
     fan: Object.freeze([-2.9, -9.3, 7.8, -10, -8]),    // before B9.8: [0, 18, 10, 2, 2]
     thumbActive: Object.freeze([-1.2, -7.1, 14.9, -8, -5]),
     thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
+    spreadAway: 3,
   }),
   v3: Object.freeze({
     finger: [[-15, 25, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 40, 0, 0, -1, 1]],
@@ -76,6 +77,10 @@ export const POSE_SETS = Object.freeze({
     thumbActive: Object.freeze([-2, -1, 14, -10, -4]),
     // another finger presented: the thumb stays put, the last joint a touch curled
     thumbOther: Object.freeze([0, 0, 0, 0, 2]),
+    // the other fingers part further from the presented one: v3's fingers lie
+    // close side by side, and a neighbour packed against the active finger
+    // fills the close-up with skin (its fill rate) and crowds the nail
+    spreadAway: 12,
   }),
 });
 let _set = POSE_SETS.v2;
@@ -146,7 +151,7 @@ function thumb(out, t) {
 export const PRESENT = Object.freeze({
   active: [-8, 4, 4],          // knuckle, middle joint, last joint (flex)
   other: [8, 10, 5],
-  spreadAway: 3,
+  get spreadAway() { return _set.spreadAway; },
   // the thumb, about THUMB_REST: presented it comes forward a little away
   // from the index with its nail turned up (its joints straighten toward the
   // file's old straight thumb, never hyper-extended); while another finger is

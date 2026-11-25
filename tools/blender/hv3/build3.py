@@ -63,12 +63,12 @@ RIM_SLOPE = 0.90             # the side walls' ceiling rises this much per mm aw
 RIM_BAND = 0.9              # mm outside a plate's side edge where the skin stays under its top
 VIEWER_FOREARM_MM = 450.0     # the viewer build's forearm (wrist centre to the cut)
 FREE_DEFAULT_MM = 2.5          # the viewer's default free edge (its slider's start)
+GAME_TARGET_VERTS = 9700       # the game's skin (no UV seams): ~10.3k with the seam loops, as v1's 10.4k
 GAME_FREE_MM = 4.0             # the game's nails (one length, baked): Jesse's pick
 PLATE_COLS, PLATE_ROWS = 13, 22
-# fix 4: the thumb's plate is big and strongly curved, and seen face-on its
-# side edges are near grazing: between coarse grid rows the plate's straight
-# edge chords fall away from the fold's smooth edge loop and read as teeth
-PLATE_GRID = {'thumb': (25, 48), 'index': (19, 36), 'middle': (19, 36), 'ring': (19, 36), 'pinky': (17, 32)}
+# the thumb's plate is big and strongly curved (fix 4: coarse edge chords
+# fell away from the fold's edge loop); every plate's grid is denser at its edges
+PLATE_GRID = {'thumb': (15, 26)}
 
 
 def parse_args(argv):
@@ -516,8 +516,14 @@ def plate_geometry(nu, free, cols=PLATE_COLS, rows=PLATE_ROWS):
     own vertices (flat shaded). Returns V, faces, smooth flags, uv, the top's
     visible extent."""
     hw_t = lambda y: nu.hw(y) + nails3.TUCK_SIDE * (1 - nails3.smoothstep(nu.yh - 2.5, nu.yh, y))  # noqa: E731
-    us = np.linspace(-1, 1, cols)
-    vs = np.linspace(0, 1, rows)
+    # spacing denser toward the plate's edges (its rounded corners, where the
+    # outline turns fastest) and sparser across its flat middle: a smooth
+    # outline from few vertices (each nail triangle costs vertex work on
+    # software rasterisers)
+    t = np.linspace(-1, 1, cols)
+    us = np.sin(0.5 * np.pi * t) * 0.6 + t * 0.4
+    t = np.linspace(0, 1, rows)
+    vs = (0.5 - 0.5 * np.cos(np.pi * t)) * 0.6 + t * 0.4
     top = np.zeros((rows, cols, 3))
     for j, v in enumerate(vs):
         for i, u in enumerate(us):
@@ -717,7 +723,7 @@ def main():
     # 1. the game mesh
     Vm, Qm = mid_mesh(hand_plain, flags.get('cache') or os.path.join(out_dir, 'hv3-mid%s.npz' % ('-viewer' if morph else '')))
     ob = make_mesh_obj('Hand', Vm, Qm)
-    decimate(ob, TARGET_VERTS, hand_plain)
+    decimate(ob, TARGET_VERTS if morph else GAME_TARGET_VERTS, hand_plain)
     V, F = mesh_arrays(ob.data)
     V = mesher.project(hand_plain.eval, V, 0.6, iters=3)
     V, n_relaxed = relax_seams(hand_plain, V, F)
