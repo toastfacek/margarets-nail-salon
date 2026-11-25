@@ -46,7 +46,7 @@ for _f in FINGERS:
     PARENT[_f + '.02'] = _f + '.01'
     PARENT[_f + '.03'] = _f + '.02'
 
-TARGET_VERTS = 10650          # after decimation; UV seams add the rest (cap 14,000)
+TARGET_VERTS = 9500            # after decimation; UV seams add the rest (cap 14,000)
 CAP_SKIN_VERTS = 14000
 CAP_GLB_BYTES = 1_300_000     # the game variant, before quantisation
 MAP_SIZE = 1024
@@ -62,7 +62,7 @@ PROX_LIFT = 0.14             # mm: the proximal fold's edge above the plate's to
 RIM_SLOPE = 0.90             # the side walls' ceiling rises this much per mm away from the edge
 RIM_BAND = 0.9              # mm outside a plate's side edge where the skin stays under its top
 VIEWER_FOREARM_MM = 450.0     # the viewer build's forearm (wrist centre to the cut)
-FREE_DEFAULT_MM = 2.5          # the viewer's default free edge (its slider's start)
+FREE_DEFAULT_MM = 4.0          # the viewer's default free edge (its slider's start): Jesse's pick
 GAME_TARGET_VERTS = 9700       # the game's skin (no UV seams): ~10.3k with the seam loops, as v1's 10.4k
 GAME_FREE_MM = 4.0             # the game's nails (one length, baked): Jesse's pick
 PLATE_COLS, PLATE_ROWS = 13, 22
