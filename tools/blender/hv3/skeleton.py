@@ -54,15 +54,15 @@ PHAL = {
 # A relaxed hand on a towel: the knuckles barely bent, the middle joints a
 # little, the cascade growing toward the little finger.
 REST = {
-    'index':  dict(yaw=-1.5, flex=(-2.0, 14.0, 6.0), roll=-3.0),
-    'middle': dict(yaw=0.5, flex=(-2.0, 15.0, 7.0), roll=0.0),
-    'ring':   dict(yaw=3.5, flex=(-1.0, 16.0, 7.0), roll=3.0),
-    'pinky':  dict(yaw=7.5, flex=(1.0, 17.0, 8.0), roll=7.0),
+    'index':  dict(yaw=-1.5, flex=(-2.0, 7.0, 3.0), roll=-3.0),
+    'middle': dict(yaw=0.5, flex=(-2.0, 7.5, 3.5), roll=0.0),
+    'ring':   dict(yaw=3.5, flex=(-1.0, 8.0, 3.5), roll=3.0),
+    'pinky':  dict(yaw=7.5, flex=(1.0, 9.0, 4.0), roll=7.0),
 }
 
 # ---- thumb ------------------------------------------------------------------------
 THUMB_CMC = (-20.0, 15.0, -8.0)      # trapeziometacarpal joint: radial, palmar, near the wrist
-THUMB_LEN = (42.0, 30.5, 20.0)       # first metacarpal, proximal phalanx, distal phalanx (to the tuft)
+THUMB_LEN = (42.0, 30.5, 22.5)       # first metacarpal, proximal phalanx, distal phalanx (to the tuft)
 # first metacarpal at rest: angle from the hand's long axis seen from above
 # (radial), its slope (down = negative) and pronation (its nail-side axis
 # turned from straight up toward the radial side). Then each joint's flexion
@@ -71,7 +71,7 @@ THUMB_LEN = (42.0, 30.5, 20.0)       # first metacarpal, proximal phalanx, dista
 THUMB_REST = dict(mc_yaw=34.0, mc_pitch=3.0, pronation=65.0,
                   flex=(16.0, 9.0), abd=(-6.0, 0.0))
 
-TIP_EXT = {'thumb': 4.5, 'index': 3.6, 'middle': 3.8, 'ring': 3.7, 'pinky': 3.3}
+TIP_EXT = {'thumb': 4.0, 'index': 3.6, 'middle': 3.8, 'ring': 3.7, 'pinky': 3.3}
 
 # ---- wrist and forearm ----------------------------------------------------------------
 FOREARM_LEN = 85.0                   # wrist centre back to the cut

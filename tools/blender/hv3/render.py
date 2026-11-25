@@ -19,10 +19,13 @@ VIEWS = {
     'thumb': ((-1.0, 0.0, 0.12), (0, 0, 1), 100, 700, (0, 10, 0)),
     'pinky': ((1.0, 0.0, 0.12), (0, 0, 1), 100, 700, (0, 10, 0)),
     'below': ((-0.10, 0.80, -0.33), (0, 0, 1), 100, 650, (0, -10, 0)),
+    # Jesse's screenshot: in front and to the thumb side, a little below the hand
+    'jesse': ((-0.55, 0.70, -0.40), (0, 0, 1), 100, 650, (0, -25, 0)),
     'hero':  ((-0.50, -0.30, 0.72), (0, 0, 1), 100, 700, (0, 0, 0)),
     'nail':  ((0, 0, 1), (0, 0, 1), 100, 140, (0, 0, 0)),
     'tnail': ((0, 0, 1), (0, 0, 1), 100, 110, (0, 0, 0)),
     'tip':   ((-0.25, 1.0, 0.45), (0, 0, 1), 85, 300, (-20, 60, -8)),
+    'tipc':  ((-0.15, 0.8, -0.35), (0, 0, 1), 100, 110, (0, 0, 0)),
     'web':   ((-0.75, 0.25, 0.6), (0, 0, 1), 90, 470, (-15, 0, -5)),
 }
 DEFAULT = ['top', 'palm', 'thumb', 'pinky', 'below', 'hero']
@@ -72,8 +75,8 @@ def setup(mesh_path, clay=False):
     else:
         b.inputs['Base Color'].default_value = (0.80, 0.60, 0.50, 1)
         b.inputs['Subsurface Weight'].default_value = 0.55
-        b.inputs['Subsurface Radius'].default_value = (1.0, 0.6, 0.45)
-        b.inputs['Subsurface Scale'].default_value = 0.0013
+        b.inputs['Subsurface Radius'].default_value = (0.85, 0.58, 0.45)
+        b.inputs['Subsurface Scale'].default_value = 0.0011
         b.inputs['Roughness'].default_value = 0.48
         b.inputs['Specular IOR Level'].default_value = 0.38
     ob.data.materials.append(mat)
