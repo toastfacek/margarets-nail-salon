@@ -18,7 +18,7 @@ VIEWS = {
     'palm':  ((0.0, -0.05, -1.0), (0, 1, 0), 100, 740, (0, 5, 0)),
     'thumb': ((-1.0, 0.0, 0.12), (0, 0, 1), 100, 700, (0, 10, 0)),
     'pinky': ((1.0, 0.0, 0.12), (0, 0, 1), 100, 700, (0, 10, 0)),
-    'below': ((-0.10, 0.80, -0.42), (0, 0, 1), 100, 650, (0, -10, 0)),
+    'below': ((-0.10, 0.80, -0.33), (0, 0, 1), 100, 650, (0, -10, 0)),
     'hero':  ((-0.50, -0.30, 0.72), (0, 0, 1), 100, 700, (0, 0, 0)),
     'nail':  ((0, 0, 1), (0, 0, 1), 100, 140, (0, 0, 0)),
     'tnail': ((0, 0, 1), (0, 0, 1), 100, 110, (0, 0, 0)),
@@ -70,9 +70,9 @@ def setup(mesh_path, clay=False):
         b.inputs['Subsurface Radius'].default_value = (1.0, 0.5, 0.3)
         b.inputs['Subsurface Scale'].default_value = 0.0012
     else:
-        b.inputs['Base Color'].default_value = (0.74, 0.52, 0.43, 1)
-        b.inputs['Subsurface Weight'].default_value = 1.0
-        b.inputs['Subsurface Radius'].default_value = (1.0, 0.42, 0.25)
+        b.inputs['Base Color'].default_value = (0.80, 0.60, 0.50, 1)
+        b.inputs['Subsurface Weight'].default_value = 0.55
+        b.inputs['Subsurface Radius'].default_value = (1.0, 0.6, 0.45)
         b.inputs['Subsurface Scale'].default_value = 0.0013
         b.inputs['Roughness'].default_value = 0.48
         b.inputs['Specular IOR Level'].default_value = 0.38
@@ -89,7 +89,19 @@ def setup(mesh_path, clay=False):
         m2 = bpy.data.materials.new('nail')
         m2.use_nodes = True
         b2 = m2.node_tree.nodes['Principled BSDF']
-        b2.inputs['Base Color'].default_value = (0.80, 0.50, 0.50, 1)
+        b2.inputs['Base Color'].default_value = (0.86, 0.52, 0.50, 1)
+        if 'NC' in d.files:
+            at = nm.attributes.new('free', 'FLOAT', 'POINT')
+            at.data.foreach_set('value', d['NC'].astype(np.float32))
+            nt2 = m2.node_tree
+            an = nt2.nodes.new('ShaderNodeAttribute')
+            an.attribute_name = 'free'
+            mx = nt2.nodes.new('ShaderNodeMix')
+            mx.data_type = 'RGBA'
+            mx.inputs[6].default_value = (0.86, 0.50, 0.49, 1)
+            mx.inputs[7].default_value = (0.95, 0.90, 0.84, 1)
+            nt2.links.new(an.outputs['Fac'], mx.inputs['Factor'])
+            nt2.links.new(mx.outputs[2], b2.inputs['Base Color'])
         b2.inputs['Roughness'].default_value = 0.18
         b2.inputs['Subsurface Weight'].default_value = 0.3
         b2.inputs['Subsurface Scale'].default_value = 0.001

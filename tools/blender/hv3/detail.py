@@ -9,7 +9,7 @@ from sdf import smoothstep
 # palm creases (hand frame X, Y), depth and half width in mm
 PALM = [
     # distal transverse crease: from the ulnar border to between index and middle
-    dict(pts=[(36, 61), (26, 65.5), (14, 70), (2, 74.5), (-8, 78), (-14, 80.5)], depth=0.55, width=0.75),
+    dict(pts=[(36, 61), (26, 65.5), (14, 70), (2, 74.5), (-8, 78), (-14, 80.5)], depth=0.9, width=1.15),
     # proximal transverse crease: from the radial border across, sloping down
     dict(pts=[(-34, 63), (-24, 59.5), (-12, 55.5), (0, 52), (12, 49), (20, 47.5)], depth=0.5, width=0.7),
     # thenar crease: round the thenar to the wrist
@@ -53,7 +53,7 @@ def palm_creases(P):
         d, t = _poly_dist(xy, c['pts'])
         # fade in and out along the crease
         ends = smoothstep(0.0, 0.12, t) * smoothstep(1.0, 0.85, t)
-        out += 0.5 * c['depth'] * groove(d, c['width'] * 1.15) * ends
+        out += 0.35 * c['depth'] * groove(d, c['width'] * 1.15) * ends
     return out * vol
 
 
@@ -63,7 +63,7 @@ FINGER = [
     (0.36, 'v', 0.55, 0.7), (0.43, 'v', 0.35, 0.55),
     (0.955, 'v', 0.5, 0.55), (1.02, 'v', 0.5, 0.55),
     (1.955, 'v', 0.45, 0.5),
-    (0.935, 'd', 0.14, 0.35), (0.975, 'd', 0.22, 0.38), (1.01, 'd', 0.2, 0.38), (1.05, 'd', 0.12, 0.32),
+    (0.94, 'd', 0.07, 0.35), (0.98, 'd', 0.1, 0.38), (1.02, 'd', 0.09, 0.38),
     (1.955, 'd', 0.08, 0.3), (1.99, 'd', 0.07, 0.3),
 ]
 THUMB = [

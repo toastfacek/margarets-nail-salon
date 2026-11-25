@@ -37,27 +37,27 @@ def rot(axis, deg):
 # behind it, ring 6, little finger 13; the transverse arch drops the ring and
 # little finger heads palmward, and the bases sit on the deeper carpal arch.
 MC = {
-    'index':  ((-12.5, 23.0, 3.0), (-26.0, 81.0, 3.0)),
-    'middle': ((-2.0, 24.0, 4.0), (-6.0, 83.0, 4.0)),
-    'ring':   ((7.5, 23.0, 1.5), (13.2, 77.0, 1.5)),
-    'pinky':  ((15.0, 21.0, -2.5), (29.6, 70.0, -2.5)),
+    'index':  ((-12.5, 23.0, 3.0), (-25.5, 81.0, 1.5)),
+    'middle': ((-2.0, 24.0, 4.0), (-6.0, 83.0, 2.5)),
+    'ring':   ((7.5, 23.0, 1.5), (12.8, 77.0, 0.0)),
+    'pinky':  ((15.0, 21.0, -2.5), (29.0, 70.0, -3.8)),
 }
 # phalanx lengths P1, P2, P3 (P3: DIP centre to the bone's tuft)
 PHAL = {
-    'index': (39.0, 22.5, 16.0),
-    'middle': (43.0, 26.5, 17.0),
-    'ring': (40.0, 25.5, 17.0),
-    'pinky': (31.0, 18.0, 15.0),
+    'index': (40.5, 23.5, 16.5),
+    'middle': (44.5, 27.5, 17.5),
+    'ring': (41.5, 26.5, 17.5),
+    'pinky': (32.5, 19.0, 15.5),
 }
 # rest pose of the long fingers, degrees: heading of P1 seen from above
 # (+ toward the pinky), and flexion at MCP, PIP, DIP (+ toward the palm).
 # A relaxed hand on a towel: the knuckles barely bent, the middle joints a
 # little, the cascade growing toward the little finger.
 REST = {
-    'index':  dict(yaw=-3.0, flex=(-2.0, 18.0, 8.0), roll=-3.0),
-    'middle': dict(yaw=0.5, flex=(-2.0, 20.0, 9.0), roll=0.0),
-    'ring':   dict(yaw=5.0, flex=(-1.0, 23.0, 10.0), roll=3.0),
-    'pinky':  dict(yaw=11.0, flex=(1.0, 27.0, 12.0), roll=7.0),
+    'index':  dict(yaw=-1.5, flex=(-2.0, 14.0, 6.0), roll=-3.0),
+    'middle': dict(yaw=0.5, flex=(-2.0, 15.0, 7.0), roll=0.0),
+    'ring':   dict(yaw=3.5, flex=(-1.0, 16.0, 7.0), roll=3.0),
+    'pinky':  dict(yaw=7.5, flex=(1.0, 17.0, 8.0), roll=7.0),
 }
 
 # ---- thumb ------------------------------------------------------------------------
@@ -68,7 +68,7 @@ THUMB_LEN = (42.0, 30.5, 20.0)       # first metacarpal, proximal phalanx, dista
 # turned from straight up toward the radial side). Then each joint's flexion
 # (toward its own palm side: ulnar and down) and abduction (about its dorsal
 # axis, + away from the index).
-THUMB_REST = dict(mc_yaw=30.0, mc_pitch=3.0, pronation=65.0,
+THUMB_REST = dict(mc_yaw=34.0, mc_pitch=3.0, pronation=65.0,
                   flex=(16.0, 9.0), abd=(-6.0, 0.0))
 
 TIP_EXT = {'thumb': 4.5, 'index': 3.6, 'middle': 3.8, 'ring': 3.7, 'pinky': 3.3}
@@ -79,7 +79,7 @@ FOREARM_DROP = 27.0                   # wrist extension at rest (deg): forearm s
 
 
 DESK_Z = -16.5                       # the towel under the palm pads and fingertips
-TIP_AXIS_ABOVE_DESK = {'index': 6.2, 'middle': 6.4, 'ring': 6.2, 'pinky': 5.4}
+TIP_AXIS_ABOVE_DESK = {'index': 6.6, 'middle': 6.8, 'ring': 6.6, 'pinky': 6.0}
 
 
 def finger_chain(f, mcp_flex=None):

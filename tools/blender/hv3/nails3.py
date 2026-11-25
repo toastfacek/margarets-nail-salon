@@ -18,16 +18,17 @@ from sdf import smax, smoothstep, unit
 # per finger: cuticle and hyponychium (mm from the joint centre along the bone),
 # visible plate width / finger width, C-curve arc across the visible plate (deg)
 NAIL = {
-    'thumb':  dict(yc=6.0, yh=19.0, wfrac=0.74, arc=95.0),
-    'index':  dict(yc=5.4, yh=15.9, wfrac=0.78, arc=92.0),
-    'middle': dict(yc=5.7, yh=16.9, wfrac=0.78, arc=92.0),
-    'ring':   dict(yc=5.6, yh=16.7, wfrac=0.77, arc=90.0),
-    'pinky':  dict(yc=5.0, yh=14.3, wfrac=0.76, arc=86.0),
+    'thumb':  dict(yc=6.5, yh=19.2, wfrac=0.76, arc=92.0),
+    'index':  dict(yc=6.0, yh=16.2, wfrac=0.80, arc=92.0),
+    'middle': dict(yc=6.2, yh=17.2, wfrac=0.80, arc=92.0),
+    'ring':   dict(yc=6.1, yh=17.0, wfrac=0.79, arc=90.0),
+    'pinky':  dict(yc=5.5, yh=14.6, wfrac=0.78, arc=86.0),
 }
 T = 0.5            # plate thickness
 SINK = 0.22        # plate top below the skin's original surface on the centre line
 TAPER = 0.05       # the sides converge this much (fraction of the half width) toward the tip
-CUT_ARC = 0.52     # cuticle sagitta, x half width
+CUT_ARC = 0.50     # cuticle sagitta, x half width
+CUT_N = 2.6        # the cuticle's superellipse exponent
 TUCK_PROX = 1.2    # the plate runs this far under the proximal fold (hidden)
 TUCK_SIDE = 0.45   # ... and under the side folds
 FREE = 2.6         # free edge past the hyponychium (mm), the render default
@@ -105,8 +106,11 @@ class NailUnit:
         return self.z_centre(y) - (R - np.sqrt(R * R - xx * xx))
 
     def cuticle_y(self, x):
+        """The proximal outline: a superellipse cap (n = CUT_N), its corners
+        well rounded."""
         hw = self.hw0
-        return self.yc + CUT_ARC * hw * (np.clip(np.abs(x) / hw, 0, 1.2)) ** 2
+        u = np.clip(np.abs(x) / hw, 0, 1.0)
+        return self.yc + CUT_ARC * hw * (1 - (1 - u ** CUT_N) ** (1 / CUT_N)) + 0.6 * np.clip(np.abs(x) / hw - 1, 0, None) * hw
 
     def free_y(self, x, free):
         """The free edge outline: y at which the plate ends, per x."""

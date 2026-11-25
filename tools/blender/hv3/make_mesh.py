@@ -32,13 +32,15 @@ def main():
     lo, hi = bbox(hand)
     fn = getattr(hand, 'eval_detail', hand.eval)
     V, Q = mesher.surface_nets(fn, lo, hi, h0=h0, r=r)
-    NV, NF = [], []
+    NV, NF, NC = [], [], []
     off = 0
     if hand.nails:
         for f, nu in hand.nails.items():
-            v, fq, _ = nu.plate()
+            v, fq, loc = nu.plate(cols=25, rows=34)
             NV.append(v)
             NF.append(fq + off)
+            # the free edge (past the hyponychium) reads lighter
+            NC.append(np.clip((loc[:, 1] - nu.yh - 0.2) / 0.6, 0, 1))
             off += len(v)
     foc = {}
     if hand.nails:
@@ -49,7 +51,7 @@ def main():
         foc['T_tnail'] = nt.o + nt.F * 0.5 * (nt.yc + nt.yh) + nt.W * 5
         foc['D_tnail'] = unit_(nt.W * 1.0 + nt.F * 0.5)
     np.savez_compressed(out, V=V.astype(np.float32), Q=Q.astype(np.int32), **foc,
-                        **({'NV': np.vstack(NV).astype(np.float32), 'NF': np.vstack(NF).astype(np.int32)} if NV else {}))
+                        **({'NV': np.vstack(NV).astype(np.float32), 'NF': np.vstack(NF).astype(np.int32), 'NC': np.concatenate(NC).astype(np.float32)} if NV else {}))
 
 
 if __name__ == '__main__':

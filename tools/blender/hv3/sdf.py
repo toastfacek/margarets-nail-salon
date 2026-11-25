@@ -282,6 +282,14 @@ class Tube:
         # axial excess past a capped end
         e = np.where(s < 0, -s, np.where(s > S, s - S, 0.0))
         out = np.where(e > 0, np.where(d2 > 0, np.sqrt(d2 * d2 + e * e), e), d2)
+        r = getattr(self, 'end_round', 0.0)
+        if r > 0:
+            # the far end's rim rounded (a clean cast-like cut): distance to a
+            # rounded corner of radius r between the side and the end plane
+            ee = np.where(s > S, s - S, s - S)
+            v0, v1 = d2 + r, ee + r
+            rr = np.sqrt(np.maximum(v0, 0) ** 2 + np.maximum(v1, 0) ** 2) + np.minimum(np.maximum(v0, v1), 0) - r
+            out = np.where(s > S - 2 * r, rr, out)
         if local:
             return out, dict(s=s, x=x, z=z, a=a, b=b)
         return out
