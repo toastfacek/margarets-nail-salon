@@ -46,7 +46,7 @@ for _f in FINGERS:
     PARENT[_f + '.02'] = _f + '.01'
     PARENT[_f + '.03'] = _f + '.02'
 
-TARGET_VERTS = 11000          # after decimation; UV seams add the rest (cap 14,000)
+TARGET_VERTS = 10850          # after decimation; UV seams add the rest (cap 14,000)
 CAP_SKIN_VERTS = 14000
 CAP_GLB_BYTES = 1_300_000     # the game variant, before quantisation
 MAP_SIZE = 1024
@@ -54,6 +54,9 @@ MAP_SCALE = 2.5               # the shader's uDetailScale (stored slope x this)
 DETAIL_GAIN = 0.6             # the creases' normal tilt, scaled (faint creases)
 MAP_CAVITY_MM = 0.60          # a groove this deep is full cavity (B)
 FREE_STOPS_MM = (0.5, 1.5, 2.5, 4.0, 6.0, 9.0)
+SEAM_OUT = 0.04              # mm outside the outline: where the fold's edge runs
+SEAM_SNAP = 0.22             # vertices this close to that line go onto it
+SEAM_LIFT = 0.07             # ... this far above the plate's top (it tucks over the rim)
 PROX_LIFT = 0.14             # mm: the proximal fold's edge above the plate's top
 RIM_SLOPE = 0.90             # the side walls' ceiling rises this much per mm away from the edge
 RIM_BAND = 0.9              # mm outside a plate's side edge where the skin stays under its top
@@ -157,6 +160,24 @@ def clamp_under_plates(hand, V, margin=0.15):
         sel = (inside | lateral) & (z > floor) & (z < floor + 4.0)
         V[sel] -= nu.W * (z[sel] - floor[sel])[:, None]
         total += int(sel.sum())
+        # the ring of skin vertices at the plate's edge goes onto the outline
+        # itself, a hair above the plate's top: the fold's edge is then a
+        # smooth continuous line that tucks over the rim (it never shows)
+        q = V - nu.o
+        x, y, z = q @ nu.U, q @ nu.F, q @ nu.W
+        side = np.abs(x) - nu.hw(y)
+        prox = nu.cuticle_y(x) - y
+        o = np.maximum(side, prox)
+        ring = (np.abs(o - SEAM_OUT) < SEAM_SNAP) & (y < nu.yh + 0.5) & (y > nu.yc - 2.5) & \
+               (z > nu.z_top(x, y) - 1.5) & (z < nu.z_top(x, y) + 1.5)
+        if ring.any():
+            d = SEAM_OUT - o[ring]
+            sd = side[ring] >= prox[ring]
+            xr = x[ring] + np.where(sd, np.sign(x[ring]) * d, 0.0)
+            yr = y[ring] + np.where(sd, 0.0, -d)
+            zr = nu.z_top(xr, yr) + SEAM_LIFT
+            V[ring] = nu.o + xr[:, None] * nu.U + yr[:, None] * nu.F + zr[:, None] * nu.W
+            total += int(ring.sum())
     return V, total
 
 
@@ -384,7 +405,14 @@ def plate_geometry(nu, free, cols=PLATE_COLS, rows=PLATE_ROWS):
             x = u * hw_t(y)
             top[j, i] = (x, y, nu.z_top(x, y))
     bot = top.copy()
-    bot[..., 2] -= nails3.T
+    # a real plate is thin at its root and along its sides: there the rim is
+    # only a sliver (no dark side wall reads as an outline); the free edge
+    # keeps its thickness
+    uu = np.abs(us)[None, :]
+    vv = vs[:, None]
+    thick = nails3.T * (0.3 + 0.7 * (1 - uu ** 6) * nails3.smoothstep(0.0, 0.15, vv))
+    thick = np.maximum(thick, nails3.T * nails3.smoothstep(0.0, 1.0, (top[..., 1] - nu.yh) / 1.5) * 0.85)
+    bot[..., 2] -= thick
     # thin the free edge's underside a little toward the tip (a real plate thins)
     past = np.clip((bot[..., 1] - nu.yh) / max(free, 0.5), 0, 1)
     bot[..., 2] += 0.15 * past
