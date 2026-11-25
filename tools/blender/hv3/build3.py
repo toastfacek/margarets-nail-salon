@@ -46,7 +46,7 @@ for _f in FINGERS:
     PARENT[_f + '.02'] = _f + '.01'
     PARENT[_f + '.03'] = _f + '.02'
 
-TARGET_VERTS = 10850          # after decimation; UV seams add the rest (cap 14,000)
+TARGET_VERTS = 10650          # after decimation; UV seams add the rest (cap 14,000)
 CAP_SKIN_VERTS = 14000
 CAP_GLB_BYTES = 1_300_000     # the game variant, before quantisation
 MAP_SIZE = 1024
@@ -64,6 +64,10 @@ RIM_BAND = 0.9              # mm outside a plate's side edge where the skin stay
 VIEWER_FOREARM_MM = 450.0     # the viewer build's forearm (wrist centre to the cut)
 FREE_DEFAULT_MM = 2.5
 PLATE_COLS, PLATE_ROWS = 13, 22
+# fix 4: the thumb's plate is big and strongly curved, and seen face-on its
+# side edges are near grazing: between coarse grid rows the plate's straight
+# edge chords fall away from the fold's smooth edge loop and read as teeth
+PLATE_GRID = {'thumb': (25, 48)}
 
 
 def parse_args(argv):
@@ -127,7 +131,111 @@ def relax_seams(hand, V, F, iters=4, lam=0.45):
     return V, int(band.sum())
 
 
-def clamp_under_plates(hand, V, margin=0.15):
+SEAM_LOOP_FINGERS = ('thumb',)   # fix 4: plates whose fold edge is cut in as its own edge loops
+LOOP_MERGE = 0.06                # mm: vertices this near the edge loop move onto it (no slivers)
+LOOP_IN = -0.05                  # mm (inside the outline): a second loop, down inside the plate's edge
+LOOP_IN_DEPTH = 0.12             # ... this far under the plate's top
+LOOP_IN_MERGE = 0.03
+
+
+def _contour_coords(nu, Vs, off):
+    """Nail-frame coordinates of points, their outline distance, and where
+    they land when moved onto the contour o = off."""
+    q = Vs - nu.o
+    x, y, z = q @ nu.U, q @ nu.F, q @ nu.W
+    side = np.abs(x) - nu.hw(y)
+    prox = nu.cuticle_y(x) - y
+    o = np.maximum(side, prox)
+    d = off - o
+    sd = side >= prox
+    xr = x + np.where(sd, np.sign(x) * d, 0.0)
+    yr = y + np.where(sd, 0.0, -d)
+    return x, y, z, o, xr, yr
+
+
+def cut_contour(nu, V, F, off, merge, keep=()):
+    """Split every skin edge that crosses the contour o = off (in the seam
+    band) where it crosses, after moving the vertices within `merge` of it
+    onto it (none of `keep`): one unbroken chain of vertices then lies
+    exactly on the contour. Returns V, F and the chain's vertex indices."""
+    x, y, z, o, xr, yr = _contour_coords(nu, V, off)
+    s = o - off
+    valid = (y < nu.yh + 0.3) & (y > nu.yc - 2.5) & (np.abs(z - nu.z_top(x, y)) < 1.5)
+    near = valid & (np.abs(s) < merge)
+    near[np.asarray(keep, dtype=np.int64)] = False
+    if near.any():
+        V = V.copy()
+        V[near] = nu.o + xr[near, None] * nu.U + yr[near, None] * nu.F + z[near, None] * nu.W
+        s[near] = 0.0
+    sg = np.where(valid, np.sign(s), 0.0)
+    mids, newP = {}, []
+
+    def mid(a, b):
+        k = (a, b) if a < b else (b, a)
+        if k not in mids:
+            u = s[a] / (s[a] - s[b])
+            newP.append(V[a] + u * (V[b] - V[a]))
+            mids[k] = len(V) + len(newP) - 1
+        return mids[k]
+
+    kept = np.zeros(len(V), dtype=bool)
+    kept[np.asarray(keep, dtype=np.int64)] = True
+
+    def cut(a, b):
+        return sg[a] * sg[b] < 0 and not (kept[a] and kept[b])
+    out = []
+    for t in F:
+        vs = [int(t[0]), int(t[1]), int(t[2])]
+        e = [cut(vs[0], vs[1]), cut(vs[1], vs[2]), cut(vs[2], vs[0])]
+        k = sum(e)
+        if k not in (1, 2):
+            out.append(tuple(vs))
+            continue
+        # rotate so the pattern starts at a fixed place (orientation kept)
+        for _ in range(3):
+            if (k == 1 and e[0]) or (k == 2 and e[0] and e[2]):
+                break
+            vs = vs[1:] + vs[:1]
+            e = e[1:] + e[:1]
+        v0, v1, v2 = vs
+        if k == 1:
+            m = mid(v0, v1)
+            out += [(v0, m, v2), (m, v1, v2)]
+        else:
+            m01, m20 = mid(v0, v1), mid(v2, v0)
+            out += [(v0, m01, m20), (m01, v1, v2), (m01, v2, m20)]
+    n0 = len(V)
+    if newP:
+        P = np.array(newP)
+        # the crossings, linear along each edge, onto the contour itself
+        _, _, zp, _, xp, yp = _contour_coords(nu, P, off)
+        P = nu.o + xp[:, None] * nu.U + yp[:, None] * nu.F + zp[:, None] * nu.W
+        V = np.concatenate([V, P])
+    chain = np.concatenate([np.nonzero(near)[0], np.arange(n0, len(V))]).astype(np.int64)
+    return V, np.array(out, dtype=np.int64), chain
+
+
+def cut_seam_loops(hand, V, F, fingers=SEAM_LOOP_FINGERS):
+    """Cut each listed plate's fold edge into the skin as its own clean edge
+    loops. The decimated skin's vertices fall wherever they fall round the
+    outline, and on the thumb (big, strongly curved, its sides seen near
+    grazing) the fold's crest and the line where the skin dives under the
+    plate then run through whichever vertices happen to be there: a ragged,
+    toothed edge. So two contours are cut in: the fold's edge just outside
+    the outline (o = SEAM_OUT, set a hair over the plate's top), and a second
+    just inside it (o = LOOP_IN, set down inside the plate's edge). The skin
+    between them is a clean ribbon, and where it passes under the plate's
+    edge is a smooth line. Returns V, F and per plate the two chains."""
+    loops = {}
+    for f in fingers:
+        nu = hand.nails[f]
+        V, F, top = cut_contour(nu, V, F, SEAM_OUT, LOOP_MERGE)
+        V, F, under = cut_contour(nu, V, F, LOOP_IN, LOOP_IN_MERGE, keep=top)
+        loops[f] = {'top': top, 'under': under}
+    return V, F, loops
+
+
+def clamp_under_plates(hand, V, margin=0.15, loops=None):
     """The decimated skin can cut through the nail plate where its triangles
     span the groove, and where it does the seam turns ragged. So the skin is
     kept off the plate's top: inside the outline every vertex sits under the
@@ -171,6 +279,19 @@ def clamp_under_plates(hand, V, margin=0.15):
         o = np.maximum(side, prox)
         ring = (np.abs(o - SEAM_OUT) < SEAM_SNAP) & (y < nu.yh + 0.5) & (y > nu.yc - 2.5) & \
                (z > nu.z_top(x, y) - 1.5) & (z < nu.z_top(x, y) + 1.5)
+        if loops and f in loops:
+            # a plate with its own cut-in loops: exactly that loop is the edge
+            ring = np.zeros(len(V), dtype=bool)
+            ring[loops[f]['top']] = True
+            ui = loops[f]['under']
+            if len(ui):
+                xi, yi, oi = x[ui], y[ui], o[ui]
+                d = LOOP_IN - oi
+                sd = (np.abs(xi) - nu.hw(yi)) >= (nu.cuticle_y(xi) - yi)
+                xu = xi + np.where(sd, np.sign(xi) * d, 0.0)
+                yu = yi + np.where(sd, 0.0, -d)
+                zu = nu.z_top(xu, yu) - LOOP_IN_DEPTH
+                V[ui] = nu.o + xu[:, None] * nu.U + yu[:, None] * nu.F + zu[:, None] * nu.W
         if ring.any():
             d = SEAM_OUT - o[ring]
             sd = side[ring] >= prox[ring]
@@ -474,7 +595,8 @@ def build_nail(f, nu, T, rig, morph):
     fr = nail_frame(nu, FREE_DEFAULT_MM)
     o, X, Y, Z, cy, cz, half = fr
     stops = FREE_STOPS_MM if morph else (FREE_DEFAULT_MM,)
-    built = [plate_geometry(nu, L) for L in stops]
+    cols, rows = PLATE_GRID.get(f, (PLATE_COLS, PLATE_ROWS))
+    built = [plate_geometry(nu, L, cols, rows) for L in stops]
     F, smooth = built[0][1], built[0][2]
     loc = [to_frame(nu, b[0], fr) * s for b in built]
     base = loc[0]
@@ -593,10 +715,21 @@ def main():
     V = mesher.project(hand_plain.eval, V, 0.6, iters=3)
     V, n_relaxed = relax_seams(hand_plain, V, F)
     report['counts']['seam_verts_relaxed'] = n_relaxed
-    V, n_clamped = clamp_under_plates(hand_plain, V)
+    V, F, loops = cut_seam_loops(hand_plain, V, F)
+    report['counts']['seam_loop_verts'] = {k: {n: int(len(i)) for n, i in v.items()} for k, v in loops.items()}
+    V, n_clamped = clamp_under_plates(hand_plain, V, loops=loops)
     report['counts']['skin_verts_pushed_under_plates'] = n_clamped
-    ob.data.vertices.foreach_set('co', V.ravel())
-    ob.data.update()
+    if loops:
+        old_me = ob.data
+        me = bpy.data.meshes.new('Hand')
+        me.from_pydata(V.tolist(), [], F.tolist())
+        me.update()
+        ob.data = me
+        bpy.data.meshes.remove(old_me)
+        me.name = 'Hand'
+    else:
+        ob.data.vertices.foreach_set('co', V.ravel())
+        ob.data.update()
     ob.data.shade_smooth()
     report['counts']['decimated_verts'] = len(V)
     report['counts']['tris'] = len(F)
