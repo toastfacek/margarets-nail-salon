@@ -62,7 +62,7 @@ REST = {
 
 # ---- thumb ------------------------------------------------------------------------
 THUMB_CMC = (-20.0, 15.0, -8.0)      # trapeziometacarpal joint: radial, palmar, near the wrist
-THUMB_LEN = (42.0, 30.5, 22.5)       # first metacarpal, proximal phalanx, distal phalanx (to the tuft)
+THUMB_LEN = (42.0, 30.5, 21.0)       # first metacarpal, proximal phalanx, distal phalanx (to the tuft)
 # first metacarpal at rest: angle from the hand's long axis seen from above
 # (radial), its slope (down = negative) and pronation (its nail-side axis
 # turned from straight up toward the radial side). Then each joint's flexion

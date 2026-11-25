@@ -18,27 +18,32 @@ from sdf import smax, smoothstep, unit
 # per finger: cuticle and hyponychium (mm from the joint centre along the bone),
 # visible plate width / finger width, C-curve arc across the visible plate (deg)
 NAIL = {
-    'thumb':  dict(yc=7.2, yh=21.0, wfrac=0.76, arc=92.0),
+    'thumb':  dict(yc=6.8, yh=19.9, wfrac=0.80, arc=92.0),
     'index':  dict(yc=6.0, yh=16.2, wfrac=0.80, arc=92.0),
     'middle': dict(yc=6.2, yh=17.2, wfrac=0.80, arc=92.0),
     'ring':   dict(yc=6.1, yh=17.0, wfrac=0.79, arc=90.0),
     'pinky':  dict(yc=5.5, yh=14.6, wfrac=0.78, arc=86.0),
 }
 T = 0.5            # plate thickness
-SINK = 0.22        # plate top below the skin's original surface on the centre line
+SINK = 0.22        # (v1 of the plate: a fixed C-curve below the skin; unused since fix 2)
+SINK_CUT = 0.20    # the plate's top under the skin's own surface at the cuticle (mm) ...
+SINK_MID = 0.05    # ... at the middle of the bed ...
+SINK_TIP = -0.03   # ... and at the hyponychium (a touch proud): the nail sits nearly flush
+C_EXTRA = 0.12     # a little more C-curve than the finger's own (mm drop at the plate's edge)
+ACROSS_FREEZE = 2.5  # the across-profile is the skin's up to this far before the hyponychium
 TAPER = 0.05       # the sides converge this much (fraction of the half width) toward the tip
 CUT_ARC = 0.50     # cuticle sagitta, x half width
 CUT_N = 2.6        # the cuticle's superellipse exponent
-TUCK_PROX = 1.2    # the plate runs this far under the proximal fold (hidden)
-TUCK_SIDE = 0.45   # ... and under the side folds
+TUCK_PROX = 0.0    # the plate runs this far under the proximal fold (hidden)
+TUCK_SIDE = 0.0   # ... and under the side folds
 FREE = 2.6         # free edge past the hyponychium (mm), the render default
 FREE_SLOPE = 0.15  # past the hyponychium the plate keeps this much of the bed's downward slope
 TIP_ROUND = 0.95   # free edge outline: 0 square .. 1 full half-ellipse
 GROOVE_K = 0.42    # blend radius of the groove walls
 ARCH = 0.010       # longitudinal convexity of the plate: mm drop per mm^2 from the bed's middle
-LIP_PROX = 0.28    # the proximal fold's lip above the original skin (mm)
-LIP_SIDE = 0.38    # the lateral folds' rise
-LIP_W = 1.10       # their width (mm, outside the outline)
+LIP_PROX = 0.12    # the proximal fold's lip above the original skin (mm)
+LIP_SIDE = 0.06    # the lateral folds' rise
+LIP_W = 0.90       # their width (mm, outside the outline)
 FREE_INSET = 0.45  # mm: the free edge's sides step in by the folds' overlap
 FREE_NARROW = 0.20 # past the hyponychium the plate narrows by this fraction over 3 mm
 SKIN_CAP = 0.90    # plate half width <= this x the finger's half width (toward the tip)
@@ -69,6 +74,12 @@ class NailUnit:
         # the bed's downward slope at the hyponychium, for the free edge
         i = np.searchsorted(ys, self.yh)
         self.slope_h = (self.zc[i] - self.zc[i - 3]) / (ys[i] - ys[i - 3])
+        # the skin's own dorsal surface over the whole plate (x across, y along):
+        # the plate follows it, nearly flush, instead of a fixed arc sunk in a pit
+        self.gx = np.linspace(-1.35, 1.35, 19) * self.hw0
+        self.gy = np.linspace(self.yc - 4.0, self.yh, 26)
+        X, Y = np.meshgrid(self.gx, self.gy)
+        self.gz = self._surf_grid(X.ravel(), Y.ravel()).reshape(X.shape)
         # the finger's half width toward the tip: the plate never runs wider
         # than the skin under it (else its free-edge corners poke out as ears)
         self.ys_w = np.linspace(ymid, self.yh + 6.0, 16)
@@ -85,6 +96,31 @@ class NailUnit:
             d = self.tube(self._pt(x, y, m)[None])[0]
             lo, hi = (m, hi) if d < 0 else (lo, m)
         return 0.5 * (lo + hi)
+
+    def _surf_grid(self, x, y):
+        lo = np.full(len(x), -6.0)
+        hi = np.full(len(x), 14.0)
+        for _ in range(36):
+            m = 0.5 * (lo + hi)
+            d = self.tube(self._pt(x[:, None], y[:, None], m[:, None]).reshape(-1, 3) if False else
+                          self.o + self.F * y[:, None] + self.U * x[:, None] + self.W * m[:, None])
+            inside = d < 0
+            lo = np.where(inside, m, lo)
+            hi = np.where(inside, hi, m)
+        return 0.5 * (lo + hi)
+
+    def skin_z(self, x, y):
+        """The skin's dorsal height (bilinear in the grid; clamped to it)."""
+        x = np.clip(np.asarray(x, dtype=np.float64), self.gx[0], self.gx[-1])
+        y = np.clip(np.asarray(y, dtype=np.float64), self.gy[0], self.gy[-1])
+        fx = (x - self.gx[0]) / (self.gx[1] - self.gx[0])
+        fy = (y - self.gy[0]) / (self.gy[1] - self.gy[0])
+        i = np.clip(np.floor(fx).astype(int), 0, len(self.gx) - 2)
+        j = np.clip(np.floor(fy).astype(int), 0, len(self.gy) - 2)
+        tx, ty = fx - i, fy - j
+        G = self.gz
+        return (G[j, i] * (1 - tx) * (1 - ty) + G[j, i + 1] * tx * (1 - ty)
+                + G[j + 1, i] * (1 - tx) * ty + G[j + 1, i + 1] * tx * ty)
 
     def _side(self, y):
         lo, hi = 0.0, 16.0
@@ -116,10 +152,25 @@ class NailUnit:
         past = np.maximum(y - self.yh, 0)
         return zb + FREE_SLOPE * self.slope_h * past
 
+    def sink(self, y):
+        t = np.clip((np.asarray(y, dtype=np.float64) - self.yc) / (self.yh - self.yc), 0, 1)
+        return np.where(t < 0.5, SINK_CUT + (SINK_MID - SINK_CUT) * smoothstep(0.0, 0.5, t),
+                        SINK_MID + (SINK_TIP - SINK_MID) * smoothstep(0.5, 1.0, t))
+
     def z_top(self, x, y):
-        R = self.R
-        xx = np.minimum(np.abs(x), R * 0.999)
-        return self.z_centre(y) - (R - np.sqrt(R * R - xx * xx))
+        """The plate's top: the skin's own surface (its across-curve frozen
+        just before the hyponychium), a little under it at the cuticle, flush
+        toward the tip; past the hyponychium the free edge runs on with a
+        share of the bed's slope."""
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        yy = np.minimum(y, self.yh)
+        yf = np.minimum(yy, self.yh - ACROSS_FREEZE)
+        across = self.skin_z(x, yf) - self.skin_z(np.zeros_like(x), yf)
+        zc = self.skin_z(np.zeros_like(x), yy)
+        u = np.clip(np.abs(x) / self.hw0, 0, 1.4)
+        past = np.maximum(y - self.yh, 0)
+        return zc + across - self.sink(yy) - C_EXTRA * u * u + FREE_SLOPE * self.slope_h * past
 
     def cuticle_y(self, x):
         """The proximal outline: a superellipse cap (n = CUT_N), its corners
@@ -154,10 +205,6 @@ class NailUnit:
         o = smax(side, prox, 1.1)
         zb = self.z_top(x, y) - T
         # the groove fades out over the last 2 mm of the bed (no notch at the tip)
-        # the side walls fade out over the last 2 mm of the bed (no notch at
-        # the tip's silhouette); the middle stays open over the plate
-        sidew = smoothstep(0.75, 1.0, np.abs(x) / np.maximum(hw, 1e-6))
-        zb = zb + 3.0 * smoothstep(self.yh - 2.0, self.yh + 0.3, y) * sidew
         g = np.maximum(o, zb - z)
         far = np.linalg.norm(P - self.o, axis=1) > 40
         g = np.where(far, 50.0, g)

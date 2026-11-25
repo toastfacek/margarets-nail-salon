@@ -54,6 +54,10 @@ MAP_SCALE = 2.5               # the shader's uDetailScale (stored slope x this)
 DETAIL_GAIN = 0.6             # the creases' normal tilt, scaled (faint creases)
 MAP_CAVITY_MM = 0.60          # a groove this deep is full cavity (B)
 FREE_STOPS_MM = (0.5, 1.5, 2.5, 4.0, 6.0, 9.0)
+PROX_LIFT = 0.14             # mm: the proximal fold's edge above the plate's top
+RIM_SLOPE = 0.90             # the side walls' ceiling rises this much per mm away from the edge
+RIM_BAND = 0.9              # mm outside a plate's side edge where the skin stays under its top
+VIEWER_FOREARM_MM = 450.0     # the viewer build's forearm (wrist centre to the cut)
 FREE_DEFAULT_MM = 2.5
 PLATE_COLS, PLATE_ROWS = 13, 22
 
@@ -80,23 +84,77 @@ def mid_mesh(hand, cache):
     return V, Q
 
 
+def outline_dist(nu, V):
+    """Signed distance (mm, + outside) to a plate's visible outline in its
+    own frame, and the frame coordinates."""
+    q = V - nu.o
+    x, y, z = q @ nu.U, q @ nu.F, q @ nu.W
+    o = np.maximum(np.abs(x) - nu.hw(y), nu.cuticle_y(x) - y)
+    return o, x, y, z
+
+
+def relax_seams(hand, V, F, iters=4, lam=0.45):
+    """Even out the vertices along each plate's fold edge: tangential
+    Laplacian steps, each snapped back onto the surface, so the seam follows
+    the outline as a clean line instead of a decimation zigzag."""
+    E = rig3.adjacency(F, len(V))
+    band = np.zeros(len(V), dtype=bool)
+    for f in FINGERS:
+        nu = hand.nails[f]
+        o, x, y, z = outline_dist(nu, V)
+        band |= (np.abs(o) < 1.6) & (z > nu.z_top(x, y) - 2.5) & (y < nu.yh + 1.5)
+    if not band.any():
+        return V, 0
+    cnt = np.zeros(len(V))
+    np.add.at(cnt, E[:, 0], 1)
+    np.add.at(cnt, E[:, 1], 1)
+    for _ in range(iters):
+        acc = np.zeros_like(V)
+        np.add.at(acc, E[:, 0], V[E[:, 1]])
+        np.add.at(acc, E[:, 1], V[E[:, 0]])
+        lap = acc / np.maximum(cnt, 1)[:, None] - V
+        g = mesher.gradient(hand.eval, V[band], 0.05)
+        n = g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
+        lb = lap[band]
+        lb = lb - n * np.sum(lb * n, 1)[:, None]
+        Vb = V[band] + lam * lb
+        V = V.copy()
+        V[band] = mesher.project(hand.eval, Vb, 0.3, iters=2)
+    return V, int(band.sum())
+
+
 def clamp_under_plates(hand, V, margin=0.15):
     """The decimated skin can cut through the nail plate where its triangles
-    span the groove: every skin vertex inside a plate's visible outline is
-    pushed down to just under the plate's underside (no skin poking through
-    the plate, no z-fighting)."""
+    span the groove, and where it does the seam turns ragged. So the skin is
+    kept off the plate's top: inside the outline every vertex sits under the
+    plate's underside; along the sides, for RIM_BAND mm outside the outline,
+    just under the plate's top, so the skin meets the plate's rim (hidden)
+    and the seam seen is the plate's own clean edge. The proximal fold stays
+    the carve's (it covers the plate's root)."""
     V = V.copy()
     total = 0
     for f in FINGERS:
         nu = hand.nails[f]
         q = V - nu.o
         x, y, z = q @ nu.U, q @ nu.F, q @ nu.W
-        o = np.maximum(np.abs(x) - nu.hw(y), nu.cuticle_y(x) - y)
-        floor = nu.z_top(x, y) - nails3.T - margin
+        side = np.abs(x) - nu.hw(y)
+        prox = nu.cuticle_y(x) - y
+        o = np.maximum(side, prox)
+        zt = nu.z_top(x, y)
+        deep = zt - nails3.T - margin
         # past the hyponychium the pulp's sides, just outside the outline,
         # also stay under the plate's edge (no skin sliver over a long free edge)
-        reach = 0.05 + 1.2 * nails3.smoothstep(nu.yh - 1.0, nu.yh + 0.5, y)
-        sel = (o < reach) & (y < nu.yh + FREE_STOPS_MM[-1]) & (z > floor) & (z < floor + 4.0)
+        reach = 0.03 + 1.17 * nails3.smoothstep(nu.yh - 1.0, nu.yh + 0.5, y)
+        inside = (o < reach) & (y < nu.yh + FREE_STOPS_MM[-1])
+        lateral = (~inside) & (o < RIM_BAND) & (y < nu.yh + 1.0) & (y > nu.yc - 2.5)
+        # all round the plate (the proximal fold and the side walls) the
+        # skin's ceiling ramps up from just under the plate's top at its edge:
+        # a soft low wall, no step, no ledge, and the seam is the plate's edge
+        # (at the cuticle the fold starts a little above the plate's top, so
+        # it hides the plate's proximal rim instead of showing it as a dark line)
+        lift = np.where(prox > side, PROX_LIFT, -0.03)
+        floor = np.where(inside, deep, zt + lift + RIM_SLOPE * np.maximum(o, 0.0))
+        sel = (inside | lateral) & (z > floor) & (z < floor + 4.0)
         V[sel] -= nu.W * (z[sel] - floor[sel])[:, None]
         total += int(sel.sum())
     return V, total
@@ -151,12 +209,17 @@ def decimate(ob, target, hand=None):
         w0 = hand.info['forearm']['wrist_s']
         _, loc = hand.forearm(V, local=True)
         near = np.zeros(len(V))
+        seam = np.zeros(len(V))
         for f in FINGERS:
             nu = hand.nails[f]
             dd = np.linalg.norm(V - (nu.o + nu.F * 0.5 * (nu.yc + nu.yh)), axis=1)
             near = np.maximum(near, np.clip((16.0 - dd) / 8.0, 0, 1))
+            o, x, y, z = outline_dist(nu, V)
+            band = (np.abs(o) < 1.8) & (z > nu.z_top(x, y) - 2.5) & (y < nu.yh + 2.0)
+            seam = np.maximum(seam, band.astype(float))
         arm = np.clip((loc['s'] - (w0 + 15.0)) / 30.0, 0, 1)
-        dw = np.clip(0.5 - 0.45 * near + 0.45 * arm, 0, 1)
+        # the seam band round each plate keeps its density (a clean fold edge)
+        dw = np.clip(0.5 - 0.3 * near - 0.4 * seam + 0.45 * arm, 0, 1)
         g = ob.vertex_groups.new(name='decimate')
         for i in range(len(V)):
             g.add([i], float(dw[i]), 'REPLACE')
@@ -474,6 +537,10 @@ def main():
         print(('PASS ' if ok else 'FAIL ') + name + ('' if value is None else f'  value={value}') + ('' if gate is None else f'  gate={gate}'))
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    if morph:
+        # the viewer's hand: a long forearm (it runs out of every shot; the
+        # game's 150 mm stub, hidden under the desk, ends in a flat cut)
+        SK.FOREARM_LEN = VIEWER_FOREARM_MM
     hand_plain = H.Hand(detail=False)            # the game mesh's surface (forms, nail grooves, folds)
     hand_full = H.Hand(detail=True)              # + creases (the detail map)
     T = place.solve(hand_plain)
@@ -483,11 +550,13 @@ def main():
     report['placement']['forearm_drop_hv3_deg'] = SK.FOREARM_DROP
 
     # 1. the game mesh
-    Vm, Qm = mid_mesh(hand_plain, flags.get('cache') or os.path.join(out_dir, 'hv3-mid.npz'))
+    Vm, Qm = mid_mesh(hand_plain, flags.get('cache') or os.path.join(out_dir, 'hv3-mid%s.npz' % ('-viewer' if morph else '')))
     ob = make_mesh_obj('Hand', Vm, Qm)
     decimate(ob, TARGET_VERTS, hand_plain)
     V, F = mesh_arrays(ob.data)
     V = mesher.project(hand_plain.eval, V, 0.6, iters=3)
+    V, n_relaxed = relax_seams(hand_plain, V, F)
+    report['counts']['seam_verts_relaxed'] = n_relaxed
     V, n_clamped = clamp_under_plates(hand_plain, V)
     report['counts']['skin_verts_pushed_under_plates'] = n_clamped
     ob.data.vertices.foreach_set('co', V.ravel())

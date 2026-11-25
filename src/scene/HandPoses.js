@@ -51,7 +51,8 @@ const L_WRIST = [-10, 10, -8, 8, 0, 0];
  * and turn the nail with the base twist, never pushing the thumb toward the
  * index; its limits are where tools/blender/hv3/build3.py finds no flipped
  * triangle (the finger knuckles' flex stops at 25: past ~28 linear blend
- * skinning folds v3's volar finger roots; the game's poses stay under ~20).
+ * skinning folds v3's volar finger roots; the game's poses stay under ~20;
+ * the last joints stop at 40, where one sliver on the index pad turned over at 45).
  * Mirrored in tools/blender/hv3/rig3.py (POSE_SET_V3).
  */
 export const POSE_SETS = Object.freeze({
@@ -65,8 +66,8 @@ export const POSE_SETS = Object.freeze({
     thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
   }),
   v3: Object.freeze({
-    finger: [[-15, 25, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 45, 0, 0, -1, 1]],
-    thumb: [[-12, 4, -14, 2, -8, 20], [-16, 8, 0, 0, 0, 0], [-12, 45, 0, 0, -1, 1]],
+    finger: [[-15, 25, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 40, 0, 0, -1, 1]],
+    thumb: [[-12, 3, -14, 2, -8, 20], [-16, 6, 0, 0, 0, 0], [-12, 45, 0, 0, -1, 1]],
     // relaxed: the rest, the last joint softly curled
     relaxed: Object.freeze([0, -1, 0, 0, 5]),
     // fan: the thumb opens away from the index (MCP and IP straighten), nail a little up
