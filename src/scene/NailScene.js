@@ -794,9 +794,11 @@ export class NailScene {
         const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
         const fill = COARSE ? FOCUS_FILL_COARSE : FOCUS_FILL;
         // framed on a fixed nail shape (length = FOCUS_ASPECT x width): a
-        // short plate (B9) does not pull the camera closer (screen fill,
-        // and so the fill-rate cost of the close-up, stays as it was)
-        const size = 2 * Math.max(halfL, halfW * FOCUS_ASPECT) || 0.1;
+        // short plate (B9) does not pull the camera closer, and a long free
+        // edge (hand v3's 4 mm tip) does not push it back (screen fill, and so
+        // the fill-rate cost of the close-up, stays as it was; the tip runs a
+        // little past the fill band, still clear of the bottle tray)
+        const size = 2 * halfW * FOCUS_ASPECT || 2 * halfL || 0.1;
         const d = THREE.MathUtils.clamp(size / (fill * 2 * tanHalf * Math.min(1, aspect)), 0.1, 1.2);
         // centre the nail in the band the HUD leaves free: look a little
         // below (or above) it by that band's offset from the screen centre

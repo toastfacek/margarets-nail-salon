@@ -102,6 +102,7 @@ uniform vec3 uNailCentre;
 uniform vec3 uNailAxis;
 uniform vec3 uNailSide;
 uniform vec2 uNailHalf;
+uniform float uShadeW;
 uniform vec4 uNailAnat;
 uniform float uFreeTipS;
 uniform float uMetal;
@@ -170,7 +171,9 @@ vec3 T = normalize(vTanW - N * dot(N, vTanW));
 vec3 B = normalize(vBitW - N * dot(N, vBitW) - T * dot(T, vBitW));
 vec3 rel = vLocal - uNailCentre;
 float s = dot(rel, uNailAxis) / uNailHalf.x;
-float w = dot(rel, uNailSide) / uNailHalf.y;
+// uShadeW (hand v3: 1.25): the shading's side edge sits past the plate's, so
+// no contact line is drawn on a flush plate's visible rim
+float w = dot(rel, uNailSide) / (uNailHalf.y * uShadeW);
 // Natural nail (B9): the pink bed seen through the plate, a lunula peeking
 // out from under the cuticle (mostly on the thumb), a thin soft cuticle line,
 // a faint onychodermal band, a thin translucent whitish free edge, ridges.
@@ -474,6 +477,7 @@ export function createNailUniforms(lighting) {
     uNailAxis: { value: new THREE.Vector3(0, 1, 0) },
     uNailSide: { value: new THREE.Vector3(1, 0, 0) },
     uNailHalf: { value: new THREE.Vector2(1, 1) },
+    uShadeW: { value: 1 },
     uNailAnat: { value: new THREE.Vector4(-0.7, 0.2, 0.2, 0) },
     // s of the free edge's tip (only NAIL_UNDERSIDE reads it; the viewer sets it per length)
     uFreeTipS: { value: -100 },

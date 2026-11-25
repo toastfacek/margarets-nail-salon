@@ -62,12 +62,13 @@ PROX_LIFT = 0.14             # mm: the proximal fold's edge above the plate's to
 RIM_SLOPE = 0.90             # the side walls' ceiling rises this much per mm away from the edge
 RIM_BAND = 0.9              # mm outside a plate's side edge where the skin stays under its top
 VIEWER_FOREARM_MM = 450.0     # the viewer build's forearm (wrist centre to the cut)
-FREE_DEFAULT_MM = 2.5
+FREE_DEFAULT_MM = 2.5          # the viewer's default free edge (its slider's start)
+GAME_FREE_MM = 4.0             # the game's nails (one length, baked): Jesse's pick
 PLATE_COLS, PLATE_ROWS = 13, 22
 # fix 4: the thumb's plate is big and strongly curved, and seen face-on its
 # side edges are near grazing: between coarse grid rows the plate's straight
 # edge chords fall away from the fold's smooth edge loop and read as teeth
-PLATE_GRID = {'thumb': (25, 48)}
+PLATE_GRID = {'thumb': (25, 48), 'index': (19, 36), 'middle': (19, 36), 'ring': (19, 36), 'pinky': (17, 32)}
 
 
 def parse_args(argv):
@@ -131,7 +132,7 @@ def relax_seams(hand, V, F, iters=4, lam=0.45):
     return V, int(band.sum())
 
 
-SEAM_LOOP_FINGERS = ('thumb',)   # fix 4: plates whose fold edge is cut in as its own edge loops
+SEAM_LOOP_FINGERS = tuple(SK.FINGERS)  # plates whose fold edge is cut in as its own edge loops (fix 4: the thumb; the game's close-up: all five)
 LOOP_MERGE = 0.06                # mm: vertices this near the edge loop move onto it (no slivers)
 LOOP_IN = -0.05                  # mm (inside the outline): a second loop, down inside the plate's edge
 LOOP_IN_DEPTH = 0.12             # ... this far under the plate's top
@@ -592,9 +593,10 @@ def to_frame(nu, Vn, frame):
 
 def build_nail(f, nu, T, rig, morph):
     s = T['s']
-    fr = nail_frame(nu, FREE_DEFAULT_MM)
+    free_def = FREE_DEFAULT_MM if morph else GAME_FREE_MM
+    fr = nail_frame(nu, free_def)
     o, X, Y, Z, cy, cz, half = fr
-    stops = FREE_STOPS_MM if morph else (FREE_DEFAULT_MM,)
+    stops = FREE_STOPS_MM if morph else (free_def,)
     cols, rows = PLATE_GRID.get(f, (PLATE_COLS, PLATE_ROWS))
     built = [plate_geometry(nu, L, cols, rows) for L in stops]
     F, smooth = built[0][1], built[0][2]
@@ -640,13 +642,16 @@ def build_nail(f, nu, T, rig, morph):
     # straight through the cuticle's apex (arc 0), and no line is drawn on
     # the plate itself
     sag = 0.0
-    obj['nailHalf'] = [float(half * s), float(SHADER_W * nu.hw0 * s)]
-    obj['nailAnat'] = [float((cy - nu.yh) / half), float(sag / half), float(d_tip(FREE_DEFAULT_MM) / half), 0.0]
+    # nailHalf is the plate's own (the brush, the film and the close-up's
+    # framing read it); the shader's side edge goes out by nailShadeW
+    obj['nailHalf'] = [float(half * s), float(nu.hw0 * s)]
+    obj['nailShadeW'] = float(SHADER_W)
+    obj['nailAnat'] = [float((cy - nu.yh) / half), float(sag / half), float(d_tip(free_def) / half), 0.0]
     if morph:
         # frame-centre and half length of each stop, in this frame (Y toward the cuticle)
         cys = [((cy - 0.5 * (nu.yc + nu.yh + L))) * s for L in stops]
         halves = [0.5 * (nu.yh + L - nu.yc) * s for L in stops]
-        obj['nailVar'] = {'L': [float(L) for L in stops], 'def': float(FREE_DEFAULT_MM), 'mm': [float(L) for L in stops],
+        obj['nailVar'] = {'L': [float(L) for L in stops], 'def': float(free_def), 'mm': [float(L) for L in stops],
                           'cy': [float(c) for c in cys], 'half': [float(h) for h in halves],
                           'freeArc': [float(d_tip(L) * s) for L in stops],
                           'hypoY': float((cy - nu.yh) * s), 'cutArc': float(sag * s)}
@@ -733,10 +738,14 @@ def main():
     ob.data.shade_smooth()
     report['counts']['decimated_verts'] = len(V)
     report['counts']['tris'] = len(F)
-    # 2. UVs and the detail map (hand frame, mm)
-    smart_uv(ob)
+    # 2. UVs and the detail map (hand frame, mm). The game's skin has neither:
+    # its skin shader reads only the vertex masks, and the UV seams would add
+    # ~3,000 vertices (each one skinned and, on low, lit per vertex)
+    skin_uv = morph or bool(flags.get('skinuv'))
+    if skin_uv:
+        smart_uv(ob)
     Nv = rig3.vertex_normals(V, F)
-    if not flags.get('nomap'):
+    if skin_uv and not flags.get('nomap'):
         # each build's own map (its UVs are its own mesh's): the game's is
         # skin-detail-v3, the viewer's skin-detail-v3-viewer
         detail_map(ob.data, V, Nv, hand_full, hand_plain, out_dir, report, check, '-viewer' if morph else '')
@@ -781,6 +790,13 @@ def main():
     RG.checks(scene, report, check)
     # 7. export
     export([ob] + list(nails.values()), rig, out_glb, morph)
+    if not morph and not flags.get('noquant'):
+        # the game's file: normals, colours, weights and UVs quantized
+        # (KHR_mesh_quantization; positions stay float, see quantize_glb.py)
+        import quantize_glb
+        Jq, Bq = quantize_glb.read_glb(out_glb)
+        quantize_glb.write_glb(out_glb, *quantize_glb.quantize(Jq, Bq))
+        report['quantized'] = True
     size = os.path.getsize(out_glb)
     with open(out_glb, 'rb') as fh:
         sha = hashlib.sha256(fh.read()).hexdigest()
