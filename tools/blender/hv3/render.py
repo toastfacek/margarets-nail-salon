@@ -14,16 +14,16 @@ from mathutils import Vector
 
 VIEWS = {
     # name: (direction from the target to the camera, up, lens mm, distance mm, target offset)
-    'top':   ((0.0, -0.05, 1.0), (0, 1, 0), 70, 520, (0, 5, 0)),
-    'palm':  ((0.0, -0.05, -1.0), (0, 1, 0), 70, 520, (0, 5, 0)),
-    'thumb': ((-1.0, 0.0, 0.12), (0, 0, 1), 85, 520, (0, 10, 0)),
-    'pinky': ((1.0, 0.0, 0.12), (0, 0, 1), 85, 520, (0, 10, 0)),
-    'below': ((-0.10, 0.80, -0.42), (0, 0, 1), 85, 520, (0, -10, 0)),
-    'hero':  ((-0.50, -0.30, 0.72), (0, 0, 1), 85, 520, (0, 0, 0)),
+    'top':   ((0.0, -0.05, 1.0), (0, 1, 0), 100, 740, (0, 5, 0)),
+    'palm':  ((0.0, -0.05, -1.0), (0, 1, 0), 100, 740, (0, 5, 0)),
+    'thumb': ((-1.0, 0.0, 0.12), (0, 0, 1), 100, 700, (0, 10, 0)),
+    'pinky': ((1.0, 0.0, 0.12), (0, 0, 1), 100, 700, (0, 10, 0)),
+    'below': ((-0.10, 0.80, -0.42), (0, 0, 1), 100, 650, (0, -10, 0)),
+    'hero':  ((-0.50, -0.30, 0.72), (0, 0, 1), 100, 700, (0, 0, 0)),
     'nail':  ((0, 0, 1), (0, 0, 1), 100, 140, (0, 0, 0)),
     'tnail': ((0, 0, 1), (0, 0, 1), 100, 110, (0, 0, 0)),
     'tip':   ((-0.25, 1.0, 0.45), (0, 0, 1), 85, 300, (-20, 60, -8)),
-    'web':   ((-0.75, 0.25, 0.6), (0, 0, 1), 70, 360, (-15, 0, -5)),
+    'web':   ((-0.75, 0.25, 0.6), (0, 0, 1), 90, 470, (-15, 0, -5)),
 }
 DEFAULT = ['top', 'palm', 'thumb', 'pinky', 'below', 'hero']
 
@@ -73,7 +73,7 @@ def setup(mesh_path, clay=False):
         b.inputs['Base Color'].default_value = (0.74, 0.52, 0.43, 1)
         b.inputs['Subsurface Weight'].default_value = 1.0
         b.inputs['Subsurface Radius'].default_value = (1.0, 0.42, 0.25)
-        b.inputs['Subsurface Scale'].default_value = 0.0025
+        b.inputs['Subsurface Scale'].default_value = 0.0013
         b.inputs['Roughness'].default_value = 0.48
         b.inputs['Specular IOR Level'].default_value = 0.38
     ob.data.materials.append(mat)
@@ -89,11 +89,12 @@ def setup(mesh_path, clay=False):
         m2 = bpy.data.materials.new('nail')
         m2.use_nodes = True
         b2 = m2.node_tree.nodes['Principled BSDF']
-        b2.inputs['Base Color'].default_value = (0.86, 0.66, 0.62, 1)
-        b2.inputs['Roughness'].default_value = 0.22
+        b2.inputs['Base Color'].default_value = (0.80, 0.50, 0.50, 1)
+        b2.inputs['Roughness'].default_value = 0.18
         b2.inputs['Subsurface Weight'].default_value = 0.3
         b2.inputs['Subsurface Scale'].default_value = 0.001
-        b2.inputs['Coat Weight'].default_value = 0.3
+        b2.inputs['Coat Weight'].default_value = 0.15
+        b2.inputs['Specular IOR Level'].default_value = 0.6
         no.data.materials.append(m2)
     sc = bpy.context.scene
     sc.render.engine = 'CYCLES'

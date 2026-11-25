@@ -13,27 +13,31 @@ skin starts to fall away under the plate).
 import numpy as np
 
 import skeleton as SK
-from sdf import smax, unit
+from sdf import smax, smoothstep, unit
 
 # per finger: cuticle and hyponychium (mm from the joint centre along the bone),
 # visible plate width / finger width, C-curve arc across the visible plate (deg)
 NAIL = {
     'thumb':  dict(yc=6.0, yh=19.0, wfrac=0.74, arc=95.0),
-    'index':  dict(yc=5.4, yh=15.9, wfrac=0.80, arc=90.0),
-    'middle': dict(yc=5.7, yh=16.9, wfrac=0.80, arc=90.0),
-    'ring':   dict(yc=5.6, yh=16.7, wfrac=0.80, arc=88.0),
-    'pinky':  dict(yc=5.0, yh=14.3, wfrac=0.78, arc=84.0),
+    'index':  dict(yc=5.4, yh=15.9, wfrac=0.78, arc=92.0),
+    'middle': dict(yc=5.7, yh=16.9, wfrac=0.78, arc=92.0),
+    'ring':   dict(yc=5.6, yh=16.7, wfrac=0.77, arc=90.0),
+    'pinky':  dict(yc=5.0, yh=14.3, wfrac=0.76, arc=86.0),
 }
 T = 0.5            # plate thickness
-SINK = 0.32        # plate top below the skin's original surface on the centre line
+SINK = 0.22        # plate top below the skin's original surface on the centre line
 TAPER = 0.05       # the sides converge this much (fraction of the half width) toward the tip
-CUT_ARC = 0.42     # cuticle sagitta, x half width
+CUT_ARC = 0.52     # cuticle sagitta, x half width
 TUCK_PROX = 1.2    # the plate runs this far under the proximal fold (hidden)
 TUCK_SIDE = 0.45   # ... and under the side folds
 FREE = 2.6         # free edge past the hyponychium (mm), the render default
 FREE_SLOPE = 0.45  # past the hyponychium the plate keeps this much of the bed's downward slope
-TIP_ROUND = 0.85   # free edge outline: 0 square .. 1 full half-ellipse
-GROOVE_K = 0.28    # blend radius of the groove walls
+TIP_ROUND = 0.95   # free edge outline: 0 square .. 1 full half-ellipse
+GROOVE_K = 0.42    # blend radius of the groove walls
+ARCH = 0.010       # longitudinal convexity of the plate: mm drop per mm^2 from the bed's middle
+LIP_PROX = 0.28    # the proximal fold's lip above the original skin (mm)
+LIP_SIDE = 0.38    # the lateral folds' rise
+LIP_W = 1.10       # their width (mm, outside the outline)
 
 
 class NailUnit:
@@ -89,7 +93,9 @@ class NailUnit:
         return self.hw0 * (1 - TAPER * t)
 
     def z_centre(self, y):
-        zb = np.interp(np.minimum(y, self.yh), self.ys, self.zc) - SINK
+        ym = 0.5 * (self.yc + self.yh)
+        yy = np.minimum(y, self.yh)
+        zb = np.interp(yy, self.ys, self.zc) - SINK - ARCH * ((yy - ym) ** 2 - (0.5 * (self.yh - self.yc)) ** 2 * 0.35)
         past = np.maximum(y - self.yh, 0)
         return zb + FREE_SLOPE * self.slope_h * past - 0.004 * past ** 2
 
@@ -115,25 +121,44 @@ class NailUnit:
         q = P - self.o
         return q @ self.U, q @ self.F, q @ self.W
 
-    def groove(self, P):
+    def groove(self, P, lips=False):
         """Positive outside the open groove: the region above the plate's
-        underside, inside the visible outline (plus the side tuck), open past
-        the tip. Skin = smax(skin, -groove)."""
+        underside, inside the visible outline, over the bed only (past the
+        hyponychium the fingertip already falls away under the plate).
+        Skin = smax(skin, -groove). With lips: also the folds' rise (mm, to
+        subtract from the skin's distance) just outside the outline."""
         x, y, z = self.local(P)
         hw = self.hw(y)
         side = np.abs(x) - hw
         prox = self.cuticle_y(x) - y
-        o = smax(side, prox, 0.6)
+        o = smax(side, prox, 1.1)
         zb = self.z_top(x, y) - T
         g = np.maximum(o, zb - z)
         far = np.linalg.norm(P - self.o, axis=1) > 40
-        return np.where(far, 50.0, g)
+        g = np.where(far, 50.0, g)
+        if not lips:
+            return g
+        # folds: a soft ridge outside the outline, on the dorsal side only,
+        # proximal and lateral, fading out round the hyponychium
+        dorsal = smoothstep(-3.0, -1.0, z - self.z_top(x, y))
+        ring = np.exp(-((o - 0.55 * LIP_W) / (0.55 * LIP_W)) ** 2) * (o > -0.2)
+        sidew = smoothstep(0.2, -1.2, prox)            # 1 along the sides, 0 at the cuticle
+        h = (LIP_PROX * (1 - sidew) + LIP_SIDE * sidew) * ring * dorsal
+        h *= smoothstep(self.yh + 2.5, self.yh - 1.5, y)
+        h = np.where(far, 0.0, h)
+        return g, h
 
     # ---- the plate (mesh) -------------------------------------------------------------
-    def plate(self, free=FREE, cols=17, rows=26):
+    def pulp_end(self):
+        """How far past the hyponychium the fingertip reaches (its spine's end)."""
+        return float((self.tube.p[-1] - self.o) @ self.F) - self.yh
+
+    def plate(self, free=None, cols=17, rows=26):
+        if free is None:
+            free = min(FREE, self.pulp_end() - 0.5)
         """A closed plate: top grid, underside grid, rim. Returns V (hand
         frame mm), F (quads), and the visible plate's UV for the top."""
-        hw_t = lambda y: self.hw(y) + TUCK_SIDE
+        hw_t = lambda y: self.hw(y) + TUCK_SIDE * (1 - smoothstep(self.yh - 2.5, self.yh, y))
         us = np.linspace(-1, 1, cols)
         vs = np.linspace(0, 1, rows)
         top = np.zeros((rows, cols, 3))

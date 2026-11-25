@@ -37,10 +37,10 @@ def rot(axis, deg):
 # behind it, ring 6, little finger 13; the transverse arch drops the ring and
 # little finger heads palmward, and the bases sit on the deeper carpal arch.
 MC = {
-    'index':  ((-12.5, 23.0, 3.0), (-26.0, 81.0, 0.0)),
-    'middle': ((-2.0, 24.0, 4.0), (-6.0, 83.0, 1.0)),
-    'ring':   ((7.5, 23.0, 1.5), (13.2, 77.0, -1.5)),
-    'pinky':  ((15.0, 21.0, -2.5), (29.6, 70.0, -5.5)),
+    'index':  ((-12.5, 23.0, 3.0), (-26.0, 81.0, 3.0)),
+    'middle': ((-2.0, 24.0, 4.0), (-6.0, 83.0, 4.0)),
+    'ring':   ((7.5, 23.0, 1.5), (13.2, 77.0, 1.5)),
+    'pinky':  ((15.0, 21.0, -2.5), (29.6, 70.0, -2.5)),
 }
 # phalanx lengths P1, P2, P3 (P3: DIP centre to the bone's tuft)
 PHAL = {
@@ -54,10 +54,10 @@ PHAL = {
 # A relaxed hand on a towel: the knuckles barely bent, the middle joints a
 # little, the cascade growing toward the little finger.
 REST = {
-    'index':  dict(yaw=-3.0, flex=(-2.0, 9.0, 6.0), roll=-3.0),
-    'middle': dict(yaw=0.5, flex=(-2.0, 10.0, 6.0), roll=0.0),
-    'ring':   dict(yaw=5.0, flex=(-1.0, 12.0, 7.0), roll=3.0),
-    'pinky':  dict(yaw=11.0, flex=(1.0, 14.0, 8.0), roll=7.0),
+    'index':  dict(yaw=-3.0, flex=(-2.0, 18.0, 8.0), roll=-3.0),
+    'middle': dict(yaw=0.5, flex=(-2.0, 20.0, 9.0), roll=0.0),
+    'ring':   dict(yaw=5.0, flex=(-1.0, 23.0, 10.0), roll=3.0),
+    'pinky':  dict(yaw=11.0, flex=(1.0, 27.0, 12.0), roll=7.0),
 }
 
 # ---- thumb ------------------------------------------------------------------------
@@ -68,14 +68,14 @@ THUMB_LEN = (42.0, 30.5, 20.0)       # first metacarpal, proximal phalanx, dista
 # turned from straight up toward the radial side). Then each joint's flexion
 # (toward its own palm side: ulnar and down) and abduction (about its dorsal
 # axis, + away from the index).
-THUMB_REST = dict(mc_yaw=38.0, mc_pitch=3.0, pronation=50.0,
+THUMB_REST = dict(mc_yaw=30.0, mc_pitch=3.0, pronation=65.0,
                   flex=(16.0, 9.0), abd=(-6.0, 0.0))
 
 TIP_EXT = {'thumb': 4.5, 'index': 3.6, 'middle': 3.8, 'ring': 3.7, 'pinky': 3.3}
 
 # ---- wrist and forearm ----------------------------------------------------------------
 FOREARM_LEN = 85.0                   # wrist centre back to the cut
-FOREARM_DROP = 25.0                   # wrist extension at rest (deg): forearm slopes down behind the wrist
+FOREARM_DROP = 27.0                   # wrist extension at rest (deg): forearm slopes down behind the wrist
 
 
 DESK_Z = -16.5                       # the towel under the palm pads and fingertips
