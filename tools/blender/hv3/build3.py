@@ -560,10 +560,12 @@ def plate_geometry(nu, free, cols=PLATE_COLS, rows=PLATE_ROWS):
         a, b = r0 + k, r0 + (k + 1) % m
         F.append((a, b, b + m, a + m))
         smooth.append(False)
-    # UV: the visible top in [0, 1]; u across, v = 1 at the cuticle .. 0 at the free tip
+    # UV: the visible top in [0, 1]; u across (from +x to -x), v = 1 at the cuticle .. 0 at the free tip
     y_tip = nu.yh + free
     def uv_of(P):
-        u = np.clip((P[:, 0] / nu.hw0 + 1) * 0.5, 0, 1)
+        # +u runs to the screen's right in the game's close-up (cuticle up):
+        # the game's nail UV convention (scripts/hand.mjs H3; stickers read right)
+        u = np.clip((1 - P[:, 0] / nu.hw0) * 0.5, 0, 1)
         v = np.clip((y_tip - P[:, 1]) / (y_tip - nu.yc), 0, 1)
         return np.stack([u, v], 1)
     UV = uv_of(V)
