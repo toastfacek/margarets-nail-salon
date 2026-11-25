@@ -39,7 +39,8 @@ ARCH = 0.010       # longitudinal convexity of the plate: mm drop per mm^2 from 
 LIP_PROX = 0.28    # the proximal fold's lip above the original skin (mm)
 LIP_SIDE = 0.38    # the lateral folds' rise
 LIP_W = 1.10       # their width (mm, outside the outline)
-FREE_NARROW = 0.24 # past the hyponychium the plate narrows by this fraction over 3 mm
+FREE_INSET = 0.45  # mm: the free edge's sides step in by the folds' overlap
+FREE_NARROW = 0.20 # past the hyponychium the plate narrows by this fraction over 3 mm
 SKIN_CAP = 0.90    # plate half width <= this x the finger's half width (toward the tip)
 
 
@@ -104,7 +105,9 @@ class NailUnit:
         # corners stay inside the pulp's silhouette at the default length),
         # then runs on straight: no neck on a long nail
         past = np.clip(np.asarray(y, dtype=np.float64) - self.yh, 0.0, None)
-        return hw * (1.0 - FREE_NARROW * smoothstep(0.0, 3.0, past))
+        # (and steps in by the side folds' overlap, so its edge continues the
+        # visible bed's edge instead of stepping out past the folds)
+        return hw * (1.0 - FREE_NARROW * smoothstep(0.0, 3.0, past)) - FREE_INSET * smoothstep(0.0, 1.2, past)
 
     def z_centre(self, y):
         ym = 0.5 * (self.yc + self.yh)

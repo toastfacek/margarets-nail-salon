@@ -92,7 +92,10 @@ def clamp_under_plates(hand, V, margin=0.15):
         x, y, z = q @ nu.U, q @ nu.F, q @ nu.W
         o = np.maximum(np.abs(x) - nu.hw(y), nu.cuticle_y(x) - y)
         floor = nu.z_top(x, y) - nails3.T - margin
-        sel = (o < 0.05) & (y < nu.yh + FREE_STOPS_MM[-1]) & (z > floor) & (z < floor + 4.0)
+        # past the hyponychium the pulp's sides, just outside the outline,
+        # also stay under the plate's edge (no skin sliver over a long free edge)
+        reach = 0.05 + 1.2 * nails3.smoothstep(nu.yh - 1.0, nu.yh + 0.5, y)
+        sel = (o < reach) & (y < nu.yh + FREE_STOPS_MM[-1]) & (z > floor) & (z < floor + 4.0)
         V[sel] -= nu.W * (z[sel] - floor[sel])[:, None]
         total += int(sel.sum())
     return V, total
