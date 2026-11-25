@@ -550,15 +550,15 @@ def plate_geometry(nu, free, cols=PLATE_COLS, rows=PLATE_ROWS):
     for j in range(rows - 1):
         for i in range(cols - 1):
             a, b, c, d = idx[j, i], idx[j, i + 1], idx[j + 1, i + 1], idx[j + 1, i]
-            F.append((a, d, c, b))
+            F.append((a, b, c, d))     # top: wound to face +z (out), glTF's CCW front
             smooth.append(True)
-            F.append((a + n, b + n, c + n, d + n))
+            F.append((a + n, d + n, c + n, b + n))     # underside: faces -z
             smooth.append(True)
     m = len(ring)
     r0 = 2 * n
     for k in range(m):
         a, b = r0 + k, r0 + (k + 1) % m
-        F.append((a, b, b + m, a + m))
+        F.append((a, a + m, b + m, b))     # rim: faces out
         smooth.append(False)
     # UV: the visible top in [0, 1]; u across (from +x to -x), v = 1 at the cuticle .. 0 at the free tip
     y_tip = nu.yh + free
