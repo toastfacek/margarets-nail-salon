@@ -257,13 +257,14 @@ export class HandModel {
     /**
      * A tier's settings for the nail shader. Hand v3's nails have a real free
      * edge (a 4 mm tip): its underside and thin rim get their own shading
-     * (NAIL_UNDERSIDE), on high and medium. Low keeps the opaque plain nail
-     * (the close-up sees the plate's top; the blend and the extra taps cost).
+     * (NAIL_UNDERSIDE), on high and medium, drawn opaque (no blend: the nail
+     * then hides the skin under it before that skin is shaded). Low keeps the
+     * plain nail (the close-up sees the plate's top).
      */
     _nailSettings(settings) {
         if (!this._freeEdge || settings.skin === 'lambert') return settings;
         if (!this._nsCache || this._nsCache.src !== settings) {
-            this._nsCache = { src: settings, out: Object.assign({}, settings, { nailUnderside: true }) };
+            this._nsCache = { src: settings, out: Object.assign({}, settings, { nailUnderside: true, nailUndersideAlpha: false }) };
         }
         return this._nsCache.out;
     }

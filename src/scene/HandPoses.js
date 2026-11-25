@@ -82,12 +82,12 @@ export const POSE_SETS = Object.freeze({
     // the other fingers part further from the presented one: v3's fingers lie
     // close side by side, and a neighbour packed against the active finger
     // fills the close-up with skin (its fill rate) and crowds the nail
-    spreadAway: 8,   // 12 put the pinky nail behind the side panel at the rail stop (pan.mjs P3)
+    spreadAway: 12,   // the limit (pan.mjs P3 at the ring-pinky rail stop passes, 27/27)
     // the presented finger lifts and the others curl a little under it
     // (further curls keep neighbours out of the close-up but break the pan:
     // a finger under the pointer must not move much as the rail glides,
     // pan.mjs P1b, hand.mjs H3, hand-pose.mjs P4)
-    active: Object.freeze([-12, 2, 2]),
+    active: Object.freeze([-15, 2, 2]),
     other: Object.freeze([10, 12, 6]),
   }),
 });

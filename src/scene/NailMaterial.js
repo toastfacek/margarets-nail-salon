@@ -325,10 +325,13 @@ vec3 col = albedo * irr * 1.12 * ao * (1.0 - metal);
 {
 float tk = feThin * (1.0 - cov);
 // the rim: what lies behind it faintly through, and light from behind glows in it
+// (only where there is a rim: the env fetch is skipped on the rest of the nail)
+if (tk > 0.0) {
 vec3 through = envSample(-V, 3.0) * vec3(0.98, 0.95, 0.91);
 col = mix(col, through, tk * 0.3);
 alphaOut = 1.0 - 0.3 * tk;
 col += uLightColor * tk * (0.45 * pow(clamp(dot(V, -L), 0.0, 1.0), 2.0) + 0.05);
+}
 // the underside and the cut walls face the fingertip or the desk: in its shade,
 // not lit like the top (seen edge-on they read as white slivers otherwise)
 float wall = (1.0 - smoothstep(0.25, 0.6, abs(vUnder))) * fe;
@@ -517,8 +520,10 @@ export function createNailMaterial(settings, lighting, uniforms = null) {
     uniforms: uniforms || createNailUniforms(lighting),
     defines: definesFor(settings),
     side: THREE.FrontSide,
-    // hand v2: the bare free edge is part see-through (alpha < 1 only there)
-    transparent: !!(settings && settings.nailUnderside),
+    // hand v2: the bare free edge is part see-through (alpha < 1 only there);
+    // the game draws it opaque (nailUndersideAlpha false: an opaque nail is
+    // drawn before the skin, whose pixels under it then never shade)
+    transparent: !!(settings && settings.nailUnderside && settings.nailUndersideAlpha !== false),
   });
 }
 
