@@ -54,6 +54,7 @@ MAP_SCALE = 2.5               # the shader's uDetailScale (stored slope x this)
 DETAIL_GAIN = 0.6             # the creases' normal tilt, scaled (faint creases)
 MAP_CAVITY_MM = 0.60          # a groove this deep is full cavity (B)
 FREE_STOPS_MM = (0.5, 1.5, 2.5, 4.0, 6.0, 9.0)
+SHADER_W = 1.25              # the nail shader's half width over the plate's (no contact line on the plate)
 SEAM_OUT = 0.04              # mm outside the outline: where the fold's edge runs
 SEAM_SNAP = 0.22             # vertices this close to that line go onto it
 SEAM_LIFT = 0.07             # ... this far above the plate's top (it tucks over the rim)
@@ -276,7 +277,7 @@ def loop_uvs(me):
 
 
 # ---- the detail map ----------------------------------------------------------------------
-def detail_map(me, V, Nv, hand_full, hand_plain, out_dir, report, check):
+def detail_map(me, V, Nv, hand_full, hand_plain, out_dir, report, check, suffix=''):
     import maps as MP
     U = loop_uvs(me)
     pix, Pw, N, _, dPdu, dPdv = MP._rasterise(me, U, V, Nv, np.zeros(len(V)), MAP_SIZE)
@@ -318,7 +319,7 @@ def detail_map(me, V, Nv, hand_full, hand_plain, out_dir, report, check):
         im = bpy.data.images.new('skin-detail-' + ext, MAP_SIZE, MAP_SIZE, alpha=False, float_buffer=False)
         im.colorspace_settings.name = 'Non-Color'
         im.pixels.foreach_set(img.astype(np.float32).ravel())
-        path = os.path.join(out_dir, 'skin-detail-v3.' + ext)
+        path = os.path.join(out_dir, 'skin-detail-v3%s.' % suffix + ext)
         im.filepath_raw = path
         im.file_format = fmt
         if fmt == 'WEBP':
@@ -510,7 +511,14 @@ def build_nail(f, nu, T, rig, morph):
     def d_tip(L):
         return min(L + 0.8, nu.hw(nu.yh + L) * 0.75)
     obj['nailFrame'] = 1
-    obj['nailHalf'] = [float(half * s), float(nu.hw0 * s)]
+    # the nail shader's 'contact line' (a dark 1-2 px line where it thinks the
+    # plate meets a fold) is placed from nailHalf.y and the cuticle arc. v3's
+    # plates sit flush, their edges in plain view: so the shader's side edge
+    # sits outside the plate (half width x SHADER_W) and its cuticle line is
+    # straight through the cuticle's apex (arc 0), and no line is drawn on
+    # the plate itself
+    sag = 0.0
+    obj['nailHalf'] = [float(half * s), float(SHADER_W * nu.hw0 * s)]
     obj['nailAnat'] = [float((cy - nu.yh) / half), float(sag / half), float(d_tip(FREE_DEFAULT_MM) / half), 0.0]
     if morph:
         # frame-centre and half length of each stop, in this frame (Y toward the cuticle)
@@ -596,7 +604,9 @@ def main():
     smart_uv(ob)
     Nv = rig3.vertex_normals(V, F)
     if not flags.get('nomap'):
-        detail_map(ob.data, V, Nv, hand_full, hand_plain, out_dir, report, check)
+        # each build's own map (its UVs are its own mesh's): the game's is
+        # skin-detail-v3, the viewer's skin-detail-v3-viewer
+        detail_map(ob.data, V, Nv, hand_full, hand_plain, out_dir, report, check, '-viewer' if morph else '')
     # 3. weights and masks
     W = rig3.weights(hand_plain, V, F)
     col = rig3.masks(hand_plain, V, F, Nv)
