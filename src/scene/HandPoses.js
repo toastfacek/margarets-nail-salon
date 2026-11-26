@@ -83,12 +83,14 @@ export const POSE_SETS = Object.freeze({
     // close side by side, and a neighbour packed against the active finger
     // fills the close-up with skin (its fill rate) and crowds the nail
     spreadAway: 12,   // the limit (pan.mjs P3 at the ring-pinky rail stop passes, 27/27)
-    // the presented finger lifts and the others curl a little under it
-    // (further curls keep neighbours out of the close-up but break the pan:
-    // a finger under the pointer must not move much as the rail glides,
-    // pan.mjs P1b, hand.mjs H3, hand-pose.mjs P4)
+    // the presented finger lifts and the others curl away under the palm,
+    // like a client offering one finger: only the active finger and nail
+    // show in the close-up (its fill rate stays near v1's; no other nail in
+    // view on any finger). The knuckle stops 3 short of its limit (25) so the
+    // spring still overshoots as it curls (hand-pose.mjs P11: a target on the
+    // limit is clamped flat); the middle and last joints 1 and 2 short (45, 40)
     active: Object.freeze([-12, 2, 2]),
-    other: Object.freeze([10, 12, 6]),
+    other: Object.freeze([22, 44, 38]),
   }),
 });
 let _set = POSE_SETS.v2;

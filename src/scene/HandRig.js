@@ -392,7 +392,10 @@ export class HandAnimator {
   _autoTarget(out) {
     const sc = this.scene;
     if (sc && sc.isZoomedIn && sc.zoomedFinger) {
-      const s = sc.railS >= 0 ? sc.railS : FINGER_ORDER.indexOf(sc.zoomedFinger);
+      // a glide presents its landing finger from the start (railGoal): the
+      // springs carry the incoming finger up and the outgoing one away while
+      // the camera travels, so the nail is presented as the camera lands
+      const s = sc.railS >= 0 ? (sc.railGoal ?? sc.railS) : FINGER_ORDER.indexOf(sc.zoomedFinger);
       if (s >= 0) {
         writePresentS(s, out);
         return sc.railS >= 0 ? 'p' : P_KEYS[s];
@@ -407,7 +410,7 @@ export class HandAnimator {
     const sc = this.scene;
     if (this._mode === 'manual') return this._manualActive;
     if (sc && sc.isZoomedIn && sc.zoomedFinger) {
-      if (sc.railS >= 0) return Math.round(sc.railS);
+      if (sc.railS >= 0) return Math.round(sc.railGoal ?? sc.railS);
       return FINGER_ORDER.indexOf(sc.zoomedFinger);
     }
     return -1;

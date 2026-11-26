@@ -1135,6 +1135,15 @@ export class NailScene {
         this._railBlend.w = 0;
     }
 
+    /**
+     * Where the rail is headed: a glide's landing finger while it runs, else
+     * railS (the hand presents the landing finger as the glide starts, so
+     * its springs uncurl it while the camera travels).
+     */
+    get railGoal() {
+        return this._railGlide && this.isAnimating ? this._glide.s1 : this.railS;
+    }
+
     /** True while a rail glide runs. */
     isRailGliding() {
         return this._railGlide && this.isAnimating;

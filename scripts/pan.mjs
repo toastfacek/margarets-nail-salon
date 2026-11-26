@@ -89,6 +89,10 @@ async function boot(kind, params) {
       const r = app.scene.renderer.domElement.getBoundingClientRect();
       return [r.left + (c.x + 1) / 2 * r.width, r.top + (1 - c.y) / 2 * r.height];
     };
+    // where finger f's nail shows with the hand presenting f (the curled pose
+    // tucks the other fingers away, so their nails' current place is not where
+    // the row of fingertips runs; the rail lands each finger presented)
+    T.nailXYPresented = (f) => (app.hand && app.hand.withPose ? app.hand.withPose(f, () => T.nailXY(f)) : T.nailXY(f));
     // active nail's screen box from a raycast grid
     T.box = () => {
       const cam = app.scene.camera; const mesh = app.nail.getNailMesh();
@@ -153,9 +157,10 @@ const st = (s) => s.page.evaluate(() => __P.state());
 const ev = (s, fn, arg) => s.page.evaluate(fn, arg);
 const settle = async (s) => { for (let i = 0; i < 40; i++) { const q = await st(s); if (!q.anim && !q.busy) return q; await sleep(100); } return st(s); };
 
-// unit screen vector from the active nail toward finger f's nail
+// unit screen vector from the active nail toward finger f's nail, each where
+// it shows presented (the row of fingertips the rail follows)
 async function toward(s, f) {
-  const [a, b] = await ev(s, (f) => [__P.nailXY(app.nail.getActiveNail()), __P.nailXY(f)], f);
+  const [a, b] = await ev(s, (f) => [__P.nailXYPresented(app.nail.getActiveNail()), __P.nailXYPresented(f)], f);
   const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
   return [dx / l, dy / l];
 }
@@ -230,17 +235,20 @@ for (const kind of INPUTS) {
   {
     // park the camera between the ring and the pinky, as far toward the ring as
     // still shows the pinky nail clear of the side panel
-    const xy = await ev(s, () => {
+    // (the hand follows the rail: at rail position k it takes the present
+    // pose at k, so the pinky nail is looked for in that pose, and the tap
+    // goes where it shows once the hand has settled there)
+    await ev(s, () => {
       app.scene.invalidateRail();
-      let p = null;
       for (let k = 3.3; k <= 3.95; k += 0.05) {
         app.scene.railSet(k); app.scene.camera.updateMatrixWorld();
-        p = __P.nailXY('pinky');
+        const p = app.hand && app.hand.withPose ? app.hand.withPose(k, () => __P.nailXY('pinky')) : __P.nailXY('pinky');
         if (p[0] > 40 && p[0] < 960 && p[1] > 60 && p[1] < 600) break;
       }
-      return p;
     });
     await sleep(300);
+    await s.page.waitForFunction(() => !app.hand || app.hand.settled, null, { timeout: 10000, polling: 50 }).catch(() => {});
+    const xy = await ev(s, () => { app.scene.camera.updateMatrixWorld(); return __P.nailXY('pinky'); });
     const vis = xy[0] > 0 && xy[0] < 1000 && xy[1] > 0 && xy[1] < 640;
     if (flags.shots) await s.page.screenshot({ path: path.join(OUT, `${kind}-tap-before.png`) });
     await tap(s, xy[0], xy[1]);
