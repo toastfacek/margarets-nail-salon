@@ -186,13 +186,16 @@ export class CloseupCull {
     // corners welded by position (a cut seam's twin vertices are one corner)
     const pos = g.attributes.position;
     const weld = new Int32Array(pos.count);
-    const seen = new Map();
+    const order = new Uint32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) order[i] = i;
+    const P = pos.array, st = pos.itemSize === 3 && !pos.isInterleavedBufferAttribute && !pos.normalized ? 3 : 0;
+    const px = (i) => (st ? P[i * 3] : pos.getX(i)), py = (i) => (st ? P[i * 3 + 1] : pos.getY(i)), pz = (i) => (st ? P[i * 3 + 2] : pos.getZ(i));
+    order.sort((a, b) => (px(a) - px(b)) || (py(a) - py(b)) || (pz(a) - pz(b)));
     let nW = 0;
-    for (let i = 0; i < pos.count; i++) {
-      const k = Math.round(pos.getX(i) * 1e6) + ',' + Math.round(pos.getY(i) * 1e6) + ',' + Math.round(pos.getZ(i) * 1e6);
-      let w = seen.get(k);
-      if (w === undefined) { w = nW++; seen.set(k, w); }
-      weld[i] = w;
+    for (let k = 0; k < order.length; k++) {
+      const i = order[k], j = k > 0 ? order[k - 1] : -1;
+      if (j < 0 || px(i) !== px(j) || py(i) !== py(j) || pz(i) !== pz(j)) nW++;
+      weld[i] = nW - 1;
     }
     const idx = new Uint32Array(index.count);
     for (let t = 0; t < index.count; t++) idx[t] = index.getX(t);
@@ -386,6 +389,8 @@ export class CloseupCull {
     } else {
       this._finish(job);
       this._job = null;
+      // the buffers are only needed while measuring (about 2 MB at 640 x 360)
+      this._zbuf = this._ibuf = null;
     }
     const dt = performance.now() - t0;
     job.ms += dt;
