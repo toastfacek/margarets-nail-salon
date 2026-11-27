@@ -13,6 +13,7 @@ import { createNailMaterial, createNailLighting, applyNailFinish, nailVariantKey
 import { createSkinMaterials, createSkinShared, setSkinTone } from './SkinMaterial.js';
 import { computeSettings } from '../core/Quality.js';
 import { whenIdle, warmRender } from './Warmup.js';
+import { useHandPoseSet } from './HandPoses.js';
 
 
 // Nail shape options
@@ -83,7 +84,7 @@ export function visiblePlateMask(geometry) {
 // One file: the right hand. The left hand is its mirror image, made at load
 // (tools/blender/build_hand.py builds the file; the old left GLB was an exact
 // mirror of the right one about this plane, x = 0.7 in the file's space).
-const MODEL_URL = 'models/hand.glb';
+const MODEL_URL = 'models/hand-v3.glb';
 const MIRROR_X = 0.7;
 
 function modelUrl() {
@@ -247,10 +248,25 @@ export class HandModel {
         const key = nailVariantKey(settings);
         let m = rec.variants[key];
         if (!m) {
-            m = createNailMaterial(settings, this.lighting, rec.material ? rec.material.uniforms : null);
+            m = createNailMaterial(this._nailSettings(settings), this.lighting, rec.material ? rec.material.uniforms : null);
             rec.variants[key] = m;
         }
         return m;
+    }
+
+    /**
+     * A tier's settings for the nail shader. Hand v3's nails have a real free
+     * edge (a 4 mm tip): its underside and thin rim get their own shading
+     * (NAIL_UNDERSIDE), on high and medium, drawn opaque (no blend: the nail
+     * then hides the skin under it before that skin is shaded). Low keeps the
+     * plain nail (the close-up sees the plate's top).
+     */
+    _nailSettings(settings) {
+        if (!this._freeEdge || settings.skin === 'lambert') return settings;
+        if (!this._nsCache || this._nsCache.src !== settings) {
+            this._nsCache = { src: settings, out: Object.assign({}, settings, { nailUnderside: true, nailUndersideAlpha: false }) };
+        }
+        return this._nsCache.out;
     }
 
     _applyNailVariant() {
@@ -337,6 +353,12 @@ export class HandModel {
         this._loading[hand] = this._loadSource().then((source) => {
             // the pristine file (unmirrored, rest pose): app.hand reads the bone axes from it
             this.sourceModel = source;
+            // the model's pose set (its thumb poses and limits are about its own bind)
+            let poseSet = null;
+            source.traverse((o) => { if (!poseSet && o.userData && o.userData.handPoseSet) poseSet = o.userData.handPoseSet; });
+            useHandPoseSet(poseSet || 'v2');
+            // hand v3 (its own pose set): nails with a free edge
+            this._freeEdge = poseSet === 'v3';
             // both hands are clones: the loaded scene stays pristine (its
             // materials and geometry are never set up in place)
             const model = hand === 'right' ? cloneSkinned(source) : this._mirrorClone(source);
@@ -454,7 +476,7 @@ export class HandModel {
         if (!geometry.boundingBox) geometry.computeBoundingBox();
 
         const oldMaterial = nailMesh.material;
-        const material = createNailMaterial(this.settings, this.lighting);
+        const material = createNailMaterial(this._nailSettings(this.settings), this.lighting);
         nailMesh.material = material;
         if (oldMaterial && oldMaterial !== material) {
             if (Array.isArray(oldMaterial)) oldMaterial.forEach((m) => m.dispose());
@@ -468,7 +490,7 @@ export class HandModel {
         // hidden skirt / turned-under free edge copy their rim's UV.
         const ud = nailMesh.userData || {};
         if (ud.nailFrame && Array.isArray(ud.nailHalf)) {
-            rec.frame = { half: ud.nailHalf, anat: Array.isArray(ud.nailAnat) ? ud.nailAnat : null };
+            rec.frame = { half: ud.nailHalf, anat: Array.isArray(ud.nailAnat) ? ud.nailAnat : null, shadeW: ud.nailShadeW || 1 };
             rec.visible = visiblePlateMask(geometry);
         }
         rec.uvAspect = this._computeUVAspect(geometry);
@@ -496,6 +518,11 @@ export class HandModel {
             u.uNailSide.value.set(1, 0, 0);
             u.uNailHalf.value.set(rec.frame.half[0], rec.frame.half[1]);
             if (rec.frame.anat) u.uNailAnat.value.fromArray(rec.frame.anat);
+            u.uShadeW.value = rec.frame.shadeW;
+            // the plate's tip (s units) for the free edge's thin rim (hand v3)
+            const geo = rec.mesh.geometry;
+            if (!geo.boundingBox) geo.computeBoundingBox();
+            u.uFreeTipS.value = geo.boundingBox.min.y / rec.frame.half[0];
             // lunula: a clear half-moon on the thumb, faint or hidden on the others
             u.uNailAnat.value.w = LUNULA[f];
             rec.nailNormal = new THREE.Vector3(0, 0, 1);

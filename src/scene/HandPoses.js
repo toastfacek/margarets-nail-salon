@@ -5,7 +5,7 @@
  * twist] in degrees, about the bone's own axes (src/scene/HandRig.js):
  *   flex   + curls toward the palm (every finger, the thumb, palm, wrist)
  *   spread + toward the pinky side (fingers); for the thumb + brings it in
- *          beside the index (its rest, THUMB_REST, sits at +27)
+ *          beside the index (its rest, THUMB_REST, is the file's bind: 0)
  *   twist  thumb only: + turns its nail up (toward the camera)
  * Tunable without Blender: the asset only has to keep the 17 bone names.
  * The limits are mirrored in tools/blender/rig.py (the pipeline checks the
@@ -33,22 +33,99 @@ export function fingerBase(fingerIndex) {
 // finger knuckle / middle joint flex tightened from the plan's 60 / 70 to 45 / 45: past
 // ~50 linear blend skinning folds the pad (tools/blender/rig.py checks every limit)
 const L_FINGER = [[-15, 45, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 45, 0, 0, -1, 1]];
-// thumb base: spread up to 36 (plan: 30; the natural rest, THUMB_REST, sits at 27),
-// flex up to 25 (plan: 35; flex 35 with spread 36 folds the thenar)
-const L_THUMB = [[-15, 25, -20, 36, -15, 25], [-5, 45, 0, 0, 0, 0], [-10, 55, 0, 0, -1, 1]];
+// the thumb's, about its bind (B9.8: the file's thumb now rests beside the index;
+// before, about a thumb sticking straight out: base flex -15..25, spread -20..36,
+// twist -15..25, middle -5..45, last -10..55; tools/blender/rig.py re-derives them)
+const L_THUMB = [[-19, 21, -47, 9, -9, 21], [-17, 33, 0, 0, 0, 0], [-20, 45, 0, 0, -1, 1]];
 const L_PALM = [-10, 10, -6, 6, 0, 0];
 const L_WRIST = [-10, 10, -8, 8, 0, 0];
 
-/** LIMITS[b * 6 + k]: per bone, flex/spread/twist min and max (degrees). */
-export const LIMITS = (() => {
-  const a = new Float32Array(NB * 6);
+/**
+ * Per-model pose sets. The thumb's poses are about each file's own bind, so a
+ * hand model built around a different thumb rest needs its own numbers; the
+ * model names its set in its armature's glTF extras (`handPoseSet`, read by
+ * HandModel) and useHandPoseSet() switches to it. 'v2' is the default (the
+ * numbers above, B9.8). 'v3' is the hand built from the anatomical distance
+ * field (tools/blender/hv3): its thumb rests beside the index with a first web
+ * only ~7 mm wide, so its poses open the thumb through the MCP and IP joints
+ * and turn the nail with the base twist, never pushing the thumb toward the
+ * index; its limits are where tools/blender/hv3/build3.py finds no flipped
+ * triangle (the finger knuckles' flex stops at 25: past ~28 linear blend
+ * skinning folds v3's volar finger roots; the game's poses stay under ~20;
+ * the last joints stop at 40, where one sliver on the index pad turned over at 45).
+ * Mirrored in tools/blender/hv3/rig3.py (POSE_SET_V3).
+ */
+export const POSE_SETS = Object.freeze({
+  v2: Object.freeze({
+    finger: L_FINGER,
+    thumb: L_THUMB,
+    // [base flex, base spread, base twist, middle joint flex, last joint flex]
+    relaxed: Object.freeze([2.6, 7.3, -1.9, -2, 2]),   // before B9.8: [8, 34, 4, 10, 12]
+    fan: Object.freeze([-2.9, -9.3, 7.8, -10, -8]),    // before B9.8: [0, 18, 10, 2, 2]
+    thumbActive: Object.freeze([-1.2, -7.1, 14.9, -8, -5]),
+    thumbOther: Object.freeze([1.7, 1.2, -0.9, 2, 2]),
+    spreadAway: 3,
+    active: Object.freeze([-8, 4, 4]),
+    other: Object.freeze([8, 10, 5]),
+  }),
+  v3: Object.freeze({
+    finger: [[-15, 25, -12, 12, 0, 0], [0, 45, 0, 0, 0, 0], [-5, 40, 0, 0, -1, 1]],
+    thumb: [[-12, 3, -14, 2, -8, 20], [-16, 6, 0, 0, 0, 0], [-12, 45, 0, 0, -1, 1]],
+    // relaxed: the rest, the last joint softly curled
+    relaxed: Object.freeze([0, -1, 0, 0, 5]),
+    // fan: the thumb opens away from the index (MCP and IP straighten), nail a little up
+    fan: Object.freeze([-2, -3, 4, -12, -10]),
+    // presented: forward and away from the index, the nail turned up toward the camera
+    thumbActive: Object.freeze([-2, -1, 14, -10, -4]),
+    // another finger presented: the thumb stays put, the last joint a touch curled
+    thumbOther: Object.freeze([0, 0, 0, 0, 2]),
+    // the other fingers part further from the presented one: v3's fingers lie
+    // close side by side, and a neighbour packed against the active finger
+    // fills the close-up with skin (its fill rate) and crowds the nail
+    spreadAway: 12,   // the limit (pan.mjs P3 at the ring-pinky rail stop passes, 27/27)
+    // the presented finger lifts and the others curl away under the palm,
+    // like a client offering one finger: only the active finger and nail
+    // show in the close-up (its fill rate stays near v1's; no other nail in
+    // view on any finger). The knuckle stops 3 short of its limit (25) so the
+    // spring still overshoots as it curls (hand-pose.mjs P11: a target on the
+    // limit is clamped flat); the middle and last joints 1 and 2 short (45, 40)
+    active: Object.freeze([-12, 2, 2]),
+    other: Object.freeze([22, 44, 38]),
+  }),
+});
+let _set = POSE_SETS.v2;
+let _setName = 'v2';
+
+function fillLimits(a, set) {
   a.set(L_WRIST, 0);
   a.set(L_PALM, 6);
   for (let f = 0; f < 5; f++) {
-    for (let k = 0; k < 3; k++) a.set((f === 0 ? L_THUMB : L_FINGER)[k], (fingerBase(f) + k) * 6);
+    for (let k = 0; k < 3; k++) a.set((f === 0 ? set.thumb : set.finger)[k], (fingerBase(f) + k) * 6);
   }
   return a;
-})();
+}
+
+/** LIMITS[b * 6 + k]: per bone, flex/spread/twist min and max (degrees), of the current pose set. */
+export const LIMITS = fillLimits(new Float32Array(NB * 6), _set);
+
+/**
+ * Switch the pose set ('v2' | 'v3'): the thumb's named and present poses and
+ * LIMITS (rewritten in place) follow. Unknown names keep the current set.
+ * @returns {string} the set now in use
+ */
+export function useHandPoseSet(name) {
+  if (POSE_SETS[name] && name !== _setName) {
+    _set = POSE_SETS[name];
+    _setName = name;
+    fillLimits(LIMITS, _set);
+  }
+  return _setName;
+}
+
+/** The pose set in use. */
+export function handPoseSet() {
+  return _setName;
+}
 
 /** Clamp a pose (in place) to the limits. */
 export function clampPose(p) {
@@ -63,13 +140,15 @@ export function clampPose(p) {
 }
 
 /**
- * The thumb's natural rest (Jesse, B9 review): the file's thumb sticks
- * straight out from the hand. At rest it sits beside the index at about
- * 30 degrees (animation-tests/thumb-before-after.png), turned a little toward the palm, both joints a little curled,
- * the nail partly sideways. Every pose starts from it (neutral included).
+ * The thumb's natural rest (Jesse, B9 review): beside the index at about 30
+ * degrees, turned a little toward the palm, both joints a little curled, the
+ * nail partly sideways. Since B9.8 that is the file's own bind pose (the
+ * pipeline poses the thumb there in Blender and smooths the thenar web, which
+ * linear blend skinning used to crease), so the rest is all zeros. Every pose
+ * starts from it (neutral included); the thumb values below are about it.
  * [base flex, base spread, base twist, middle joint flex, last joint flex]
  */
-export const THUMB_REST = Object.freeze([4, 27, 4, 12, 10]);
+export const THUMB_REST = Object.freeze([0, 0, 0, 0, 0]);
 
 function thumb(out, t) {
   const b = fingerBase(0) * 3;
@@ -80,14 +159,18 @@ function thumb(out, t) {
 // The present pose (plan 5.3): the active finger lifts its tip toward the
 // camera, the others relax out of the way and spread a little away from it.
 export const PRESENT = Object.freeze({
-  active: [-8, 4, 4],          // knuckle, middle joint, last joint (flex)
-  other: [8, 10, 5],
-  spreadAway: 3,
-  // the thumb, in THUMB_REST's terms: presented it comes forward a little
-  // away from the index with its nail turned up (never hyper-extended); while
-  // another finger is presented it tucks a little closer
-  thumbActive: Object.freeze([2, 20, 18, 4, 5]),
-  thumbOther: Object.freeze([6, 28, 4, 14, 12]),
+  // knuckle, middle joint, last joint (flex): the pose set's (v2: [-8, 4, 4] / [8, 10, 5])
+  get active() { return _set.active; },
+  get other() { return _set.other; },
+  get spreadAway() { return _set.spreadAway; },
+  // the thumb, about THUMB_REST: presented it comes forward a little away
+  // from the index with its nail turned up (its joints straighten toward the
+  // file's old straight thumb, never hyper-extended); while another finger is
+  // presented it tucks a little closer
+  // (before B9.8, about the straight-out thumb: [2, 20, 18, 4, 5] / [6, 28, 4, 14, 12])
+  // the thumb's numbers are the pose set's (POSE_SETS: thumbActive, thumbOther)
+  get thumbActive() { return _set.thumbActive; },
+  get thumbOther() { return _set.thumbOther; },
 });
 
 /**
@@ -148,12 +231,12 @@ export const POSE_NAMES = Object.freeze(['neutral', 'relaxed', 'fan']);
 export function writeNamed(name, out) {
   out.fill(0);
   if (name === 'relaxed') {
-    thumb(out, [8, 34, 4, 10, 12]);
+    thumb(out, _set.relaxed);
     return fingers(out, [null, [6, 10, 5], [6, 10, 5], [6, 10, 5], [6, 10, 5]], [0, -1, 0, 1, 2]);
   }
   if (name === 'fan') {
     // the show-off: fingers spread 8-10 degrees, tips a little up, the thumb opens
-    thumb(out, [0, 18, 10, 2, 2]);
+    thumb(out, _set.fan);
     return fingers(out, [null, [-5, 0, 0], [-5, 0, 0], [-5, 0, 0], [-4, 0, 0]], [0, -9, -2, 5, 10]);
   }
   return thumb(out, THUMB_REST);

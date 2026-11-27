@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "build:hand": "/home/claude/bpyenv/bin/python tools/blender/build_hand.py"
+    "build:hand": "/home/claude/bpyenv/bin/python tools/blender/build_hand.py",
+    "build:hand:v1": "/home/claude/bpyenv/bin/python tools/blender/v1/build_hand.py"
   },
   "dependencies": {
     "@fontsource-variable/fredoka": "^5.3.0",

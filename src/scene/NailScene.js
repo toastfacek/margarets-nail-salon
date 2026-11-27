@@ -34,6 +34,11 @@ const RIM_INTENSITY = 0.55;
 const FOCUS_ASPECT = 1.3;
 const FOCUS_FILL = 0.60;  // B7: the nail now stands upright (long side on the short axis): 0.60 measures ~0.56
 const FOCUS_FILL_COARSE = 0.70;
+// ... and the plate never covers more than this share of the short side
+// squared (at FOCUS_FILL; measured so v3's index covers the live v1 index's ~76k px at 1280x720): a bigger
+// nail (hand v3's 4 mm tip) is framed from further back, so the close-up's
+// fill rate stays the live one's
+const FOCUS_AREA = 0.185;
 const COARSE = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 // The focused nail is centred in the band the HUD leaves free (CSS px):
 // [top, bottom] reserved at the top (bubble, stars, finger dots / finger map)
@@ -52,6 +57,11 @@ function focusBand(w, h, out) {
 // backs off between two fingers (x focus distance) so the next one shows sooner.
 const RAIL = Object.freeze(['thumb', 'index', 'middle', 'ring', 'pinky']);
 const RAIL_BULGE = 0.22;
+// the desk sits at least this far under the lowest finger skin of the rest
+// pose and of every library pose (DESK_POSES)
+const DESK_FINGER_GAP = 0.025;
+const DESK_POSES = Object.freeze(['neutral', 'relaxed', 'fan', 'thumb', 'index', 'middle', 'ring', 'pinky']);
+const FINGER_BONE = /0?[123]$/;
 const WORLD_UP = Object.freeze(new THREE.Vector3(0, 1, 0));
 /** A camera pose: position, look-at target, up (unit), focus distance. */
 const makePose = () => ({ pos: new THREE.Vector3(), target: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), d: 0.5, ok: false });
@@ -374,6 +384,15 @@ export class NailScene {
         if (this.handPose && !this._inHandPose) {
             this._inHandPose = true;
             try {
+                // the desk stays under the fingers in every library pose (a
+                // presented finger's neighbours curl down out of the close-up)
+                const hm0 = this.handModel;
+                const h0 = hm0 && hm0.hands[hm0.getCurrentHand()];
+                let lo = Infinity;
+                if (h0 && h0.model) {
+                    for (const p of DESK_POSES) this.handPose(p, () => { lo = Math.min(lo, this._lowestFingerY(h0.model)); });
+                }
+                this._deskFingerLo = lo;
                 this.handPose('neutral', () => this._bakeHand());
             } finally {
                 this._inHandPose = false;
@@ -397,7 +416,11 @@ export class NailScene {
             if (wp && wp.y < minNailY) minNailY = wp.y;
         });
         if (!isFinite(minNailY)) minNailY = b.max.y - 0.3;
-        const deskY = minNailY - 0.1;
+        // hand v3's thumb sits lower than its nail suggests: the desk also
+        // goes under the lowest finger skin (not the forearm, which dips
+        // under the towel on purpose)
+        const fingerLo = Math.min(this._lowestFingerY(hand.model), isFinite(this._deskFingerLo) ? this._deskFingerLo : Infinity);
+        const deskY = Math.min(minNailY - 0.1, fingerLo - DESK_FINGER_GAP);
 
         // Footprint of what is above the desk.
         let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -426,6 +449,29 @@ export class NailScene {
         this.defaultTarget.set(cx, deskY + 0.15, cz);
         this.defaultCameraPos.set(cx, deskY + 2.4, cz + 0.55);
         this.invalidate();
+    }
+
+    /** Lowest world y of the skin weighted (>= 0.5) to finger bones (once per bake). */
+    _lowestFingerY(model) {
+        let skin = null;
+        model.traverse((o) => { if (o.isSkinnedMesh && !skin) skin = o; });
+        if (!skin) return Infinity;
+        skin.updateMatrixWorld(true);
+        skin.skeleton.update();
+        const P = skin.geometry.attributes.position;
+        const ws = skin.geometry.attributes.skinWeight, ix = skin.geometry.attributes.skinIndex;
+        const bones = skin.skeleton.bones;
+        const isFinger = bones.map((b) => FINGER_BONE.test(b.name));
+        const v = new THREE.Vector3();
+        let lo = Infinity;
+        for (let i = 0; i < P.count; i++) {
+            let fw = 0;
+            for (let k = 0; k < 4; k++) if (isFinger[ix.getComponent(i, k)]) fw += ws.getComponent(i, k);
+            if (fw < 0.5) continue;
+            skin.getVertexPosition(i, v).applyMatrix4(skin.matrixWorld);
+            if (v.y < lo) lo = v.y;
+        }
+        return lo;
     }
 
     setupControls() {
@@ -797,7 +843,14 @@ export class NailScene {
         // short plate (B9) does not pull the camera closer (screen fill,
         // and so the fill-rate cost of the close-up, stays as it was)
         const size = 2 * Math.max(halfL, halfW * FOCUS_ASPECT) || 0.1;
-        const d = THREE.MathUtils.clamp(size / (fill * 2 * tanHalf * Math.min(1, aspect)), 0.1, 1.2);
+        const short = 2 * tanHalf * Math.min(1, aspect);
+        let dFit = size / (fill * short);
+        const area = this._plateArea(rec, mesh);
+        if (area > 0) {
+            const k = FOCUS_AREA * (fill / FOCUS_FILL) * (fill / FOCUS_FILL);
+            dFit = Math.max(dFit, Math.sqrt(area / k) / short);
+        }
+        const d = THREE.MathUtils.clamp(dFit, 0.1, 1.2);
         // centre the nail in the band the HUD leaves free: look a little
         // below (or above) it by that band's offset from the screen centre
         const band = focusBand(this.width, this.height, this._band);
@@ -808,6 +861,32 @@ export class NailScene {
         out.d = d;
         out.ok = true;
         return out;
+    }
+
+    /**
+     * World area of the nail's visible plate (its top: rec.visible), cached
+     * in the mesh's own units; 0 without a mask.
+     */
+    _plateArea(rec, mesh) {
+        if (rec.focusArea === undefined) {
+            const vis = rec.visible;
+            const g = mesh.geometry, P = g.attributes.position, I = g.index;
+            let a = 0;
+            if (vis && I) {
+                const v0 = this._fp.a.clone(), v1 = v0.clone(), v2 = v0.clone();
+                for (let t = 0; t < I.count; t += 3) {
+                    const i0 = I.getX(t), i1 = I.getX(t + 1), i2 = I.getX(t + 2);
+                    if (!vis[i0] || !vis[i1] || !vis[i2]) continue;
+                    v0.fromBufferAttribute(P, i0); v1.fromBufferAttribute(P, i1).sub(v0); v2.fromBufferAttribute(P, i2).sub(v0);
+                    a += 0.5 * v1.cross(v2).length();
+                }
+            }
+            rec.focusArea = a;
+        }
+        if (!rec.focusArea) return 0;
+        const e = mesh.matrixWorld.elements;
+        const sx = Math.hypot(e[0], e[1], e[2]), sy = Math.hypot(e[4], e[5], e[6]);
+        return rec.focusArea * sx * sy;
     }
 
     /**
@@ -1054,6 +1133,15 @@ export class NailScene {
         if (this._railGlide) this.isAnimating = false;
         this._railGlide = false;
         this._railBlend.w = 0;
+    }
+
+    /**
+     * Where the rail is headed: a glide's landing finger while it runs, else
+     * railS (the hand presents the landing finger as the glide starts, so
+     * its springs uncurl it while the camera travels).
+     */
+    get railGoal() {
+        return this._railGlide && this.isAnimating ? this._glide.s1 : this.railS;
     }
 
     /** True while a rail glide runs. */

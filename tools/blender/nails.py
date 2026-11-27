@@ -1,32 +1,34 @@
-"""The nail unit (hand-plan.md 3.2): rebuilt plates and the skin around them.
+"""The nail unit v2 (hand-v2-plan.md section 4): the plate, built from the
+finger's own nail groove.
 
-Per finger, from the old plate's frame (centre, across, toward the cuticle, out):
-  * a new plate: a clean NI x (1 + NV + 2) grid, a C-curve across (radius fitted
-    to the old plate, a little tighter toward the free edge), a slight arch
-    along, straight sides, an arc at the cuticle and at the free edge, a hidden
-    skirt under the folds and a free edge turned under (its thickness);
-  * a canonical local frame in the game (three, Y up): +X across, +Y toward
-    the cuticle, +Z out, origin on the plate surface at its centre; node
-    extras { nailFrame: 1, nailHalf, nailAnat };
-  * real UVs: u across (arc length), v along, v = 0 at the cuticle (in the
-    game: glTF flips v), the
-    visible plate spans [0, 1]; skirt and lip copy the UV of their rim vertex
-    (zero UV area: only what a kid can see counts);
-  * the skin around it: subdivided locally, then displaced in the nail frame
-    by the signed distance to the plate outline (proximal and lateral folds that
-    rise above the plate and drop onto it, the nail bed below the plate, a gap
-    under the free edge), and weighted 100% to the finger's .03 bone near the
-    plate, so the folds can never slide on it.
+Per finger (the bed patch = the cage's committed nail faces, carried through
+subdivision as material index 1 + finger):
+  frame   +Z = the patch's area-weighted normal; +Y = the finger axis (.03)
+          projected into the patch plane, toward the cuticle; +X = Y x Z;
+          origin = the centre of the visible plate (at the default length)
+  surface the bed's own surface (a quadric fitted to the patch on the limit
+          surface), C-curve scaled by NAIL_C_CURVE; past the hyponychium it
+          continues tangent, the C-curve tightening, curving down a little
+  outline straight, slightly converging sides; a U-shaped cuticle; the free
+          edge an ellipse blended by NAIL_TIP_ROUND
+  grid    NAIL_COLS visible columns + 2 side tuck columns; a cuticle tuck row;
+          NAIL_BED_ROWS rows over the bed, NAIL_FREE_ROWS past it; the free
+          edge has real thickness: a lip row and an underside back to the
+          hyponychium. Tucked, lip and underside vertices copy their rim's UV
+          (zero UV area), the visible top fills [0, 1].
+  extras  nailFrame: 1, nailHalf: [half length, half width] of the visible
+          plate, nailAnat: [s of the hyponychium line, cuticle arc, free-edge
+          arc, 0] (s = y / half length, arcs in s per w^2)
 """
-import bmesh
+import math
+
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
-import gltfio
 import params as P
-from gltfio import FINGERS, NAIL_NAMES
+from base import FINGERS
 
 
 def smoothstep(a, b, x):
@@ -34,410 +36,790 @@ def smoothstep(a, b, x):
     return t * t * (3.0 - 2.0 * t)
 
 
+def unit(v):
+    v = np.asarray(v, dtype=np.float64)
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+class Groove:
+    """One finger's nail bed, measured in its frame (game units)."""
+
+    def __init__(self, finger, O, X, Y, Z, mm):
+        self.finger, self.O, self.X, self.Y, self.Z, self.mm = finger, O, X, Y, Z, mm
+
+    def local(self, p):
+        S = np.asarray(p) - self.O
+        return np.stack([S @ self.X, S @ self.Y, S @ self.Z], -1)
+
+    def fit(self, Q):
+        """Quadric z(x, y) through the bed points Q (local)."""
+        x, y, z = Q[:, 0], Q[:, 1], Q[:, 2]
+        M = np.stack([np.ones_like(x), x, y, x * x, y * y, x * y], 1)
+        self.c = np.linalg.lstsq(M, z, rcond=None)[0]
+
+    R_c = None      # the plate's transverse radius (a circular C-curve), set for the sculpted nails
+
+    def csag(self, x, tight=0.0):
+        """The C-curve across: how far below the centre line the plate is at x
+        (a circle of radius R_c, tightened by the factor 1 + tight toward the free
+        edge); the fitted quadric's own x^2 term when no radius is set."""
+        if self.R_c is None:
+            return -self.c[3] * x * x / P.NAIL_C_CURVE * (1.0 + tight)
+        R = self.R_c / (1.0 + tight)
+        # a circle across the plate; beyond its sides (where only the folds and
+        # the skin round them read it) it goes on along the edge's tangent
+        xe = np.minimum(self.W_c, 0.95 * R)
+        ax = np.abs(x)
+        xx = np.minimum(ax, xe)
+        sag = R - np.sqrt(R * R - xx * xx)
+        return sag + np.maximum(ax - xe, 0.0) * xe / np.sqrt(R * R - xe * xe)
+
+    def zbed(self, x, y, tight=0.0):
+        c = self.c
+        return c[0] + c[1] * x + c[2] * y - self.csag(x, tight) + c[4] * y * y + c[5] * x * y
+
+
 class Plate:
-    """One nail plate in its own frame (a = arc length across, y along, z out)."""
+    """The plate of one finger at one free-edge length (local frame, game units)."""
 
-    def __init__(self, finger, Wv, Lv, R0, Rlong, y_hypo):
-        self.finger = finger
-        self.Wv, self.Lv, self.R0, self.Rlong, self.y_hypo = Wv, Lv, R0, Rlong, y_hypo
-        self._layout()
+    def __init__(self, g, W0, y_cut, y_h, free_len, lift):
+        self.g, self.W0, self.y_cut, self.y_h, self.lift = g, W0, y_cut, y_h, lift
+        self.bed = y_cut - y_h
+        self.free = free_len * self.bed
+        self.y_tip = y_h - self.free
+        # the free edge's oval reaches back at most NAIL_CORNER past the hyponychium,
+        # so the plate's outline over the bed is the same at every length (the skin
+        # round it is baked once)
+        self.d_tip = min(P.NAIL_TIP_ROUND * W0, self.free + P.NAIL_CORNER * g.mm)
+        self.sag = P.NAIL_CUTICLE_ARC * W0
 
-    def R(self, y):
-        t = np.clip((self.Lv - np.asarray(y)) / (2 * self.Lv), 0.0, 1.0)
-        return self.R0 * (1.0 - P.NAIL_RADIUS_FREE_TIGHTEN * t)
+    def W(self, y):
+        # the taper runs at the same rate at every length (per bed length), so a
+        # longer nail is never wider anywhere than the default one
+        return self.W0 * (1.0 - P.NAIL_SIDE_TAPER * np.clip((self.y_cut - y) / (1.25 * self.bed), 0, 2))
 
-    def surf(self, a, y):
-        """Local (x, z) of the surface at arc length a, along y (works outside the outline too)."""
-        R = self.R(y)
-        x = R * np.sin(a / R)
-        z = -R * (1.0 - np.cos(a / R)) - np.asarray(y) ** 2 / (2.0 * self.Rlong)
-        return x, z
+    def y_c(self, x):
+        return self.y_cut - self.sag * (x / self.W0) ** 2
 
-    def normal(self, a, y):
-        R = self.R(y)
-        th = a / R
-        n = np.stack([np.sin(th), -np.asarray(y) / self.Rlong * np.cos(th), np.cos(th)], -1)
-        return n / np.linalg.norm(n, axis=-1, keepdims=True)
+    def y_e(self, x):
+        Wt = self.W(self.y_tip)
+        return self.y_tip + self.d_tip * (1.0 - np.sqrt(np.clip(1.0 - (x / Wt) ** 2, 0, 1)))
 
-    def a_of_x(self, x, y):
-        R = self.R(y)
-        return R * np.arcsin(np.clip(x / R, -1.0, 1.0))
+    def z(self, x, y):
+        """Top surface."""
+        g, mm = self.g, self.g.mm
+        yh = self.y_h
+        past = np.minimum(y - yh, 0.0)              # <= 0 past the hyponychium
+        yb = np.maximum(y, yh)
+        # the C-curve tightens a little toward the free edge (from the bed's last
+        # NAIL_C_TIGHTEN_LEN to the edge)
+        tight = P.NAIL_C_TIGHTEN * smoothstep(-P.NAIL_C_TIGHTEN_LEN * mm, 2.0 * mm, yh - y)
+        z = g.zbed(x, yb, tight)
+        # the free edge's corners: past NAIL_CORNER_RELAX[0] mm of overhang the
+        # C-curve's sides relax back toward the centre line by up to
+        # NAIL_CORNER_RELAX[2] (filed corners do not hang down past the fingertip
+        # like a claw; the free edge's start keeps the full curve)
+        r0, r1, k = P.NAIL_CORNER_RELAX
+        relax = k * smoothstep(r0 * mm, r1 * mm, yh - y)
+        z = z + relax * (g.zbed(np.zeros_like(x), yb, tight) - z)
+        eps = 1e-4
+        dzdy = (g.zbed(x, yh + eps) - g.zbed(x, yh - eps)) / (2 * eps)
+        z = z + P.NAIL_FREE_SLOPE * dzdy * past - P.NAIL_DROOP * (past / mm) ** 2 * mm
+        return z + self.lift
 
-    def _layout(self):
-        """Visible grid (rows top -> bottom, columns left -> right) in (a, y)."""
-        NI, NV = P.NAIL_NI, P.NAIL_NV
-        Wv, Lv = self.Wv, self.Lv
-        bc = P.NAIL_CUTICLE_ARC * Wv
-        bf = P.NAIL_FREE_ARC * Wv
-        s = np.linspace(-1.0, 1.0, NI - 2)
-        r = np.linspace(0.0, 1.0, NV)
-        rc = np.clip(1.0 - r / P.NAIL_CUTICLE_ROWS, 0.0, 1.0) ** 1.5
-        rf = np.clip((r - (1.0 - P.NAIL_FREE_ROWS)) / P.NAIL_FREE_ROWS, 0.0, 1.0) ** 1.5
-        top, bot = Lv - bc, -(Lv - bf)
-        ycore = top + (bot - top) * r
-        S, Rr = np.meshgrid(s, r)
-        RC = np.broadcast_to(rc[:, None], S.shape)
-        RF = np.broadcast_to(rf[:, None], S.shape)
-        A = S * Wv * (1.0 - P.NAIL_CUTICLE_ROUND * RC ** 2 - P.NAIL_FREE_ROUND * RF ** 2)
-        Y = ycore[:, None] + bc * (1.0 - S ** 2) * RC - bf * (1.0 - S ** 2) * RF
-        self.A, self.Y = A, Y
-        # closed outline in (a, y), counter-clockwise
-        ring = [(A[0, i], Y[0, i]) for i in range(NI - 3, -1, -1)]
-        ring += [(A[j, 0], Y[j, 0]) for j in range(1, NV)]
-        ring += [(A[NV - 1, i], Y[NV - 1, i]) for i in range(1, NI - 2)]
-        ring += [(A[j, NI - 3], Y[j, NI - 3]) for j in range(NV - 2, 0, -1)]
-        self.outline = np.array(ring)
+    def normal(self, x, y):
+        e = 1e-4
+        dx = (self.z(x + e, y) - self.z(x - e, y)) / (2 * e)
+        dy = (self.z(x, y + e) - self.z(x, y - e)) / (2 * e)
+        return unit(np.stack([-dx, -dy, np.ones_like(dx)], -1))
 
-    def signed_distance(self, a, y):
-        """Distance to the visible outline in the (a, y) plane, negative inside."""
-        p = np.stack([a, y], -1)
-        q0 = self.outline
-        q1 = np.roll(self.outline, -1, axis=0)
-        d = q1 - q0
-        L2 = (d ** 2).sum(1)
-        t = np.clip(((p[:, None, :] - q0[None]) * d[None]).sum(-1) / L2[None], 0, 1)
-        proj = q0[None] + t[..., None] * d[None]
-        dist = np.sqrt(((p[:, None, :] - proj) ** 2).sum(-1)).min(1)
-        # inside: even-odd crossing test
-        x, yy = p[:, 0][:, None], p[:, 1][:, None]
-        cond = (q0[None, :, 1] > yy) != (q1[None, :, 1] > yy)
-        xint = q0[None, :, 0] + (yy - q0[None, :, 1]) * d[None, :, 0] / np.where(d[None, :, 1] == 0, 1e-12, d[None, :, 1])
-        inside = (cond & (x < xint)).sum(1) % 2 == 1
-        return np.where(inside, -dist, dist)
+    def build(self):
+        """verts (local x, y, z), uv, normals, faces, grid shape."""
+        NI = P.NAIL_COLS
+        NB, NF = P.NAIL_BED_ROWS, P.NAIL_FREE_ROWS
+        mm = self.g.mm
+        T = P.NAIL_THICKNESS * mm
+        s = np.linspace(-1.0, 1.0, NI)
+        # visible rows: per column from the cuticle to the bed end, then to the edge
+        xs = s * self.W0
+        yc = self.y_c(xs)
+        ye = self.y_e(xs)
+        yb = np.maximum(self.y_h, ye)
+        rb = np.linspace(0, 1, NB)[:, None]
+        rf = np.linspace(0, 1, NF + 1)[1:, None]
+        Yv = np.vstack([yc + (yb - yc) * rb, yb + (ye - yb) * rf])          # (NB + NF, NI)
+        # the cuticle's corners round in a little (the U meets the sides softly)
+        rc = np.clip(1.0 - (yc[None, :] - Yv) / (P.NAIL_CUTICLE_ROWS * self.bed), 0, 1) ** 1.5
+        Xv = s[None, :] * self.W(Yv) * (1.0 - P.NAIL_CUTICLE_ROUND * rc ** 2)
+        # the outline's x at the free-edge corners follows the ellipse
+        Zv = self.z(Xv, Yv)
+        self.Xv, self.Yv = Xv, Yv
+        Nv = self.normal(Xv, Yv)
+        nv = NB + NF
+        rows_x, rows_y, rows_z, rows_n, rows_uv = [], [], [], [], []
+        u = (Xv / self.W0 + 1.0) * 0.5
+        v = (Yv - self.y_tip) / (self.y_cut - self.y_tip)
 
-    def build_mesh(self):
-        """Vertices (local), UVs, normals override mask, faces of the plate."""
-        NI, NV = P.NAIL_NI, P.NAIL_NV
-        Wv, Lv = self.Wv, self.Lv
-        NJ = NV + 3
-        A = np.zeros((NJ, NI))
-        Yg = np.zeros((NJ, NI))
-        A[1:NV + 1, 1:NI - 1] = self.A
-        Yg[1:NV + 1, 1:NI - 1] = self.Y
-        # rim UVs
-        U = np.zeros((NJ, NI))
-        V = np.zeros((NJ, NI))
-        U[1:NV + 1, 1:NI - 1] = (self.A / Wv + 1.0) * 0.5
-        # glTF flips v (v' = 1 - v): v' = 0 at the cuticle in the game
-        V[1:NV + 1, 1:NI - 1] = (self.Y + Lv) / (2.0 * Lv)
-        X = np.zeros((NJ, NI))
-        Z = np.zeros((NJ, NI))
-        Yo = np.zeros((NJ, NI))
-        x, z = self.surf(A[1:NV + 1, 1:NI - 1], Yg[1:NV + 1, 1:NI - 1])
-        X[1:NV + 1, 1:NI - 1], Z[1:NV + 1, 1:NI - 1], Yo[1:NV + 1, 1:NI - 1] = x, z, Yg[1:NV + 1, 1:NI - 1]
-        T = P.NAIL_THICKNESS * Wv
-        # folds cover the side skirt only up to the hyponychium; past it the
-        # side skirt turns straight down into the free edge's thickness
-        fold_w = smoothstep(self.y_hypo - P.FOLD_SIDE_END[0] * Lv, self.y_hypo + 0.2 * Lv, Yg[1:NV + 1, 1])
-        ls = P.NAIL_SKIRT_SIDE * 2 * Wv
-        for side, col, rim in ((-1, 0, 1), (1, NI - 1, NI - 2)):
-            a_rim = A[1:NV + 1, rim]
-            y_rim = Yg[1:NV + 1, rim]
-            a_sk = a_rim + side * ls * fold_w * P.NAIL_SKIRT_OUT
-            xs, zs = self.surf(a_sk, y_rim)
-            zs = zs - P.NAIL_SKIRT_DROP * ls * fold_w - T * (1 - fold_w)
-            X[1:NV + 1, col], Z[1:NV + 1, col], Yo[1:NV + 1, col] = xs, zs, y_rim
-            A[1:NV + 1, col], Yg[1:NV + 1, col] = a_sk, y_rim
-            U[1:NV + 1, col], V[1:NV + 1, col] = U[1:NV + 1, rim], V[1:NV + 1, rim]
-        # cuticle skirt row: past the top row, along +y, dropping
-        lc = P.NAIL_SKIRT_CUTICLE * 2 * Lv
-        y_sk = Yg[1] + lc * P.NAIL_SKIRT_OUT
-        xs, zs = self.surf(A[1], y_sk)
-        X[0], Z[0], Yo[0] = xs, zs - P.NAIL_SKIRT_DROP * lc, y_sk
-        A[0], Yg[0] = A[1], y_sk
-        U[0], V[0] = U[1], V[1]
-        # free edge: straight down by its thickness, then back under the plate
-        for j, back, down in ((NV + 1, 0.25 * T, T), (NV + 2, P.NAIL_LIP_BACK * Lv, T * 1.15)):
-            X[j], Yo[j], Z[j] = X[NV] * 0.985, Yo[NV] + back, Z[NV] - down
-            A[j], Yg[j] = A[NV], Yg[NV]
-            U[j], V[j] = U[NV], V[NV]
-        # Blender local axes (x across, -out, toward the cuticle): the exporter's
-        # Y-up conversion (x, y, z) -> (x, z, -y) makes them three's
-        # (+X across, +Y toward the cuticle, +Z out).
-        verts = np.stack([X, -Z, Yo], -1).reshape(-1, 3)
-        uv = np.stack([U, V], -1).reshape(-1, 2)
-        # analytic normals for the plate and its skirt; the free-edge row tilts out a little
-        N = np.zeros((NJ, NI, 3))
-        N[:NV + 1] = self.normal(A[:NV + 1], Yg[:NV + 1])
-        N[NV] = N[NV] + np.array([0, -0.35, 0])
-        N[NV] /= np.linalg.norm(N[NV], axis=-1, keepdims=True)
-        N[NV + 1] = np.array([0, -1.0, -0.15])
-        N[NV + 2] = np.array([0, 0.0, -1.0])
-        N[NV + 1] = N[NV + 1] / np.linalg.norm(N[NV + 1], axis=-1, keepdims=True)
+        def side_cols(x, y, z, n, uu, vv, bed_w):
+            """Add the two tuck columns to a row of visible points."""
+            out_x = np.concatenate([[x[0]], x, [x[-1]]])
+            out_y = np.concatenate([[y[0]], y, [y[-1]]])
+            out_z = np.concatenate([[z[0]], z, [z[-1]]])
+            out_n = np.concatenate([n[:1], n, n[-1:]])
+            for k, sg in ((0, -1), (-1, 1)):
+                # under the side fold over the bed; straight down by the thickness past it
+                out_x[k] = x[k] + sg * P.FOLD_TUCK_SIDE * mm * bed_w * 0.6
+                out_z[k] = z[k] - (P.FOLD_TUCK_SIDE * mm * 1.2) * bed_w - T * (1 - bed_w)
+            out_uv = np.stack([np.concatenate([[uu[0]], uu, [uu[-1]]]), np.concatenate([[vv[0]], vv, [vv[-1]]])], -1)
+            return out_x, out_y, out_z, out_n, out_uv
+
+        def add(x, y, z, n, uv):
+            rows_x.append(x)
+            rows_y.append(y)
+            rows_z.append(z)
+            rows_n.append(n)
+            rows_uv.append(uv)
+
+        # cuticle tuck row: past the cuticle, under the proximal fold
+        tx = Xv[0]
+        ty = Yv[0] + P.FOLD_TUCK_PROX * mm
+        tz = self.z(tx, ty) - 0.8 * P.FOLD_TUCK_PROX * mm
+        bw = np.ones(1)
+        add(*side_cols(tx, ty, tz, Nv[0], u[0], v[0], 1.0))
+        for j in range(nv):
+            # under the side fold where there is one; past it the side is the plate's thickness
+            bed_w = float(smoothstep(P.FOLD_SIDE_END[0] * 0.33 * mm, P.FOLD_SIDE_END[1] * mm, Yv[j, 0] - self.y_h))
+            add(*side_cols(Xv[j], Yv[j], Zv[j], Nv[j], u[j], v[j], bed_w))
+        # lip: the free edge's thickness, then the underside back to the bed end
+        e = nv - 1
+        ln = unit(np.stack([np.zeros(NI), -np.ones(NI), -0.2 * np.ones(NI)], -1))
+        add(*side_cols(Xv[e] * 0.99, Yv[e] + 0.05 * T, Zv[e] - 0.5 * T, ln, u[e], v[e], 0.0))
+        for j in range(nv - 1, NB - 2, -1):
+            n = Nv[j]
+            r = side_cols(Xv[j] - n[:, 0] * T, Yv[j] - n[:, 1] * T, Zv[j] - n[:, 2] * T, -n, u[j], v[j], 0.0)
+            # the underside's side columns close onto the foot of the plate's side wall
+            for k in (0, -1):
+                r[0][k], r[1][k], r[2][k] = Xv[j, k], Yv[j, k], Zv[j, k] - T
+            add(*r)
+        del bw
+        X = np.array(rows_x)
+        Y = np.array(rows_y)
+        Z = np.array(rows_z)
+        N = np.array(rows_n)
+        UV = np.array(rows_uv)
+        NJ, NC = X.shape
         faces = []
-        idx = lambda j, i: j * NI + i  # noqa: E731
-        mid = (NI - 1) / 2.0
+        mid = (NC - 1) / 2.0
+        idx = lambda j, i: j * NC + i  # noqa: E731
         for j in range(NJ - 1):
-            for i in range(NI - 1):
+            for i in range(NC - 1):
                 a, b, c, d = idx(j, i), idx(j + 1, i), idx(j + 1, i + 1), idx(j, i + 1)
-                # mirror the diagonal about the centre column (symmetric shading)
-                if i < mid:
-                    faces += [(a, b, c), (a, c, d)]
-                else:
-                    faces += [(a, b, d), (b, c, d)]
-        self.grid_shape = (NJ, NI)
-        N = N.reshape(-1, 3)
-        return verts, uv, np.stack([N[:, 0], -N[:, 2], N[:, 1]], -1), faces
+                faces += [(a, b, c), (a, c, d)] if i < mid else [(a, b, d), (b, c, d)]
+        self.shape = (NJ, NC)
+        self.visible_rows = (1, nv)        # rows 1 .. nv are the visible top
+        return (np.stack([X, Y, Z], -1).reshape(-1, 3), UV.reshape(-1, 2), N.reshape(-1, 3), faces)
+
+    def visible_mask(self):
+        NJ, NC = self.shape
+        m = np.zeros((NJ, NC), dtype=bool)
+        m[1:1 + P.NAIL_BED_ROWS + P.NAIL_FREE_ROWS, 1:NC - 1] = True
+        return m.ravel()
+
+    def anat(self, cy, half):
+        """nailAnat for a frame centred at y = cy with half length `half`."""
+        return [float((self.y_h - cy) / half), float(self.sag / half), float(self.d_tip / half), 0.0]
 
 
-def _fit_old(points, frame):
-    c, x, y, z = frame
-    X = points - c
-    lx, ly, lz = X @ x, X @ y, X @ z
-    top = lz > np.median(lz)
-    M = np.c_[np.ones(top.sum()), lx[top], ly[top], lx[top] ** 2, ly[top] ** 2]
-    co = np.linalg.lstsq(M, lz[top], rcond=None)[0]
-    return lx, ly, lz, co
-
-
-def _skin_arrays(bm, mw, groups):
-    deform = bm.verts.layers.deform.active
-    n = len(bm.verts)
-    co = np.array([tuple(mw @ v.co) for v in bm.verts])
-    W = np.zeros((n, len(groups)))
-    for v in bm.verts:
-        for g, w in v[deform].items():
-            if g < len(groups):
-                W[v.index, g] = w
-    return co, W
-
-
-def build(scene, report, check):
-    hand, rig = scene['hand'], scene['rig']
-    mw = hand.matrix_world.copy()
-    mwi = mw.inverted()
-    groups = [g.name for g in hand.vertex_groups]
-    gidx = {n: i for i, n in enumerate(groups)}
-    skinP = gltfio.world_points(hand)
+def _patch(hand, fi):
     me = hand.data
-    Wsk = np.zeros((len(me.vertices), len(groups)))
-    for v in me.vertices:
-        for g in v.groups:
-            Wsk[v.index, g.group] = g.weight
+    mw = np.array(hand.matrix_world)
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    polys = [p for p in me.polygons if p.material_index == 1 + fi]
+    vi = sorted({v for p in polys for v in p.vertices})
+    n = sum((Vector(p.normal) * p.area for p in polys), Vector())
+    return co, co[vi], unit(np.array(mw[:3, :3]) @ np.array(n))
 
-    plates = {}
-    info = {}
-    for f in FINGERS:
-        old = scene['nails'][f]
-        Q = gltfio.world_points(old)
-        frame = gltfio.pca_frame(Q, rig, f)
-        c, x, y, z = frame
-        lx, ly, lz, co = _fit_old(Q, frame)
-        length = ly.max() - ly.min()
-        half_w = (lx.max() - lx.min()) / 2
-        # fingertip: furthest skin of this finger along -y, on the top side, near the centre line
-        fw = Wsk[:, [gidx[f + '.0%d' % k] for k in (1, 2, 3)]].sum(1) > 0.5
-        S = skinP - c
-        sx, sy, sz = S @ x, S @ y, S @ z
-        sel = fw & (np.abs(sx - (lx.max() + lx.min()) / 2) < 0.35 * half_w) & (sz > -0.6 * half_w) & (sy < 0)
-        y_tip = sy[sel].min() if sel.any() else ly.min()
-        y_top_old = ly.max() - P.NAIL_CUTICLE_TRIM * length
-        y_bot_old = y_tip - P.NAIL_FREE_EDGE_PAST_TIP * length  # a short, tidy free edge (the old plate overhung more)
-        oy = (y_top_old + y_bot_old) / 2
-        ox = (lx.max() + lx.min()) / 2
-        Lv = (y_top_old - y_bot_old) / 2
-        Wv = half_w * P.NAIL_WIDTH_SCALE
-        # radius across from the fit (z = a + b x + c y + d x^2 + e y^2)
-        R0 = -1.0 / (2.0 * co[3]) if co[3] < 0 else 0.1
-        R0 = max(R0 * P.NAIL_RADIUS_SCALE, P.NAIL_RADIUS_MIN)
-        # the plate sits on the finger (the old plate was a pillow above it):
-        # skin height under the plate centre, plus the plate's own lift
-        near = fw & (np.abs(sx - ox) < 0.3 * half_w) & (np.abs(sy - oy) < 0.3 * (ly.max() - ly.min()) / 2) & (sz > -0.6 * half_w)
-        oz = (np.median(sz[near]) if near.sum() >= 3 else co[0]) + P.NAIL_LIFT * half_w
-        centre = c + x * ox + y * oy + z * oz
-        y_hypo = (y_tip - oy) + 0.08 * Lv
-        plate = Plate(f, Wv, Lv, R0, P.NAIL_ARCH_RADIUS, y_hypo)
-        plate.centre, plate.x, plate.y, plate.z = centre, x, y, z
-        plates[f] = plate
-        info[f] = {'half_len': round(Lv, 5), 'half_width_arc': round(Wv, 5), 'radius': round(R0, 4),
-                   'overhang': round(y_hypo + Lv, 5), 'old_len': round(length, 5)}
 
-    # ---- new plate objects -------------------------------------------------------
-    for f, plate in plates.items():
-        old = scene['nails'][f]
-        verts, uv, normals, faces = plate.build_mesh()
-        mesh = bpy.data.meshes.new('Nail_' + f.capitalize())
-        mesh.from_pydata([tuple(v) for v in verts], [], faces)
-        mesh.update()
-        uvl = mesh.uv_layers.new(name='UVMap')
-        loop_v = np.empty(len(mesh.loops), dtype=np.int64)
-        mesh.loops.foreach_get('vertex_index', loop_v)
-        uvl.data.foreach_set('uv', uv[loop_v].astype(np.float32).ravel())
-        mesh.shade_smooth()
-        mesh.normals_split_custom_set_from_vertices([tuple(n) for n in normals])
-        if old.data.materials:
-            mesh.materials.append(old.data.materials[0])
-        name = old.name
-        bpy.data.objects.remove(old, do_unlink=True)
-        obj = bpy.data.objects.new(name, mesh)
-        bpy.context.scene.collection.objects.link(obj)
-        obj.parent = rig
-        obj.parent_type = 'BONE'
-        obj.parent_bone = f + '.03'
-        bpy.context.view_layer.update()
-        M = Matrix((
-            (plate.x[0], -plate.z[0], plate.y[0], plate.centre[0]),
-            (plate.x[1], -plate.z[1], plate.y[1], plate.centre[1]),
-            (plate.x[2], -plate.z[2], plate.y[2], plate.centre[2]),
-            (0, 0, 0, 1)))
-        obj.matrix_world = M
-        bpy.context.view_layer.update()
-        chord = float(plate.R0 * np.sin(plate.Wv / plate.R0))
+def grooves(scene):
+    """Each finger's groove frame and measurements (on the dense skin)."""
+    hand, cage = scene['hand'], scene['cage']
+    mm = cage.scale
+    out = {}
+    W = scene['W_dense']
+    for fi, f in enumerate(FINGERS):
+        co, Q, Z = _patch(hand, fi)
+        a, b = cage.joints[f + '.3'], cage.joints[f + '.4']
+        Y = -(b - a)
+        Y = unit(Y - Z * (Y @ Z))
+        X = np.cross(Y, Z)
+        O = Q.mean(0)
+        g = Groove(f, O, X, Y, Z, mm)
+        L = g.local(Q)
+        g.fit(L)
+        # cuticle and hyponychium on the centre line; half width at mid-bed
+        hw = (L[:, 0].max() - L[:, 0].min()) / 2
+        x0 = (L[:, 0].max() + L[:, 0].min()) / 2
+        cen = np.abs(L[:, 0] - x0) < 0.4 * hw
+        g.y_cut = float(L[cen, 1].max())
+        g.y_h = float(L[cen, 1].min())
+        mid = (g.y_cut + g.y_h) / 2
+        band = np.abs(L[:, 1] - mid) < 0.2 * (g.y_cut - g.y_h)
+        g.bed_half_w = float((L[band, 0].max() - L[band, 0].min()) / 2)
+        g.x0 = float(x0)
+        # finger width at mid-nail: this finger's skin in a thin slab across the bed's middle
+        Sk = g.local(co)
+        fw = W[f] > 0.5
+        sl = fw & (np.abs(Sk[:, 1] - mid) < 0.6 * mm) & (Sk[:, 2] > -8 * mm)
+        g.finger_half_w = float((Sk[sl, 0].max() - Sk[sl, 0].min()) / 2)
+        if getattr(cage, 'finger_half_w', None):
+            g.finger_half_w = float(cage.finger_half_w[f])      # measured before the widening (limit surface)
+        out[f] = g
+    return out
+
+
+def signed_distance(poly, x, y):
+    """Distance to a closed polygon (N, 2) in the plane, negative inside."""
+    p = np.stack([x, y], -1)
+    keep = np.r_[True, np.linalg.norm(np.diff(poly, axis=0), axis=1) > 1e-12]
+    poly = poly[keep]
+    q0, q1 = poly, np.roll(poly, -1, axis=0)
+    d = q1 - q0
+    L2 = np.maximum((d ** 2).sum(1), 1e-30)
+    t = np.clip(((p[:, None, :] - q0[None]) * d[None]).sum(-1) / L2[None], 0, 1)
+    proj = q0[None] + t[..., None] * d[None]
+    dist = np.sqrt(((p[:, None, :] - proj) ** 2).sum(-1)).min(1)
+    xx, yy = p[:, 0][:, None], p[:, 1][:, None]
+    cond = (q0[None, :, 1] > yy) != (q1[None, :, 1] > yy)
+    xi = q0[None, :, 0] + (yy - q0[None, :, 1]) * d[None, :, 0] / np.where(d[None, :, 1] == 0, 1e-12, d[None, :, 1])
+    inside = (cond & (xx < xi)).sum(1) % 2 == 1
+    return np.where(inside, -dist, dist)
+
+
+def hypo_line(g, co, fw, W0, y_cut):
+    """y of the hyponychium line: where the dorsal surface along the nail's
+    centre line turns HYPO_TILT away from the bed."""
+    mm = g.mm
+    L = g.local(co)
+    sel = fw & (np.abs(L[:, 0]) < 0.25 * W0) & (L[:, 1] < y_cut - 3 * mm) & (L[:, 2] > g.zbed(L[:, 0], L[:, 1]) - 3 * mm)
+    ys = np.sort(L[sel, 1])[::-1]
+    zs = g.zbed(0.0, ys)
+    # the profile z(y) of the skin on the centre line: slope against the bed's own
+    yy, zz = L[sel, 1], L[sel, 2]
+    o = np.argsort(-yy)
+    yy, zz = yy[o], zz[o]
+    best = None
+    for i in range(2, len(yy) - 2):
+        j = slice(max(0, i - 3), i + 4)
+        A = np.stack([np.ones_like(yy[j]), yy[j]], 1)
+        slope = np.linalg.lstsq(A, zz[j], rcond=None)[0][1]
+        e = 1e-4
+        bs = (g.zbed(0.0, yy[i] + e) - g.zbed(0.0, yy[i] - e)) / (2 * e)
+        ang = math.degrees(math.atan(slope) - math.atan(bs))
+        if ang > P.HYPO_TILT:
+            best = yy[i]
+            break
+    del ys, zs
+    return best
+
+
+def _write_plate(f, g, rig, verts, uv, nrm, faces, origin, keys=None):
+    mesh = bpy.data.meshes.new('Nail_' + f.capitalize())
+    # Blender local axes (x across, -out, toward the cuticle): the exporter's Y-up
+    # conversion makes them three's +X across, +Y toward the cuticle, +Z out
+    mesh.from_pydata([(v[0], -v[2], v[1]) for v in verts], [], faces)
+    mesh.update()
+    uvl = mesh.uv_layers.new(name='UVMap')
+    loop_v = np.empty(len(mesh.loops), dtype=np.int64)
+    mesh.loops.foreach_get('vertex_index', loop_v)
+    uvl.data.foreach_set('uv', uv[loop_v].astype(np.float32).ravel())
+    mesh.shade_smooth()
+    mesh.normals_split_custom_set_from_vertices([(n[0], -n[2], n[1]) for n in nrm])
+    obj = bpy.data.objects.new('Nail_' + f.capitalize(), mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    if keys:
+        obj.shape_key_add(name='Basis')
+        for name, kv in keys.items():
+            sk = obj.shape_key_add(name=name)
+            sk.data.foreach_set('co', np.array([(v[0], -v[2], v[1]) for v in kv], dtype=np.float32).ravel())
+    M = Matrix(((g.X[0], -g.Z[0], g.Y[0], origin[0]),
+                (g.X[1], -g.Z[1], g.Y[1], origin[1]),
+                (g.X[2], -g.Z[2], g.Y[2], origin[2]), (0, 0, 0, 1)))
+    obj.parent = rig
+    obj.parent_type = 'BONE'
+    obj.parent_bone = f + '.03'
+    bpy.context.view_layer.update()
+    obj.matrix_world = M
+    bpy.context.view_layer.update()
+    return obj, M
+
+
+def build(scene, report, check, free_len=None, sculpted=False, morph=False):
+    hand, rig, cage = scene['hand'], scene['rig'], scene['cage']
+    mm = cage.scale
+    free_len = P.NAIL_FREE_LEN if free_len is None else free_len
+    G = grooves(scene)
+    info, plates = {}, {}
+    me = hand.data
+    mw = np.array(hand.matrix_world)
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    for fi, f in enumerate(FINGERS):
+        g = G[f]
+        # recentre the frame across on the groove
+        g.O = g.O + g.X * g.x0
+        g.c[0] += g.c[1] * g.x0 + g.c[3] * g.x0 ** 2
+        g.c[1] += 2 * g.c[3] * g.x0
+        g.c[2] += g.c[5] * g.x0
+        if sculpted:
+            W0 = P.NAIL_WIDTH_FRAC * g.finger_half_w
+            lift = 0.0
+            g.y_h_patch = g.y_h
+            if g.y_cut - g.y_h < P.BED_MIN * 2 * g.finger_half_w:
+                # a short bed patch (the pinky): out to the hyponychium line
+                yt = hypo_line(g, co, scene['W_dense'][f] > 0.5, W0, g.y_cut)
+                if yt is not None and yt < g.y_h:
+                    g.y_h = float(yt)
+            # never a nail shorter than wide (the pinky's patch is short): bed >= BED_FLOOR x the finger width
+            g.y_h = min(g.y_h, g.y_cut - P.BED_FLOOR * 2 * g.finger_half_w)
+            # a nail's arch along the finger is gentle: never tighter than NAIL_ARCH_MIN
+            g.c[4] = max(g.c[4], -1.0 / (2.0 * P.NAIL_ARCH_MIN * mm))
+            # a real C-curve across (Jesse, after V2: the plates read flat): a
+            # circular arc of NAIL_ARC_DEG over the visible plate's width
+            arc_fit = 2.0 * math.degrees(math.atan(2.0 * abs(g.c[3]) / P.NAIL_C_CURVE * W0))
+            g.R_c = W0 / math.sin(math.radians(P.NAIL_ARC_DEG[f]) / 2.0)
+            g.W_c = W0
+        else:
+            W0, lift = g.bed_half_w, P.NAIL_LIFT * mm
+        pl = Plate(g, W0, g.y_cut, g.y_h, free_len, lift)
+        verts, uv, nrm, faces = pl.build()
+        # the frame origin: the visible plate's centre (on its surface), at the default length
+        cy = (pl.y_cut + pl.y_tip) / 2
+        cz = float(pl.z(0.0, cy))
+        half = (pl.y_cut - pl.y_tip) / 2
+        off = np.array([0.0, cy, cz])
+        origin = g.O + g.Y * cy + g.Z * cz
+        keys = None
+        var = None
+        if morph:
+            # the viewer's slider: the base is the shortest; one morph target per
+            # stop (exact geometry there, piecewise linear between)
+            stops = P.NAIL_FREE_STOPS
+            pls = [Plate(g, W0, g.y_cut, g.y_h, L, lift) for L in stops]
+            built = [p.build() for p in pls]
+            assert all(b[3] == faces for b in built)
+            verts, uv, nrm = built[0][0], built[0][1], built[0][2]
+            keys = {'L%03d' % round(L * 100): b[0] - off for L, b in zip(stops[1:], built[1:])}
+            var = {'L': list(stops), 'def': free_len, 'mm': [p.free / mm for p in pls],
+                   'cy': [(p.y_cut + p.y_tip) / 2 - cy for p in pls],
+                   'half': [(p.y_cut - p.y_tip) / 2 for p in pls],
+                   'freeArc': [p.d_tip for p in pls],
+                   'hypoY': pl.y_h - cy, 'cutArc': pl.sag}
+        obj, M = _write_plate(f, g, rig, verts - off, uv, nrm, faces, origin, keys)
+        if morph:
+            # Blender derives shape-key normals from its own smooth normals, not the
+            # plate's custom ones; build_hand writes these exact ones into the GLB
+            scene.setdefault('nail_morph_normals', {})[obj.name] = (verts - off, uv, nrm, [b[2] for b in built[1:]])
+            scene.setdefault('nail_morph_faces', {})[obj.name] = faces
+        chord = float(W0)                   # the widest half width: |w| <= 1 on the whole plate
         obj['nailFrame'] = 1
-        obj['nailHalf'] = [float(plate.Lv), chord]
-        # natural-nail shader: [s of the hyponychium line, cuticle arc, free-edge arc, 0]
-        # (s = y / half length, +1 at the cuticle; arcs in s per w^2)
-        obj['nailAnat'] = [float(plate.y_hypo / plate.Lv), float(P.NAIL_CUTICLE_ARC * plate.Wv / plate.Lv),
-                           float(P.NAIL_FREE_ARC * plate.Wv / plate.Lv), 0.0]
+        obj['nailHalf'] = [float(half), chord]
+        obj['nailAnat'] = pl.anat(cy, half)
+        if var:
+            obj['nailVar'] = {k: ([float(x) for x in v] if isinstance(v, list) else float(v)) for k, v in var.items()}
+        pl.obj, pl.cy, pl.cz, pl.half = obj, cy, cz, half
+        # the longest stop: the skin is baked once for every length, so it is kept
+        # under this plate's outline too (the plate's z(x, y) is the same at every length)
+        pl.long = Plate(g, W0, g.y_cut, g.y_h, P.NAIL_FREE_STOPS[-1], lift)
+        pl.long.build()
+        plates[f] = pl
         scene['nails'][f] = obj
-        plate.obj = obj
-        nv = len(mesh.vertices)
+        nv = len(obj.data.vertices)
+        info[f] = {'verts': nv, 'half_len_mm': round(half / mm, 2), 'half_w_mm': round(chord / mm, 2),
+                   'bed_mm': round(pl.bed / mm, 2), 'free_mm': round(pl.free / mm, 2),
+                   'width_frac': round(W0 / g.finger_half_w, 3), 'finger_w_mm': round(2 * g.finger_half_w / mm, 2),
+                   'aspect': round(half / chord, 3), 'corner_r_over_half_w': round(pl.d_tip / W0, 3),
+                   'hypo_moved_mm': round((getattr(g, 'y_h_patch', g.y_h) - g.y_h) / mm, 2)}
+        if g.R_c is not None:
+            # the C-curve as built: the angle between the plate's normals at its two
+            # sides, mid-bed and at the free edge's start
+            def arc_at(y):
+                w = float(pl.W(y)) * (1.0 - 1e-3)
+                a, b = pl.normal(np.array([-w]), np.array([y]))[0], pl.normal(np.array([w]), np.array([y]))[0]
+                return math.degrees(math.acos(np.clip(a @ b, -1, 1)))
+            info[f]['arc_deg'] = {'mid_bed': round(arc_at((pl.y_cut + pl.y_h) / 2), 1), 'free_edge': round(arc_at(pl.y_h - 1.0 * mm), 1),
+                                  'before (fitted)': round(arc_fit, 1)}
+            check(f'{f}: C-curve across the plate {P.NAIL_ARC_DEG[f]:g} +- 8 deg (mid-bed), tighter at the free edge',
+                  abs(info[f]['arc_deg']['mid_bed'] - P.NAIL_ARC_DEG[f]) <= 8 and info[f]['arc_deg']['free_edge'] > info[f]['arc_deg']['mid_bed'],
+                  info[f]['arc_deg'], P.NAIL_ARC_DEG[f])
         check(f'{f}: plate verts <= {P.CAP_NAIL_VERTS}', nv <= P.CAP_NAIL_VERTS, nv, P.CAP_NAIL_VERTS)
-        err = (np.array(obj.matrix_world) - np.array(M)).max()
-        check(f'{f}: plate frame placed (canonical, unit scale)', abs(err) < 1e-4, float('%.1e' % abs(err)))
-        u_ok = uv.min() >= -1e-6 and uv.max() <= 1 + 1e-6
-        check(f'{f}: UVs inside [0, 1]', u_ok, [round(float(uv.min()), 4), round(float(uv.max()), 4)])
+        err = float(np.abs(np.array(obj.matrix_world) - np.array(M)).max())
+        R = np.array(M)[:3, :3]
+        check(f'{f}: frame orthonormal, right-handed, unit scale, placed',
+              err < 1e-5 and np.abs(R.T @ R - np.eye(3)).max() < 1e-6 and np.linalg.det(np.stack([g.X, g.Y, g.Z], 1)) > 0,
+              float('%.1e' % err))
+        check(f'{f}: UVs inside [0, 1]', uv.min() >= -1e-6 and uv.max() <= 1 + 1e-6,
+              [round(float(uv.min()), 4), round(float(uv.max()), 4)])
+        if sculpted:
+            check(f'{f}: plate width / finger width = {P.NAIL_WIDTH_FRAC} +- 0.02',
+                  abs(W0 / g.finger_half_w - P.NAIL_WIDTH_FRAC) <= 0.02, round(W0 / g.finger_half_w, 3))
+            check(f'{f}: free-edge corners rounded (radius > 25% of the half width)', pl.d_tip / W0 > 0.25,
+                  round(pl.d_tip / W0, 3))
+    report['nails'] = info
+    scene['plates'] = plates
+    scene['nail_normal'] = {f: G[f].Z for f in FINGERS}
+    if sculpted:
+        sculpt_skin(scene, plates, report, check)
+        asp = {f: info[f]['aspect'] * 1.0 for f in FINGERS}
+        check('nails: length / width between 1.05 and 1.6 at the default length',
+              all(1.05 <= 2 * v / 2 <= 1.6 for v in asp.values()), asp, [1.05, 1.6])
+    nail_checks(scene, plates, info, check)
+    return plates
 
-    # ---- skin: subdivide around the outlines, then displace -----------------------
+
+def outline(pl):
+    """The visible plate's outline in its frame (x, y), counter-clockwise."""
+    X, Y = pl.Xv, pl.Yv
+    ring = [(X[0, i], Y[0, i]) for i in range(X.shape[1] - 1, -1, -1)]
+    ring += [(X[j, 0], Y[j, 0]) for j in range(1, X.shape[0])]
+    ring += [(X[-1, i], Y[-1, i]) for i in range(1, X.shape[1])]
+    ring += [(X[j, -1], Y[j, -1]) for j in range(X.shape[0] - 2, 0, -1)]
+    return np.array(ring)
+
+
+def sculpt_skin(scene, plates, report, check):
+    """The skin round each plate (on the dense mesh, in the nail frame): the bed
+    under the plate (its thickness + BED_GAP below the top), the proximal and
+    side folds standing FOLD_H above the plate and dropping onto it just inside
+    its outline (so they overlap the rim), the fingertip rounding away under the
+    free edge. One extra cut along the outline first (a crisp fold line)."""
+    import bmesh
+    hand, cage = scene['hand'], scene['cage']
+    mm = cage.scale
+    me = hand.data
+    mw = np.array(hand.matrix_world)
+    mwi = np.linalg.inv(mw)
+    T = P.NAIL_THICKNESS * mm
+    polys = {f: outline(pl) for f, pl in plates.items()}
+    Wd = scene['W_dense']
+    # one cut through the band round each outline
     bm = bmesh.new()
     bm.from_mesh(me)
     bm.verts.ensure_lookup_table()
+    co = np.array([tuple(v.co) for v in bm.verts]) @ mw[:3, :3].T + mw[:3, 3]
+    cut = set()
+    for f, pl in plates.items():
+        g = pl.g
+        L = g.local(co)
+        near = (Wd[f] > 0.5) & (L[:, 2] > pl.z(L[:, 0], L[:, 1]) - 3 * mm) & (L[:, 1] > pl.y_h - 1.0 * mm)
+        idx = np.nonzero(near)[0]
+        d = np.full(len(co), 1e9)
+        d[idx] = signed_distance(polys[f], L[idx, 0], L[idx, 1]) / mm
+        lo, hi = P.FOLD_BAND or (0, 0)
+        for e in bm.edges:
+            i, j = e.verts[0].index, e.verts[1].index
+            if near[i] and near[j] and min(d[i], d[j]) < hi and max(d[i], d[j]) > lo:
+                cut.add(e)
     n0 = len(bm.verts)
-
-    def local(co, plate):
-        S = co - plate.centre
-        lx, ly, lz = S @ plate.x, S @ plate.y, S @ plate.z
-        a = plate.a_of_x(lx, ly)
-        return a, ly, lz
-
-    co, W = _skin_arrays(bm, mw, groups)
-    # two passes of one cut: a wide band around the outline (where the folds
-    # move the skin at all), then a narrow one right at it (where skin meets plate)
-    for band in P.FOLD_BANDS:
-        bm.verts.ensure_lookup_table()
-        bm.verts.index_update()
-        co, W = _skin_arrays(bm, mw, groups)
-        to_cut = set()
-        for f, plate in plates.items():
-            fw = W[:, [gidx[f + '.0%d' % k] for k in (1, 2, 3)]].sum(1) > 0.5
-            a, ly, lz = local(co, plate)
-            d = plate.signed_distance(a, ly) - P.FOLD_SHIFT * plate.Wv  # the fold profile is laid out from just outside the rim
-            _, zp = plate.surf(a, ly)
-            ok = fw & (lz > zp - P.FOLD_TOP_ONLY[1] * plate.Wv) & (ly > plate.y_hypo - 0.25 * plate.Lv)
-            lo, hi = band[0] * plate.Wv, band[1] * plate.Wv
-            # edges whose span of signed distance meets the band (the scan
-            # mesh is coarse at the cuticle: whole faces would be too many)
-            for e in bm.edges:
-                i, j = e.verts[0].index, e.verts[1].index
-                if not (fw[i] and fw[j]) or not (ok[i] or ok[j]):
-                    continue
-                if min(d[i], d[j]) < hi and max(d[i], d[j]) > lo:
-                    to_cut.add(e)
-        if to_cut:
-            bmesh.ops.subdivide_edges(bm, edges=list(to_cut), cuts=1, use_grid_fill=True)
-            bmesh.ops.triangulate(bm, faces=[fc for fc in bm.faces if len(fc.verts) > 3])
-    bm.verts.ensure_lookup_table()
-    bm.verts.index_update()
-    added = len(bm.verts) - n0
-
-    co, W = _skin_arrays(bm, mw, groups)
-    new = co.copy()
-    rigid = np.zeros(len(co), dtype=bool)
-    rigid_of = np.full(len(co), -1)
-    for fi, (f, plate) in enumerate(plates.items()):
-        fw = W[:, [gidx[f + '.0%d' % k] for k in (1, 2, 3)]].sum(1) > 0.5
-        a, ly, lz = local(co, plate)
-        d = plate.signed_distance(a, ly) - P.FOLD_SHIFT * plate.Wv  # the fold profile is laid out from just outside the rim
-        xp, zp = plate.surf(a, ly)
-        Wv, Lv = plate.Wv, plate.Lv
-        top = 1.0 - smoothstep(P.FOLD_TOP_ONLY[0] * Wv, P.FOLD_TOP_ONLY[1] * Wv, zp - lz)
-        top = np.where(fw, top, 0.0)
-        # one continuous profile across the outline (so the line where skin
-        # meets plate is interpolated, never a staircase of mesh edges):
-        # outside it rises to the fold height; inside it drops below the plate
-        # (the bed), and under the free edge into a growing gap.
-        prox = smoothstep(0.35 * Lv, 0.85 * Lv, ly)
-        h = (P.FOLD_HEIGHT_PROX * prox + P.FOLD_HEIGHT_SIDE * (1 - prox)) * Wv
-        fold_on = smoothstep(plate.y_hypo - P.FOLD_SIDE_END[0] * Lv, plate.y_hypo + P.FOLD_SIDE_END[1] * Lv, ly)
-        over = np.clip((plate.y_hypo - ly) / max(1e-6, plate.y_hypo + Lv), 0, None)
-        floor = -P.BED_DEPTH * Wv - P.HYPO_GAP * over * 2 * Lv
-        edge = h * P.FOLD_EDGE
-        # inside the outline the skin drops through the plate a little way in
-        # (FOLD_COVER): the fold always overlaps the plate's rim, never lets
-        # the rim or the skirt show through between two skin vertices
-        slope = edge / (P.FOLD_COVER * Wv)
-        t = np.clip(d / (P.FOLD_WIDTH * Wv), 0, 1)
-        f_out = h * (P.FOLD_EDGE + (1 - P.FOLD_EDGE) * smoothstep(0.0, 0.35, t)) * fold_on
-        f_in = np.maximum(fold_on * (edge + slope * d) + (1 - fold_on) * floor, floor)
-        inside = d < 0
-        # near the outline the skin follows the profile both ways (the fold
-        # wall is continuous even where the old skin sat far below the
-        # plate); deeper inside it only ever sinks
-        z_in = np.where(f_in > floor + 1e-9, zp + f_in, np.minimum(lz, zp + floor))
-        wb = (1.0 - smoothstep(0.35, 1.0, t)) * fold_on
-        z_out = lz + (zp + f_out - lz) * wb
-        z_new = np.where(inside, z_in, z_out)
-        z_new = lz + (z_new - lz) * top
-        moved = fw & (np.abs(z_new - lz) > 0)
-        new[moved] = co[moved] + np.outer(z_new[moved] - lz[moved], plate.z)
-        # rigid region: within RIGID_REACH half lengths of the plate, this finger only
-        dz = lz - zp
-        reach = np.sqrt(np.maximum(d, 0) ** 2 + np.where(dz < 0, dz, 0) ** 2)
-        r = fw & (reach <= P.RIGID_REACH * Lv) & (ly > -Lv - 0.5 * Lv) & (ly < Lv + P.RIGID_REACH * Lv)
-        rigid |= r
-        rigid_of[r] = fi
-
-    deform = bm.verts.layers.deform.active
-    for v in bm.verts:
-        p = new[v.index]
-        v.co = mwi @ Vector(p)
-        if rigid[v.index]:
-            f = list(plates.keys())[rigid_of[v.index]]
-            dv = v[deform]
-            dv.clear()
-            dv[gidx[f + '.03']] = 1.0
+    if cut and P.FOLD_BAND:
+        bmesh.ops.subdivide_edges(bm, edges=list(cut), cuts=1, use_grid_fill=True)
+        bmesh.ops.triangulate(bm, faces=[fc for fc in bm.faces if len(fc.verts) > 4])
     bm.to_mesh(me)
     bm.free()
-    if 'custom_normal' in me.attributes:
-        me.attributes.remove(me.attributes['custom_normal'])
-    me.shade_smooth()
     me.update()
+    added = len(me.vertices) - n0
+    # the weights of the new vertices for the rest of the build
+    from rig import mesh_weights
+    from base import BI
+    Wm = mesh_weights(hand)
+    scene['W_dense'] = Wd = {f: Wm[:, [BI[f + '.0%d' % k] for k in (1, 2, 3)]].sum(1) for f in FINGERS}
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    # the fingertip's pulp reaches a little forward under the free edge (the base
+    # mesh's tip ends at the hyponychium, so a C-curved free edge hung in front of
+    # it with the background showing between): below the plate, near and past the
+    # hyponychium, the skin moves forward along the nail by up to PULP_FORWARD_MM
+    moved = 0
+    for f, pl in plates.items():
+        g = pl.g
+        L = g.local(co)
+        x, y, lz = L[:, 0], L[:, 1], L[:, 2]
+        depth = pl.z(x, np.maximum(y, pl.y_tip)) - lz
+        a = (smoothstep(pl.y_h + 7.0 * mm, pl.y_h + 0.5 * mm, y)
+             * smoothstep(1.0 * mm, 3.0 * mm, depth) * (1.0 - smoothstep(9.0 * mm, 13.0 * mm, depth))
+             * (1.0 - smoothstep(0.9 * pl.W0, 1.6 * pl.W0, np.abs(x))) * (Wd[f] > 0.5))
+        co = co - np.outer(a * P.PULP_FORWARD_MM * mm, g.Y)
+        moved += int((a > 0.05).sum())
+    report['pulp_forward_verts'] = moved
+    new = co.copy()
+    dist_out = np.full(len(co), np.inf)
+    capped = np.zeros(len(co), dtype=bool)
+    zdir = np.zeros((len(co), 3))
+    for f, pl in plates.items():
+        g = pl.g
+        fw = Wd[f] > 0.5
+        L = g.local(co)
+        x, y, lz = L[:, 0], L[:, 1], L[:, 2]
+        zp = pl.z(x, y)
+        top = 1.0 - smoothstep(1.5 * mm, 3.5 * mm, zp - lz)
+        cand = fw & (top > 0)
+        i = np.nonzero(cand)[0]
+        x, y, lz, zp, top = x[i], y[i], lz[i], zp[i], top[i]
+        # the profile is laid out from just outside the rim: the skin crosses the
+        # plate's level FOLD_MEET outside the outline (the whole visible plate shows,
+        # the steep tuck goes under the fold)
+        d = signed_distance(polys[f], x, y) - (P.FOLD_COVER + P.FOLD_MEET) * mm
+        prox = smoothstep((pl.y_cut + pl.y_h) / 2, pl.y_cut - 1.0 * mm, y)
+        h = (P.FOLD_H_PROX * prox + P.FOLD_H_SIDE * (1 - prox)) * mm
+        fold_on = smoothstep(pl.y_h - P.FOLD_SIDE_END[0] * mm, pl.y_h + P.FOLD_SIDE_END[1] * mm, y)
+        over = np.clip(pl.y_h - y, 0, None)
+        floor = -(T + P.BED_GAP * mm) - P.HYPO_GAP * over
+        edge = h * P.FOLD_EDGE
+        slope = edge / (P.FOLD_COVER * mm)
+        t = np.clip(d / (P.FOLD_WIDTH * mm), 0, 1)
+        f_out = h * (P.FOLD_EDGE + (1 - P.FOLD_EDGE) * smoothstep(0.0, 0.35, t)) * fold_on
+        f_in = np.maximum(fold_on * (edge + slope * d) + (1 - fold_on) * floor, floor)
+        z_in = np.where(f_in > floor + 1e-12, zp + f_in, np.minimum(lz, zp + floor))
+        wb = (1.0 - smoothstep(0.35, 1.0, t)) * fold_on
+        # outside the outline the folds only ever lift the skin: where the plate's
+        # C-curve dives under the side folds the skin stays where it is
+        z_out = lz + np.maximum(zp + f_out - lz, P.FOLD_PULL_DOWN * (zp + f_out - lz)) * wb
+        z_new = np.where(d < 0, z_in, z_out)
+        z_new = lz + (z_new - lz) * top
+        # no skin above the plate inside its visible outline (plan 4.7)
+        inside = (signed_distance(polys[f], x, y) < 0) | (signed_distance(outline(pl.long), x, y) < 0)
+        # past the hyponychium the free edge's sides curl down (the C-curve): beside
+        # them the fingertip's skin stays under a soft ramp that rises outward from
+        # just under the plate's side edge (and fades out back over the bed)
+        sdl = np.minimum(signed_distance(polys[f], x, y), signed_distance(outline(pl.long), x, y))
+        xe = np.clip(x, -pl.W(y), pl.W(y))
+        cap = pl.z(xe, y) - P.FREE_SIDE_DROP * mm + P.FREE_SIDE_RAMP * np.maximum(sdl, 0.0) \
+            + 10.0 * mm * smoothstep(pl.y_h + 0.3 * mm, pl.y_h + 2.3 * mm, y)
+        capped[i] |= (sdl >= 0) & (cap < z_new)
+        z_new = np.where(sdl >= 0, np.minimum(z_new, cap), z_new)
+        z_new = np.where(inside, np.minimum(z_new, zp - P.SKIN_UNDER * mm), z_new)
+        new[i] = co[i] + np.outer(z_new - lz, g.Z)
+        dist_out[i] = np.minimum(dist_out[i], signed_distance(polys[f], x, y))
+        zdir[i] = g.Z
+    # the folds' outer slopes: the C-curve's sides make the sculpt move the
+    # skin a lot on the finger's steep sides, row by row; the displacement is
+    # smoothed there (never at the outline, so the fold line stays crisp)
+    disp = new - co
+    nb = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get('vertices', nb)
+    nb = nb.reshape(-1, 2)
+    free = (dist_out > P.FOLD_SMOOTH_FROM * mm) & ~capped      # (the free edge's side ramp stays)
+    for _ in range(P.FOLD_SMOOTH_PASSES):
+        acc = np.zeros_like(disp)
+        cnt = np.zeros(len(disp))
+        np.add.at(acc, nb[:, 0], disp[nb[:, 1]])
+        np.add.at(acc, nb[:, 1], disp[nb[:, 0]])
+        np.add.at(cnt, nb[:, 0], 1)
+        np.add.at(cnt, nb[:, 1], 1)
+        avg = acc / np.maximum(cnt, 1)[:, None]
+        disp = np.where(free[:, None], 0.5 * disp + 0.5 * avg, disp)
+    # the smoothing may lower the skin, never lift it (over a plate's rim)
+    d0 = ((new - co) * zdir).sum(1)
+    d1 = (disp * zdir).sum(1)
+    lift = np.maximum(d1 - d0, 0.0)
+    disp = disp - zdir * lift[:, None]
+    new = co + disp
+    loc = new @ mwi[:3, :3].T + mwi[:3, 3]
+    me.vertices.foreach_set('co', loc.ravel())
+    me.update()
+    report['counts']['fold_band_verts'] = added
 
-    # ---- checks -----------------------------------------------------------------
-    skinP = gltfio.world_points(hand)
-    polys = [tuple(p.vertices) for p in me.polygons]
-    bvh = BVHTree.FromPolygons([tuple(p) for p in skinP], polys)
-    W = np.zeros((len(me.vertices), len(groups)))
-    for v in me.vertices:
-        for g in v.groups:
-            W[v.index, g.group] = g.weight
-    wsum = W.sum(1)
-    check('skin weights sum to 1', np.abs(wsum - 1).max() < 1e-3, round(float(np.abs(wsum - 1).max()), 5), '< 1e-3')
-    for f, plate in plates.items():
-        NJ, NI = plate.grid_shape
-        Q = gltfio.world_points(plate.obj)
-        bad = 0
-        tested = 0
-        for j in range(2, P.NAIL_NV):
-            for i in range(2, NI - 2):
-                p = Vector(Q[j * NI + i])
-                n = Vector(plate.z)
-                tested += 1
-                hit = bvh.ray_cast(p + n * 0.05, -n, 0.05 - 2e-4)
+
+def pl_normal(pl, i):
+    """The plate's analytic top normal at grid vertex i (frame coordinates)."""
+    NJ, NC = pl.shape
+    j, c = divmod(int(i), NC)
+    return pl.normal(pl.Xv[j - 1, c - 1], pl.Yv[j - 1, c - 1])
+
+
+def nail_checks(scene, plates, info, check):
+    hand = scene['hand']
+    mm = scene['cage'].scale
+    me = hand.data
+    mw = np.array(hand.matrix_world)
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    bvh = BVHTree.FromPolygons([tuple(p) for p in co], [tuple(p.vertices) for p in me.polygons])
+    for f, pl in plates.items():
+        m = np.array(pl.obj.matrix_world)
+        lv = np.empty(len(pl.obj.data.vertices) * 3)
+        pl.obj.data.vertices.foreach_get('co', lv)
+        Q = lv.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+        vis = pl.visible_mask()
+        n = Vector(pl.g.Z)
+        bad = tested = 0
+        gaps = []
+        T = P.NAIL_THICKNESS * mm
+        nl = np.empty(len(pl.obj.data.vertices) * 3)
+        pl.obj.data.vertices.foreach_get('normal', nl)
+        nl = nl.reshape(-1, 3)
+        nl = np.stack([nl[:, 0], nl[:, 2], -nl[:, 1]], 1)  # Blender local -> frame (x, y, z)
+        R = np.stack([pl.g.X, pl.g.Y, pl.g.Z], 1)
+        reach = 1.5 * mm
+        for i in np.nonzero(vis)[0]:
+            p = Vector(Q[i])
+            tested += 1
+            nv = Vector(R @ pl_normal(pl, i))
+            hh = bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)
+            if hh[0] is not None:
+                bad += 1
+                if __import__('os').environ.get('NAIL_DEBUG'):
+                    q = pl.g.local(np.array(hh[0])); q0 = pl.g.local(np.array(Q[i]))
+                    print('UNDER', f, i // pl.shape[1], i % pl.shape[1], 'vert', (q0 / mm).round(2), 'hit', (q / mm).round(2), 'n', np.round(R.T @ np.array(nv), 2))
+                NJ, NC = pl.shape
+                info[f].setdefault('under_at_row_col', []).append([int(i // NC), int(i % NC)])
+            hit = bvh.ray_cast(p, -n, 0.05)
+            if hit[0] is not None:
+                gaps.append(hit[3] - T)
+        # every stop of the length slider, from its own analytic surface
+        bad_s = {}
+        for Ls in P.NAIL_FREE_STOPS:
+            lp = Plate(pl.g, pl.W0, pl.y_cut, pl.y_h, Ls, pl.lift)
+            lv = lp.build()[0]
+            Ql = pl.g.O + lv @ R.T
+            nb = 0
+            for i in np.nonzero(lp.visible_mask())[0]:
+                nv = Vector(R @ pl_normal(lp, i))
+                p = Vector(Ql[i])
+                hh = bvh.ray_cast(p + nv * reach, -nv, reach - P.UNDER_TOL * mm)
+                if hh[0] is not None:
+                    nb += 1
+                    if __import__('os').environ.get('NAIL_DEBUG'):
+                        print('UNDER-L', f, Ls, i // lp.shape[1], i % lp.shape[1], (pl.g.local(np.array(Ql[i])) / mm).round(2),
+                              (pl.g.local(np.array(hh[0])) / mm).round(2))
+            bad_s['%g' % Ls] = nb
+        check(f'{f}: no visible plate vertex under the skin at any length stop', not any(bad_s.values()), bad_s)
+        info[f]['under_skin'] = f'{bad}/{tested}'
+        info[f]['min_gap_under_mm'] = round(float(min(gaps) / mm), 3) if gaps else None
+        check(f'{f}: no visible plate vertex under the skin', bad == 0, f'{bad}/{tested}')
+        rg = getattr(scene['W_dense'], 'get', None)
+        del rg
+    return info
+
+
+# ---- the groove sculpt (plan 4.3) ----------------------------------------------------------
+def _limit(cage, level=2):
+    """The cage's subdivided surface: points and which finger's bed each lies on."""
+    me = bpy.data.meshes.new('lim')
+    me.from_pydata(cage.V.tolist(), [], cage.F.tolist())
+    mi = np.zeros(len(cage.F), dtype=np.int32)
+    for fi, f in enumerate(FINGERS):
+        mi[cage.nails[f]] = 1 + fi
+    me.polygons.foreach_set('material_index', mi)
+    ob = bpy.data.objects.new('lim', me)
+    bpy.context.scene.collection.objects.link(ob)
+    m = ob.modifiers.new('s', 'SUBSURF')
+    m.levels = level
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    em = ev.to_mesh()
+    co = np.empty(len(em.vertices) * 3)
+    em.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3)
+    bed = np.full(len(co), -1)
+    for p in em.polygons:
+        if p.material_index:
+            bed[list(p.vertices)] = p.material_index - 1
+    ev.to_mesh_clear()
+    bpy.data.objects.remove(ob, do_unlink=True)
+    bpy.data.meshes.remove(me)
+    return co, bed
+
+
+def cage_frame(cage, f):
+    Z = cage.nail_normal(f)
+    d = unit(cage.joints[f + '.4'] - cage.joints[f + '.3'])
+    Y = unit(-(d - Z * (d @ Z)))
+    X = np.cross(Y, Z)
+    return cage.nail_centre(f), X, Y, Z, d
+
+
+def measure(cage, mm):
+    """Groove and finger half widths at mid-bed (mm), on the limit surface."""
+    co, bed = _limit(cage)
+    out = {}
+    for fi, f in enumerate(FINGERS):
+        O, X, Y, Z, d = cage_frame(cage, f)
+        L = np.stack([(co - O) @ X, (co - O) @ Y, (co - O) @ Z], 1)
+        b = L[bed == fi]
+        mid = (b[:, 1].max() + b[:, 1].min()) / 2
+        band = np.abs(b[:, 1] - mid) < 0.2 * (b[:, 1].max() - b[:, 1].min())
+        g = (b[band, 0].max() - b[band, 0].min()) / 2
+        h3 = cage.joints[f + '.3']
+        rel = co - h3
+        r = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
+        sl = (np.abs(L[:, 1] - mid) < 0.8 * mm) & (r < 10 * mm)
+        w = (L[sl, 0].max() - L[sl, 0].min()) / 2
+        out[f] = (g / mm, w / mm)
+    return out
+
+
+def widen_grooves(cage, report, check):
+    """Widen each nail groove to NAIL_WIDTH_FRAC of the finger (plan 4.3).
+
+    In the nail frame, the cage vertices of the last joint slide across (x only)
+    along the cage's own original surface (projected along the nail normal):
+    the bed scales by k, the fold rings between the groove edge and the
+    finger's flank compress (a narrower, crisper fold), the flank stays put.
+    The finger's width is measured once, before (on the limit surface); the
+    groove's after, on the limit surface again, and k is solved for it."""
+    from mathutils.bvhtree import BVHTree
+    mm = cage.scale
+    V0 = cage.V.copy()
+    m0 = measure(cage, mm)
+    bvh = BVHTree.FromPolygons([tuple(p) for p in V0], [tuple(q) for q in cage.F])
+    prep = {}
+    for f in FINGERS:
+        O, X, Y, Z, d = cage_frame(cage, f)
+        L = np.stack([(V0 - O) @ X, (V0 - O) @ Y, (V0 - O) @ Z], 1)
+        pv = np.unique(cage.F[cage.nails[f]])
+        fw = cage.W[:, [cage_bi(f, kk) for kk in (1, 2, 3)]].sum(1) > 0.5
+        y0, y1 = L[pv, 1].min(), L[pv, 1].max()
+        wy = smoothstep(y1 + 4 * mm, y1 + 1.5 * mm, L[:, 1])           # fades out behind the cuticle
+        top = (L[:, 2] > -4.0 * mm) & fw
+        x0 = (L[pv, 0].max() + L[pv, 0].min()) / 2
+        xa = (L[pv, 0].max() - L[pv, 0].min()) / 2
+        xb = 0.97 * m0[f][1] * mm
+        prep[f] = (O, X, Y, Z, L, wy * top, x0, xa, xb)
+    k = {f: P.NAIL_WIDTH_FRAC * m0[f][1] / m0[f][0] for f in FINGERS}
+    hist = {f: [round(m0[f][0] / m0[f][1], 3)] for f in FINGERS}
+    for it in range(P.WIDEN_ITERS):
+        cage.V = V0.copy()
+        for f in FINGERS:
+            O, X, Y, Z, L, w, x0, xa, xb = prep[f]
+            kk = k[f]
+            xr = L[:, 0] - x0
+            a = np.abs(xr)
+            if kk * xa >= xb:
+                kk = 0.98 * xb / xa
+            m = np.where(a <= xa, kk * a, np.where(a < xb, xb - (xb - a) * (xb - kk * xa) / (xb - xa), a))
+            xn = x0 + np.sign(xr) * m
+            xn = L[:, 0] + (xn - L[:, 0]) * w
+            for i in np.nonzero(np.abs(xn - L[:, 0]) > 1e-9)[0]:
+                p = O + X * xn[i] + Y * L[i, 1] + Z * (L[i, 2] + 6 * mm)
+                hit = bvh.ray_cast(Vector(p), Vector(-Z), 12 * mm)
                 if hit[0] is not None:
-                    bad += 1
-        check(f'{f}: no visible plate vert under the skin', bad == 0, f'{bad}/{tested}')
-        fw = W[:, [gidx[f + '.0%d' % k] for k in (1, 2, 3)]].sum(1) > 0.5
-        S = skinP - plate.centre
-        lx, ly, lz = S @ plate.x, S @ plate.y, S @ plate.z
-        a = plate.a_of_x(lx, ly)
-        d = plate.signed_distance(a, ly)
-        _, zp = plate.surf(a, ly)
-        dz = lz - zp
-        reach = np.sqrt(np.maximum(d, 0) ** 2 + np.where(dz < 0, dz, 0) ** 2)
-        near = fw & (reach <= P.RIGID_REACH * plate.Lv) & (ly > -1.5 * plate.Lv) & (ly < (1 + P.RIGID_REACH) * plate.Lv)
-        w3 = W[near, gidx[f + '.03']]
-        check(f'{f}: skin near the plate rides on {f}.03 only', bool((w3 > 0.999).all()), f'{int((w3 > 0.999).sum())}/{int(near.sum())}')
-    report['nails'] = info
-    scene['plates'] = plates
-    report['counts']['skin_subdiv_added'] = added
+                    cage.V[i] = np.array(hit[0])
+        m1 = measure(cage, mm)
+        for f in FINGERS:
+            g = m1[f][0]
+            hist[f].append(round(g / m0[f][1], 3))
+            k[f] *= 1.0 + 0.9 * (P.NAIL_WIDTH_FRAC * m0[f][1] / g - 1.0)
+    report['nail_groove'] = {f: {'k': round(k[f], 3), 'finger_w_mm': round(2 * m0[f][1], 2),
+                                 'groove_over_finger': hist[f]} for f in FINGERS}
+    cage.finger_half_w = {f: m0[f][1] * mm for f in FINGERS}
+    return cage
+
+
+def cage_bi(f, k):
+    from base import BI
+    return BI[f + '.0%d' % k]

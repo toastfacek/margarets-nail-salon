@@ -325,12 +325,18 @@ for (const hand of ['left', 'right']) {
       return { err: Math.hypot(a[0] - b[0], a[1] - b[1]), neighbours: nb, railS: app.scene.railS };
     }, f);
     add('P8', `${hand} ${f}: nail centre vs focusPose (px), railS`, `${rail.err.toFixed(2)}, ${rail.railS}`, '<= 2', rail.err <= 2);
-    // moving: mid-transition (present another finger, a few frames), full press, idle
+    // moving: mid-transition, full press, idle. Mid-transition: the hand
+    // presents another finger (settled: this finger curled away out of the
+    // close-up), then this finger again; a few frames into its uncurl, the
+    // nail the brush is about to paint is probed (the outgoing nail turns
+    // away from the camera as it curls, where no brush reaches it)
     const moving = await page.evaluate(async (x) => {
       const H = app.hand;
       const res = {};
       const other = x === 'index' ? 'middle' : 'index';
       H.presentFinger(other);
+      while (!H.settled) await new Promise((r) => requestAnimationFrame(r));
+      H.presentFinger(x);
       for (let i = 0; i < 3; i++) await new Promise((r) => requestAnimationFrame(r));
       const pm = __hp.probe(x);
       res.mid = pm.n >= 7 ? pm.worst : Infinity;

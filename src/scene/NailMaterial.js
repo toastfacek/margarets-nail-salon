@@ -63,8 +63,14 @@ varying vec3 vPosW;
 varying vec3 vLocal;
 varying vec3 vTanW;
 varying vec3 vBitW;
+#ifdef NAIL_UNDERSIDE
+varying float vUnder;
+#endif
 void main() {
 vUv = uv;
+#ifdef NAIL_UNDERSIDE
+vUnder = normal.z;
+#endif
 vLocal = position;
 vec4 wp = modelMatrix * vec4(position, 1.0);
 vPosW = wp.xyz;
@@ -96,7 +102,9 @@ uniform vec3 uNailCentre;
 uniform vec3 uNailAxis;
 uniform vec3 uNailSide;
 uniform vec2 uNailHalf;
+uniform float uShadeW;
 uniform vec4 uNailAnat;
+uniform float uFreeTipS;
 uniform float uMetal;
 uniform float uCoat;
 uniform float uRough;
@@ -122,6 +130,9 @@ varying vec3 vPosW;
 varying vec3 vLocal;
 varying vec3 vTanW;
 varying vec3 vBitW;
+#ifdef NAIL_UNDERSIDE
+varying float vUnder;
+#endif
 vec3 decodeSRGB(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
 float hash12(vec2 p) {
 vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -160,7 +171,9 @@ vec3 T = normalize(vTanW - N * dot(N, vTanW));
 vec3 B = normalize(vBitW - N * dot(N, vBitW) - T * dot(T, vBitW));
 vec3 rel = vLocal - uNailCentre;
 float s = dot(rel, uNailAxis) / uNailHalf.x;
-float w = dot(rel, uNailSide) / uNailHalf.y;
+// uShadeW (hand v3: 1.25): the shading's side edge sits past the plate's, so
+// no contact line is drawn on a flush plate's visible rim
+float w = dot(rel, uNailSide) / (uNailHalf.y * uShadeW);
 // Natural nail (B9): the pink bed seen through the plate, a lunula peeking
 // out from under the cuticle (mostly on the thumb), a thin soft cuticle line,
 // a faint onychodermal band, a thin translucent whitish free edge, ridges.
@@ -182,8 +195,30 @@ nail *= 0.994 + 0.006 * sin(w * 41.0 + sin(w * 13.0) * 1.3);
 float eSide = 1.0 - abs(w);
 float ePx = min(eSide / max(fwidth(w), 1e-5), max(cutE, 0.0) / max(fwidth(s), 1e-5));
 float contact = 1.0 - 0.3 * (1.0 - smoothstep(0.0, 2.5, ePx));
-vec3 albedo = mix(nail, uUnderColor, uUnderAmount);
-float cov = uUnderAmount;
+// hand v2: the free edge's underside (nail-space normal pointing in) shows the
+// natural free-edge colour and never paint (NAIL_UNDERSIDE; set from step G1)
+float under = 0.0;
+float feThin = 0.0;
+float alphaOut = 1.0;
+#ifdef NAIL_UNDERSIDE
+// the free edge meets no fold: no contact shade on its sides and side walls
+float eSide0 = eSide;
+contact = mix(contact, 1.0, fe);
+eSide = mix(eSide, 1.0, fe);
+// the free edge (keratin): a denser white band just past the smile line (air
+// under the plate), then ivory and mostly opaque; only the last fraction of a
+// millimetre at its rim (tip and sides) is thin enough to let light through.
+// uFreeTipS: s of the plate's tip at the current length (the viewer sets it)
+float past = max(smileS - s, 0.0);
+float band = 1.0 - smoothstep(0.05, 0.2, past);
+float rim = max(1.0 - smoothstep(0.0, 0.07, s - uFreeTipS), 1.0 - smoothstep(0.0, 0.07, eSide0));
+feThin = fe * rim * smoothstep(0.02, 0.12, past);
+nail = mix(nail, mix(vec3(0.91, 0.885, 0.835), vec3(0.95, 0.935, 0.90), band), fe * 0.8);
+under = 1.0 - smoothstep(-0.35, -0.15, vUnder);
+nail = mix(nail, vec3(0.93, 0.87, 0.79), under);
+#endif
+vec3 albedo = mix(nail, uUnderColor, uUnderAmount * (1.0 - under));
+float cov = uUnderAmount * (1.0 - under);
 float relief = 0.0;
 float wetLocal = uWet;
 #if defined(WET_NORMAL_TAPS) || defined(WET_NORMAL_DERIV)
@@ -193,7 +228,7 @@ vec2 hgS = vec2(0.0);  // DERIV: paint-edge gradient in screen space
 float filmK = 0.0;
 float crest = 0.0;
 #endif
-if (uHasPaint > 0.5) {
+if (uHasPaint > 0.5 && under < 0.5) {
 vec4 p = texture2D(uPaintMap, vUv);
 vec3 straight = p.rgb / max(p.a, 0.004);
 straight /= max(1.0, max(straight.r, max(straight.g, straight.b)));
@@ -241,7 +276,7 @@ hg = vec2(filmR(vUv + vec2(fd, 0.0)) - film.r, filmR(vUv + vec2(0.0, fd)) - film
 #endif
 }
 vec3 pigment = albedo;
-if (uHasDeco > 0.5) {
+if (uHasDeco > 0.5 && under < 0.5) {
 vec4 deco = texture2D(uDecoMap, vUv);
 vec3 decoStraight = deco.rgb / max(deco.a, 0.004);
 albedo = albedo * (1.0 - deco.a) + decodeSRGB(decoStraight) * deco.a;
@@ -284,6 +319,25 @@ vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5);
 vec3 irr = hemi + uLightColor * NdL + uRimColor * pow(1.0 - NdV, 2.0) * max(dot(N, uRimDir), 0.0);
 float ao = (1.0 - 0.3 * smoothstep(0.2, 0.0, cutE) - 0.2 * smoothstep(0.16, 0.0, eSide)) * contact;
 vec3 col = albedo * irr * 1.12 * ao * (1.0 - metal);
+#ifdef NAIL_UNDERSIDE
+// translucency of the bare free edge: light through it from behind, and the
+// room's light seen through its thin rim (no paint over it)
+{
+float tk = feThin * (1.0 - cov);
+// the rim: what lies behind it faintly through, and light from behind glows in it
+// (only where there is a rim: the env fetch is skipped on the rest of the nail)
+if (tk > 0.0) {
+vec3 through = envSample(-V, 3.0) * vec3(0.98, 0.95, 0.91);
+col = mix(col, through, tk * 0.3);
+alphaOut = 1.0 - 0.3 * tk;
+col += uLightColor * tk * (0.45 * pow(clamp(dot(V, -L), 0.0, 1.0), 2.0) + 0.05);
+}
+// the underside and the cut walls face the fingertip or the desk: in its shade,
+// not lit like the top (seen edge-on they read as white slivers otherwise)
+float wall = (1.0 - smoothstep(0.25, 0.6, abs(vUnder))) * fe;
+col *= 1.0 - 0.3 * under - 0.2 * wall * (1.0 - under);
+}
+#endif
 col += sheenK * pow(1.0 - NdV, 2.5) * hemi * (0.35 + 0.65 * albedo);
 vec3 tint = mix(vec3(1.0), pigment / max(max(pigment.r, pigment.g), max(pigment.b, 0.02)), 0.88);
 if (metal > 0.001) {
@@ -364,7 +418,7 @@ vec3 aces = toneMapping(col);
 vec3 hp = col * (toneMapping(vec3(mx)).g / max(mx, 1e-4));
 col = mix(aces, hp, 0.7);
 #endif
-gl_FragColor = vec4(col, 1.0);
+gl_FragColor = vec4(col, alphaOut);
 #include <colorspace_fragment>
 }
 `;
@@ -395,7 +449,8 @@ const RELIEF_DEFINES = Object.freeze({ FILM_H: '0.0070', EDGE_H: '0.0016', GLINT
 
 function definesFor(settings) {
   const d = settings && settings.nailShaderDefines;
-  return Object.assign({}, d || { GLITTER_CHEAP: '' }, RELIEF_DEFINES);
+  const extra = settings && settings.nailUnderside ? { NAIL_UNDERSIDE: '' } : null;
+  return Object.assign({}, d || { GLITTER_CHEAP: '' }, RELIEF_DEFINES, extra);
 }
 
 /**
@@ -425,7 +480,10 @@ export function createNailUniforms(lighting) {
     uNailAxis: { value: new THREE.Vector3(0, 1, 0) },
     uNailSide: { value: new THREE.Vector3(1, 0, 0) },
     uNailHalf: { value: new THREE.Vector2(1, 1) },
+    uShadeW: { value: 1 },
     uNailAnat: { value: new THREE.Vector4(-0.7, 0.2, 0.2, 0) },
+    // s of the free edge's tip (only NAIL_UNDERSIDE reads it; the viewer sets it per length)
+    uFreeTipS: { value: -100 },
     uMetal: { value: f.metal },
     uCoat: { value: f.coat },
     uRough: { value: f.rough },
@@ -462,6 +520,10 @@ export function createNailMaterial(settings, lighting, uniforms = null) {
     uniforms: uniforms || createNailUniforms(lighting),
     defines: definesFor(settings),
     side: THREE.FrontSide,
+    // hand v2: the bare free edge is part see-through (alpha < 1 only there);
+    // the game draws it opaque (nailUndersideAlpha false: an opaque nail is
+    // drawn before the skin, whose pixels under it then never shade)
+    transparent: !!(settings && settings.nailUnderside && settings.nailUndersideAlpha !== false),
   });
 }
 

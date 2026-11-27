@@ -114,9 +114,13 @@ async function handFacts(page) {
     const det = skin ? skin.matrixWorld.determinant() : 0;
     const V = app.scene.camera.position.constructor;
     const out = { hand, bones, det, nails: {} };
-    for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+    // H3 measures each nail as the close-up shows it: with the hand presenting
+    // that finger (the pose its focus camera is built for; the others curl
+    // away out of the close-up, so they are not measured in another finger's pose)
+    const presenting = (f, fn) => (app.scene.handPose ? app.scene.handPose(f, fn) : fn());
+    for (const f of ['thumb', 'index', 'middle', 'ring', 'pinky']) presenting(f, () => {
       const rec = hm.getNail(hand, f);
-      if (!rec) { out.nails[f] = null; continue; }
+      if (!rec) { out.nails[f] = null; return; }
       const mesh = rec.mesh; mesh.updateWorldMatrix(true, false);
       const pos = mesh.geometry.attributes.position, uv = mesh.geometry.attributes.uv;
       // least squares: world = C + Ju u + Jv v over the vertices
@@ -159,7 +163,7 @@ async function handFacts(page) {
         frame: !!rec.frame,
         skinColor: (() => { let sk = null; model.traverse((o) => { if (o.isSkinnedMesh && !sk) sk = o; }); const c = sk && sk.geometry.attributes.color; return c ? c.itemSize : 0; })(),
       };
-    }
+    });
     return out;
   });
 }
