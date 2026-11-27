@@ -245,6 +245,12 @@ export class HandAnimator {
     this.settled = true;
     this.trailing = false;
     this.changedThisFrame = false;
+    // for the close-up cull (CloseupCull.js): the largest gap (degrees)
+    // between any joint and where the pose wants it this frame, and whether
+    // only the pose and the idle layer move the hand (no manual pose, ease,
+    // dip, override, one-shot or press)
+    this.poseDev = Infinity;
+    this.calm = false;
   }
 
   /** Every joint still (settled, and no other finger trailing). */
@@ -423,7 +429,7 @@ export class HandAnimator {
   update(dt) {
     this.changedThisFrame = false;
     const rig = this.rig;
-    if (!rig) return false;
+    if (!rig) { this.calm = false; return false; }
     dt = Math.min(dt, 0.1);
 
     // ---- base
@@ -506,6 +512,13 @@ export class HandAnimator {
     this.changedThisFrame = moved;
     this.settled = this._ease >= 1 && this._antLeft <= 0 && !ovBusy && !pressBusy && !shotBusy && !springBusy;
     this.trailing = this._restBusy;
+    let dev = 0;
+    for (let k = 0; k < N3; k++) {
+      const d = Math.abs(this._sx[k] - fin[k]);
+      if (d > dev) dev = d;
+    }
+    this.poseDev = dev;
+    this.calm = this._mode === 'auto' && this._ease >= 1 && this._antLeft <= 0 && !ovBusy && !shotBusy && !pressBusy && this.press.x === 0 && this.press.target === 0;
     this.idleRunning = idleOn;
     return moved;
   }
